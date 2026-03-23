@@ -17,14 +17,12 @@ repository = "https://github.com/MustoTechnologies/raptrix-psse-rs"
 keywords = ["psse", "power-systems", "converter", "raptrix", "cim"]
 categories = ["command-line-utilities", "parser-implementations"]
 
-# NOTE: During development, raptrix-cim-arrow is resolved from the local stub.
-# Once the sibling workspace is available, change the path to:
-#
-#   raptrix-cim-arrow = { path = "../raptrix-cim-rs/raptrix-cim-arrow" }
-#
 [dependencies]
+anyhow = "1.0"
+arrow = "58.0"
 clap = { version = "4", features = ["derive"] }
-raptrix-cim-arrow = { path = "raptrix-cim-arrow" }
+# Sibling repo — use relative path so the absolute local directory stays off GitHub.
+raptrix-cim-arrow = { path = "../raptrix-cim-rs/raptrix-cim-arrow" }
 
 [dev-dependencies]
-# Golden-file tests use std::fs; no additional crates required for the scaffold.
+# Golden-file integration tests depend on the raptrix-cim-arrow reader.
