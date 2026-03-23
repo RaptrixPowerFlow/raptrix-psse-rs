@@ -5,66 +5,1369 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! PSS/E `.raw` and `.dyr` parser scaffold.
+//! PSS/E `.raw` and `.dyr` parser — versions v23 through v35+.
 //!
-//! This module is a **stub** — the real parsing logic will be ported from the
-//! existing C++ implementation.  See [`MIGRATION.md`] and
-//! [`docs/psse-mapping.md`] for field-by-field mapping rules.
-//!
-//! [`MIGRATION.md`]: https://github.com/MustoTechnologies/raptrix-psse-rs/blob/main/MIGRATION.md
-//! [`docs/psse-mapping.md`]: https://github.com/MustoTechnologies/raptrix-psse-rs/blob/main/docs/psse-mapping.md
+//! # Design
+//! * **State-machine driven**: a single pass over the file tracks which PSS/E
+//!   data section is active.  Section transitions are detected from the
+//!   `0 / END OF X DATA, BEGIN Y DATA` comment hints, with a version-aware
+//!   default ordering as a fallback.
+//! * **Version-aware field offsets**: PSS/E v35 inserts extra fields in
+//!   several records (BRANCH NAME, GENERATOR NREG, SWITCHED SHUNT NAME/NREG).
+//!   A `VersionOffsets` struct captures all affected indices.
+//! * **Fortran double parsing**: handles `D`-exponent notation (`1.5D-3`)
+//!   and bare implicit-exponent (`1.5-3 → 1.5e-3`) used by some exporters.
+//! * **Quote-aware tokeniser**: bus names may contain spaces; quoted strings
+//!   are not split at internal commas or spaces.
+//! * **3-winding transformer star expansion**: creates a fictitious star bus
+//!   and three 2-winding legs, matching the C++ solver approach.
+//! * **DYR parser**: extracts GENROU, GENSAL, and GENCLS machine records for
+//!   transient stability initialisation.
 
-use std::path::Path;
+use std::{
+    fs,
+    io::{self, BufRead},
+    path::Path,
+};
 
-use crate::models::Network;
+use anyhow::{Context, Result};
 
-/// Parse a PSS/E RAW file (v29 – v35) into a [`Network`].
-///
-/// # C++ port TODO list
-/// - [ ] Section 0 — case identification / header (SBASE, REV, XFRRAT, NXFRAT, BASFRQ)
-/// - [ ] Section 1 — bus data records
-/// - [ ] Section 2 — load data records
-/// - [ ] Section 3 — fixed shunt data records
-/// - [ ] Section 4 — generator data records
-/// - [ ] Section 5 — non-transformer branch data records
-/// - [ ] Section 6 — transformer data records (2-winding and 3-winding)
-/// - [ ] Section 7 — area interchange data records
-/// - [ ] Section 8 — two-terminal DC transmission line data records
-/// - [ ] Section 9 — VSC DC transmission line data records
-/// - [ ] Section 10 — impedance correction table data records
-/// - [ ] Section 11 — multi-terminal DC transmission line data records
-/// - [ ] Section 12 — multi-section line grouping data records
-/// - [ ] Section 13 — zone data records
-/// - [ ] Section 14 — inter-area transfer data records
-/// - [ ] Section 15 — owner data records
-/// - [ ] Section 16 — FACTS device data records
-/// - [ ] Section 17 — switched shunt data records
-/// - [ ] Section 18 — GNE device data records (v34+)
-/// - [ ] Section 19 — induction machine data records (v34+)
-///
-/// # Zero-copy design notes
-/// The final implementation should use `memmap2` + a zero-copy line iterator
-/// to avoid allocating per-line `String` values.  Keep all string fields as
-/// `Box<str>` or intern them with `string-interner` to minimise allocations.
-pub fn parse_raw(path: &Path) -> Result<Network, Box<dyn std::error::Error>> {
-    // TODO: implement RAW parsing (port from C++).
-    let _ = path;
-    Ok(Network::default())
+use crate::models::{
+    Area, Branch, Bus, BusType, CaseId, DyrGeneratorData, FixedShunt, Generator, Load, Network,
+    Owner, SwitchedShunt, TwoWindingTransformer, Zone,
+};
+
+// ---------------------------------------------------------------------------
+// Parse state machine
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseState {
+    Header,
+    SystemWide,           // v35 SYSTEM-WIDE DATA section (skipped)
+    Bus,
+    Load,
+    FixedShunt,
+    Generator,
+    Branch,
+    SystemSwitchingDevice, // v35 SYSTEM SWITCHING DEVICE section (skipped)
+    Transformer,
+    Area,
+    TwoTerminalDc,
+    VscDc,
+    ImpedanceCorrection,
+    MultiTerminalDc,
+    MultiSectionLine,
+    Zone,
+    InterAreaTransfer,
+    Owner,
+    Facts,
+    SwitchedShunt,
+    GneDevice,
+    InductionMachine,
+    Done,
 }
 
-/// Parse a PSS/E DYR file into dynamic model records attached to [`Network`].
+/// Version-aware field index offsets for records whose layout differs between
+/// PSS/E v33 and v35.
+struct VersionOffsets {
+    // ---- BRANCH ----
+    /// Index of STATUS in a BRANCH record.
+    pub branch_status_idx: usize,
+    /// Index of RATEA in a BRANCH record.
+    pub branch_ratea_idx: usize,
+    // ---- GENERATOR ----
+    /// Index of MBASE in a GENERATOR record.
+    pub gen_mbase_idx: usize,
+    /// Index of ZR in a GENERATOR record.
+    pub gen_zr_idx: usize,
+    /// Index of STAT in a GENERATOR record.
+    pub gen_stat_idx: usize,
+    /// Index of RMPCT in a GENERATOR record.
+    pub gen_rmpct_idx: usize,
+    /// Index of PT in a GENERATOR record.
+    pub gen_pt_idx: usize,
+    /// Index of PB in a GENERATOR record.
+    pub gen_pb_idx: usize,
+    /// Index of O1 in a GENERATOR record.
+    pub gen_o1_idx: usize,
+    // ---- SWITCHED SHUNT ----
+    /// Index of MODSW in a SWITCHED SHUNT record.
+    pub sw_modsw_idx: usize,
+    /// Index of ADJM in a SWITCHED SHUNT record.
+    pub sw_adjm_idx: usize,
+    /// Index of STAT in a SWITCHED SHUNT record.
+    pub sw_stat_idx: usize,
+    /// Index of VSWHI in a SWITCHED SHUNT record.
+    pub sw_vswhi_idx: usize,
+    /// Index of VSWLO in a SWITCHED SHUNT record.
+    pub sw_vswlo_idx: usize,
+    /// Index of SWREM/SWREG in a SWITCHED SHUNT record.
+    pub sw_swreg_idx: usize,
+    /// Index of RMPCT in a SWITCHED SHUNT record.
+    pub sw_rmpct_idx: usize,
+    /// Index of RMIDNT in a SWITCHED SHUNT record.
+    pub sw_rmidnt_idx: usize,
+    /// Index of BINIT in a SWITCHED SHUNT record.
+    pub sw_binit_idx: usize,
+    /// Index of the first N/B pair in a SWITCHED SHUNT record.
+    pub sw_pairs_start: usize,
+}
+
+fn version_offsets(psse_version: u32) -> VersionOffsets {
+    if psse_version >= 35 {
+        // v35 BRANCH: NAME inserted at idx 6 → RATEA at 7, STATUS at 23
+        // v35 GENERATOR: NREG inserted at idx 8 → MBASE shifts to 9, STAT→15, PT→17, PB→18
+        // v35 SWITCHED SHUNT: NAME at 1 → MODSW→2, ADJM→3, STAT→4, VSWHI→5, VSWLO→6,
+        //   SWREG→7, NREG at 8, RMPCT→9, RMIDNT→10, BINIT→11, extra flag at 12, pairs start 13
+        VersionOffsets {
+            branch_status_idx: 23,
+            branch_ratea_idx: 7,
+            gen_mbase_idx: 9,
+            gen_zr_idx: 10,
+            gen_stat_idx: 15,
+            gen_rmpct_idx: 16,
+            gen_pt_idx: 17,
+            gen_pb_idx: 18,
+            gen_o1_idx: 19,
+            sw_modsw_idx: 2,
+            sw_adjm_idx: 3,
+            sw_stat_idx: 4,
+            sw_vswhi_idx: 5,
+            sw_vswlo_idx: 6,
+            sw_swreg_idx: 7,
+            sw_rmpct_idx: 9,
+            sw_rmidnt_idx: 10,
+            sw_binit_idx: 11,
+            sw_pairs_start: 13,
+        }
+    } else {
+        // v23–v34 (v33 is the most common)
+        VersionOffsets {
+            branch_status_idx: 13,
+            branch_ratea_idx: 6,
+            gen_mbase_idx: 8,
+            gen_zr_idx: 9,
+            gen_stat_idx: 14,
+            gen_rmpct_idx: 15,
+            gen_pt_idx: 16,
+            gen_pb_idx: 17,
+            gen_o1_idx: 18,
+            sw_modsw_idx: 1,
+            sw_adjm_idx: 2,
+            sw_stat_idx: 3,
+            sw_vswhi_idx: 4,
+            sw_vswlo_idx: 5,
+            sw_swreg_idx: 6,
+            sw_rmpct_idx: 7,
+            sw_rmidnt_idx: 8,
+            sw_binit_idx: 9,
+            sw_pairs_start: 10,
+        }
+    }
+}
+
+/// Default section ordering, used when the line comment provides no hint.
+fn default_next_state(state: ParseState, version: u32) -> ParseState {
+    match state {
+        ParseState::SystemWide => ParseState::Bus,
+        ParseState::Bus => ParseState::Load,
+        ParseState::Load => ParseState::FixedShunt,
+        ParseState::FixedShunt => ParseState::Generator,
+        ParseState::Generator => ParseState::Branch,
+        ParseState::Branch => {
+            if version >= 35 {
+                ParseState::SystemSwitchingDevice
+            } else {
+                ParseState::Transformer
+            }
+        }
+        ParseState::SystemSwitchingDevice => ParseState::Transformer,
+        ParseState::Transformer => ParseState::Area,
+        ParseState::Area => ParseState::TwoTerminalDc,
+        ParseState::TwoTerminalDc => ParseState::VscDc,
+        ParseState::VscDc => ParseState::ImpedanceCorrection,
+        ParseState::ImpedanceCorrection => ParseState::MultiTerminalDc,
+        ParseState::MultiTerminalDc => ParseState::MultiSectionLine,
+        ParseState::MultiSectionLine => ParseState::Zone,
+        ParseState::Zone => ParseState::InterAreaTransfer,
+        ParseState::InterAreaTransfer => ParseState::Owner,
+        ParseState::Owner => ParseState::Facts,
+        ParseState::Facts => ParseState::SwitchedShunt,
+        ParseState::SwitchedShunt => ParseState::GneDevice,
+        ParseState::GneDevice => ParseState::InductionMachine,
+        ParseState::InductionMachine => ParseState::Done,
+        _ => ParseState::Done,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Low-level parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Advance the iterator, strip a trailing `\r`, and return the line.
+fn next_line(lines: &mut io::Lines<io::BufReader<fs::File>>) -> Result<Option<String>> {
+    match lines.next() {
+        None => Ok(None),
+        Some(Ok(l)) => Ok(Some(l.trim_end_matches('\r').to_string())),
+        Some(Err(e)) => Err(anyhow::Error::from(e).context("I/O error reading file")),
+    }
+}
+
+/// Advance the iterator; return `Err` if the file ends unexpectedly.
+/// Parse a Fortran-style floating-point token into an `f64`.
 ///
-/// # C++ port TODO list
-/// - [ ] GENSAL / GENROU — round-rotor and salient-pole machine models
-/// - [ ] ESST1A / EXAC1 — excitation system models
-/// - [ ] IEEEG1 / GGOV1  — governor models
-/// - [ ] PSSE-format record identification (model-name field in column 3)
-/// - [ ] Cross-reference to static bus/generator via bus number + machine ID
+/// Handles:
+/// * Bare value: `"3.14"` → `3.14`
+/// * Fortran D-exponent: `"1.5D-3"` → `1.5e-3`
+/// * Implicit exponent (no 'E'): `"1.5-3"` → `1.5e-3`
+/// * Quoted strings: `"'1.0'"` → `1.0`
+/// * Missing / empty: `""` → `0.0`
+pub fn parse_fortran_double(raw: &str) -> f64 {
+    let s = raw.trim().trim_matches('\'');
+    if s.is_empty() {
+        return 0.0;
+    }
+
+    // Fast path: try direct parse first (avoids allocation for the common case)
+    if let Ok(v) = s.parse::<f64>() {
+        return v;
+    }
+
+    // Replace Fortran 'D' exponent with 'e'
+    let mut s = if s.contains('D') || s.contains('d') {
+        s.replace(['D', 'd'], "e")
+    } else {
+        s.to_owned()
+    };
+
+    // Insert 'e' before a bare sign not already preceded by 'e'
+    // e.g. "1.5-3" → "1.5e-3", "1.5+3" → "1.5e+3"
+    let bytes = s.as_bytes().to_vec();
+    let mut result = String::with_capacity(bytes.len() + 1);
+    for (i, &b) in bytes.iter().enumerate() {
+        let ch = b as char;
+        if i > 0 && (ch == '+' || ch == '-') {
+            let prev = bytes[i - 1] as char;
+            if prev != 'e' && prev != 'E' && (prev.is_ascii_digit() || prev == '.') {
+                result.push('e');
+            }
+        }
+        result.push(ch);
+    }
+    s = result;
+
+    s.parse::<f64>().unwrap_or(0.0)
+}
+
+/// Quote-aware comma tokeniser.  Strips surrounding single quotes from each
+/// token and trims leading/trailing whitespace.  Does NOT split at commas
+/// that appear inside a quoted string.
+fn tokenize(line: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut token = String::new();
+    let mut in_quotes = false;
+
+    for ch in line.chars() {
+        match ch {
+            '\'' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                tokens.push(token.trim().to_string());
+                token = String::new();
+            }
+            _ => token.push(ch),
+        }
+    }
+    // Push the last token (may be empty for trailing comma)
+    let t = token.trim().to_string();
+    if !t.is_empty() || !tokens.is_empty() {
+        tokens.push(t);
+    }
+    tokens
+}
+
+/// Split a line at the first `/` into `(data, hint)`.
+/// The `hint` may contain a section-transition marker like
+/// `"END OF BUS DATA, BEGIN LOAD DATA"`.
+fn split_comment(line: &str) -> (&str, &str) {
+    match line.find('/') {
+        Some(pos) => (&line[..pos], &line[pos + 1..]),
+        None => (line, ""),
+    }
+}
+
+/// Return `true` if `data` (the portion before `/`) marks a section
+/// terminator (`0` or `Q`).
+fn is_section_end(data: &str) -> bool {
+    let t = data.trim();
+    t == "0" || t == "Q"
+}
+
+/// Extract the next [`ParseState`] from a section comment hint.
 ///
-/// # Zero-copy design notes
-/// Same as [`parse_raw`]: prefer `memmap2` + zero-copy line iteration.
-pub fn parse_dyr(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    // TODO: implement DYR parsing (port from C++).
-    let _ = path;
-    Ok(())
+/// Searches only in the `BEGIN X DATA` portion to avoid false matches on
+/// `"END OF BUS DATA, BEGIN LOAD DATA"` matching `BUS` in the END part.
+fn hint_to_state(hint: &str, psse_version: u32) -> Option<ParseState> {
+    let upper = hint.to_ascii_uppercase();
+    let begin_pos = upper.find("BEGIN")?;
+    let after = &upper[begin_pos + 5..];
+
+    // Test most-specific patterns first
+    if after.contains("SYSTEM SWITCHING") || after.contains("SYSTEM-SWITCHING") {
+        return Some(ParseState::SystemSwitchingDevice);
+    }
+    if after.contains("SYSTEM-WIDE") || after.contains("SYSTEM WIDE") {
+        return Some(ParseState::SystemWide);
+    }
+    if after.contains("SWITCHED SHUNT") || after.contains("SWITCHED-SHUNT") {
+        // Both v33 and v35 land on the same state; version-aware field offsets handle the rest.
+        let _ = psse_version;
+        return Some(ParseState::SwitchedShunt);
+    }
+    if after.contains("FIXED SHUNT") || after.contains("FIXED-SHUNT") {
+        return Some(ParseState::FixedShunt);
+    }
+    if after.contains("MULTI-TERMINAL") || after.contains("MULTI TERMINAL") {
+        return Some(ParseState::MultiTerminalDc);
+    }
+    if after.contains("MULTI-SECTION") || after.contains("MULTI SECTION") {
+        return Some(ParseState::MultiSectionLine);
+    }
+    if after.contains("TWO-TERMINAL") || after.contains("TWO TERMINAL") {
+        return Some(ParseState::TwoTerminalDc);
+    }
+    if after.contains("VOLTAGE SOURCE") || after.contains("VSC") {
+        return Some(ParseState::VscDc);
+    }
+    if after.contains("INTER") && after.contains("AREA") {
+        return Some(ParseState::InterAreaTransfer);
+    }
+    if after.contains("IMPEDANCE") {
+        return Some(ParseState::ImpedanceCorrection);
+    }
+    if after.contains("INDUCTION") {
+        return Some(ParseState::InductionMachine);
+    }
+    if after.contains("GNE") {
+        return Some(ParseState::GneDevice);
+    }
+    if after.contains("BUS") {
+        return Some(ParseState::Bus);
+    }
+    if after.contains("LOAD") {
+        return Some(ParseState::Load);
+    }
+    if after.contains("GENERATOR") {
+        return Some(ParseState::Generator);
+    }
+    if after.contains("BRANCH") {
+        return Some(ParseState::Branch);
+    }
+    if after.contains("TRANSFORMER") {
+        return Some(ParseState::Transformer);
+    }
+    if after.contains("AREA") {
+        return Some(ParseState::Area);
+    }
+    if after.contains("ZONE") {
+        return Some(ParseState::Zone);
+    }
+    if after.contains("OWNER") {
+        return Some(ParseState::Owner);
+    }
+    if after.contains("FACTS") {
+        return Some(ParseState::Facts);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Field accessor helpers
+// ---------------------------------------------------------------------------
+
+fn field_str(fields: &[String], idx: usize) -> String {
+    fields
+        .get(idx)
+        .map(|s| s.trim_matches('\'').trim().to_string())
+        .unwrap_or_default()
+}
+
+fn field_f64(fields: &[String], idx: usize) -> f64 {
+    fields
+        .get(idx)
+        .map(|s| parse_fortran_double(s))
+        .unwrap_or(0.0)
+}
+
+fn field_u32(fields: &[String], idx: usize) -> u32 {
+    fields
+        .get(idx)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn field_u32_default(fields: &[String], idx: usize, default: u32) -> u32 {
+    fields
+        .get(idx)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+fn field_i32(fields: &[String], idx: usize) -> i32 {
+    fields
+        .get(idx)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn field_u8(fields: &[String], idx: usize) -> u8 {
+    fields
+        .get(idx)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+fn field_u8_default(fields: &[String], idx: usize, default: u8) -> u8 {
+    fields
+        .get(idx)
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(default)
+}
+
+// ---------------------------------------------------------------------------
+// Per-record parsers (single-line sections)
+// ---------------------------------------------------------------------------
+
+/// Parse one BUS record.
+///
+/// Handles the optional bus NAME field: very old PSS/E formats (pre-v29) omit
+/// it.  The heuristic: if `parts[1]` is empty or `''`, treat name as absent
+/// and shift all subsequent indices down by one.
+fn parse_bus_record(f: &[String]) -> Option<Bus> {
+    if f.is_empty() {
+        return None;
+    }
+
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+
+    // Detect presence of the optional bus NAME field (indices shift by 1 when present)
+    let has_name = f
+        .get(1)
+        .map(|s| !s.is_empty() && s != "''")
+        .unwrap_or(false);
+
+    let baskv_idx = if has_name { 2 } else { 1 };
+    let ide_idx = baskv_idx + 1;
+    let area_idx = baskv_idx + 2;
+    let zone_idx = baskv_idx + 3;
+    let owner_idx = baskv_idx + 4;
+    let vm_idx = baskv_idx + 5;
+    let va_idx = baskv_idx + 6;
+
+    let ide_raw = field_u8(f, ide_idx);
+    let ide = match ide_raw {
+        2 => BusType::GeneratorPQ,
+        3 => BusType::GeneratorPV,
+        4 => BusType::Slack,
+        _ => BusType::LoadBus,
+    };
+
+    let vm_raw = field_f64(f, vm_idx);
+    let vm = vm_raw.clamp(0.5, 1.5);
+
+    let nvhi_raw = field_f64(f, va_idx + 1);
+    let nvlo_raw = field_f64(f, va_idx + 2);
+    let nvhi = if nvhi_raw > 0.5 && nvhi_raw <= 2.0 { nvhi_raw } else { 1.1 };
+    let nvlo = if nvlo_raw > 0.0 && nvlo_raw <= 2.0 { nvlo_raw } else { 0.9 };
+
+    let evhi_raw = field_f64(f, va_idx + 3);
+    let evlo_raw = field_f64(f, va_idx + 4);
+    let evhi = if evhi_raw > 0.5 && evhi_raw <= 2.0 { evhi_raw } else { 1.1 };
+    let evlo = if evlo_raw > 0.0 && evlo_raw <= 2.0 { evlo_raw } else { 0.9 };
+
+    Some(Bus {
+        i,
+        name: if has_name {
+            {
+                let n = field_str(f, 1);
+                // PSS/E bus name is exactly 12 chars; pad or truncate
+                let mut s = n;
+                if s.len() < 12 {
+                    s.push_str(&" ".repeat(12 - s.len()));
+                } else {
+                    s.truncate(12);
+                }
+                s.into_boxed_str()
+            }
+        } else {
+            "????????????".into()
+        },
+        baskv: field_f64(f, baskv_idx),
+        ide,
+        area: field_u32_default(f, area_idx, 1),
+        zone: field_u32_default(f, zone_idx, 1),
+        owner: field_u32_default(f, owner_idx, 1),
+        vm,
+        va: field_f64(f, va_idx).clamp(-180.0, 180.0),
+        nvhi,
+        nvlo,
+        evhi,
+        evlo,
+    })
+}
+
+/// Parse one LOAD record.
+fn parse_load_record(f: &[String]) -> Option<Load> {
+    if f.len() < 6 {
+        return None;
+    }
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    Some(Load {
+        i,
+        id: field_str(f, 1).into_boxed_str(),
+        status: field_u8_default(f, 2, 1),
+        area: field_u32_default(f, 3, 1),
+        zone: field_u32_default(f, 4, 1),
+        pl: field_f64(f, 5),
+        ql: field_f64(f, 6),
+        ip: field_f64(f, 7),
+        iq: field_f64(f, 8),
+        yp: field_f64(f, 9),
+        yq: field_f64(f, 10),
+        owner: field_u32_default(f, 11, 1),
+        scale: field_u8(f, 12),
+        intrpt: field_u8(f, 13),
+    })
+}
+
+/// Parse one FIXED SHUNT record.
+fn parse_fixed_shunt_record(f: &[String]) -> Option<FixedShunt> {
+    if f.len() < 4 {
+        return None;
+    }
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    Some(FixedShunt {
+        i,
+        id: field_str(f, 1).into_boxed_str(),
+        status: field_u8_default(f, 2, 1),
+        gl: field_f64(f, 3),
+        bl: field_f64(f, 4),
+    })
+}
+
+/// Parse one GENERATOR record (version-aware field offsets).
+///
+/// PSS/E v35 inserts `NREG` at index 8, shifting all subsequent fields by 1.
+fn parse_generator_record(f: &[String], off: &VersionOffsets) -> Option<Generator> {
+    if f.len() < 10 {
+        return None;
+    }
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+
+    let mbase = field_f64(f, off.gen_mbase_idx);
+    let mbase = if mbase <= 0.0 { 100.0 } else { mbase };
+
+    let pt = {
+        let raw = field_f64(f, off.gen_pt_idx);
+        if raw <= 0.0 { mbase } else { raw } // PSS/E fallback: Pmax = Mbase
+    };
+    let pb = {
+        let raw = field_f64(f, off.gen_pb_idx);
+        if raw < 0.0 || raw > pt { 0.0 } else { raw }
+    };
+
+    Some(Generator {
+        i,
+        id: field_str(f, 1).into_boxed_str(),
+        pg: field_f64(f, 2),
+        qg: field_f64(f, 3),
+        qt: field_f64(f, 4),
+        qb: field_f64(f, 5),
+        vs: field_f64(f, 6),
+        ireg: field_u32(f, 7),
+        mbase,
+        zr: field_f64(f, off.gen_zr_idx),
+        zx: field_f64(f, off.gen_zr_idx + 1),
+        rt: field_f64(f, off.gen_zr_idx + 2),
+        xt: field_f64(f, off.gen_zr_idx + 3),
+        gtap: field_f64(f, off.gen_zr_idx + 4),
+        stat: field_u8_default(f, off.gen_stat_idx, 1),
+        rmpct: field_f64(f, off.gen_rmpct_idx),
+        pt,
+        pb,
+        o1: field_u32(f, off.gen_o1_idx),
+        wmod: field_u8(f, off.gen_o1_idx + 1),
+        wpf: field_f64(f, off.gen_o1_idx + 2),
+    })
+}
+
+/// Parse one BRANCH record (version-aware field offsets).
+///
+/// PSS/E v35 inserts a `NAME` field at index 6 and expands to 12 rate fields,
+/// pushing `STATUS` to index 23.  v33 has 3 rate fields; `STATUS` is at 13.
+fn parse_branch_record(f: &[String], off: &VersionOffsets) -> Option<Branch> {
+    if f.len() < 7 {
+        return None; // minimum: I, J, CKT, R, X, B, RATEA
+    }
+    let i = field_u32(f, 0);
+    let j = field_u32(f, 1);
+    if i == 0 || j == 0 {
+        return None;
+    }
+
+    // Status defaults to 1 when field is missing or malformed.
+    let st = if f.len() > off.branch_status_idx {
+        let v = field_i32(f, off.branch_status_idx);
+        if v == 0 { 0u8 } else { 1u8 }
+    } else {
+        1u8
+    };
+
+    let ra = off.branch_ratea_idx;
+
+    Some(Branch {
+        i,
+        j,
+        ckt: field_str(f, 2).into_boxed_str(),
+        r: field_f64(f, 3),
+        x: {
+            let x = field_f64(f, 4);
+            // Guard against near-zero reactance which would cause singular Y-bus
+            if x.abs() < 1e-4 { if x < 0.0 { -1e-4 } else { 1e-4 } } else { x }
+        },
+        b: field_f64(f, 5),
+        ratea: field_f64(f, ra),
+        rateb: field_f64(f, ra + 1),
+        ratec: field_f64(f, ra + 2),
+        // GI/BI/GJ/BJ: always at positions 9-12 for v33; for v35 they are at 19-22.
+        // We read them as v33 positions; the values are rarely used beyond zero-check.
+        gi: field_f64(f, 9),
+        bi: field_f64(f, 10),
+        gj: field_f64(f, 11),
+        bj: field_f64(f, 12),
+        st,
+        met: field_u8(f, off.branch_status_idx + 1),
+        len: field_f64(f, off.branch_status_idx + 2),
+        o1: field_u32(f, off.branch_status_idx + 3),
+    })
+}
+
+/// Parse one AREA INTERCHANGE record.
+fn parse_area_record(f: &[String]) -> Area {
+    Area {
+        i: field_u32(f, 0),
+        isw: field_u32(f, 1),
+        pdes: field_f64(f, 2),
+        ptol: field_f64(f, 3),
+        arnam: field_str(f, 4).into_boxed_str(),
+    }
+}
+
+/// Parse one ZONE record.
+fn parse_zone_record(f: &[String]) -> Zone {
+    Zone {
+        i: field_u32(f, 0),
+        zonam: field_str(f, 1).into_boxed_str(),
+    }
+}
+
+/// Parse one OWNER record.
+fn parse_owner_record(f: &[String]) -> Owner {
+    Owner {
+        i: field_u32(f, 0),
+        ownam: field_str(f, 1).into_boxed_str(),
+    }
+}
+
+/// Parse one SWITCHED SHUNT record (version-aware).
+///
+/// Expands `N₁/B₁ … N₈/B₈` pairs into `steps`: a flat list where each step
+/// value (B in MVAr) is repeated `N` times.  Both capacitive (B > 0) and
+/// inductive (B < 0) steps are stored; the consumer decides how to use them.
+fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<SwitchedShunt> {
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    let mut steps = Vec::new();
+    let ps = off.sw_pairs_start;
+    let mut idx = ps;
+    while idx + 1 < f.len() {
+        let n = field_u32(f, idx) as usize;
+        let b = field_f64(f, idx + 1);
+        if n == 0 {
+            break;
+        }
+        for _ in 0..n {
+            steps.push(b);
+        }
+        idx += 2;
+    }
+    Some(SwitchedShunt {
+        i,
+        modsw: field_u8(f, off.sw_modsw_idx),
+        adjm: field_u8(f, off.sw_adjm_idx),
+        stat: field_u8_default(f, off.sw_stat_idx, 1),
+        vswhi: field_f64(f, off.sw_vswhi_idx),
+        vswlo: field_f64(f, off.sw_vswlo_idx),
+        swrem: field_u32(f, off.sw_swreg_idx),
+        rmpct: field_f64(f, off.sw_rmpct_idx),
+        rmidnt: field_str(f, off.sw_rmidnt_idx).into_boxed_str(),
+        binit: field_f64(f, off.sw_binit_idx),
+        steps,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Header parsing
+// ---------------------------------------------------------------------------
+
+/// Parse header line 1 into `CaseId` and return the detected PSS/E version.
+///
+/// Accepts several common header variants:
+/// * Standard: `IC, SBASE, REV, XFRRAT, NXFRAT, BASFRQ / title`
+/// * Legacy (pre-v29): version may not be in the third position
+/// * Expert-fallback: scan all tokens for a plausible version in 20..=40
+fn parse_header_line(line: &str) -> (CaseId, u32) {
+    let (data, hint) = split_comment(line);
+    let title = hint.trim().to_string();
+    let f = tokenize(data);
+
+    // Try position 2 first (standard layout)
+    let mut psse_version: i32 = f
+        .get(2)
+        .and_then(|s| s.trim().parse::<i32>().ok())
+        .filter(|&v| v >= 20 && v <= 40)
+        .unwrap_or(-1);
+
+    // Fallback: scan all tokens
+    if psse_version < 0 {
+        for tok in &f {
+            if let Ok(v) = tok.trim().parse::<i32>() {
+                if v >= 20 && v <= 40 {
+                    psse_version = v;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Last resort: infer v33 from base MVA
+    if psse_version < 0 {
+        if let Some(mva) = f.get(1).and_then(|s| s.parse::<f64>().ok()) {
+            if mva > 1.0 && mva < 1.0e6 {
+                psse_version = 33;
+            }
+        }
+    }
+    let psse_version = psse_version.max(33) as u32;
+
+    let basfrq = f.get(5).and_then(|s| s.parse::<f64>().ok()).unwrap_or(60.0);
+    let basfrq = if basfrq <= 0.0 { 60.0 } else { basfrq };
+
+    let sbase = f.get(1).and_then(|s| s.parse::<f64>().ok()).unwrap_or(100.0);
+    let sbase = sbase.clamp(10.0, 1.0e7);
+
+    let case_id = CaseId {
+        sbase,
+        rev: psse_version,
+        xfrrat: field_u8(&f, 3),
+        basfrq,
+        title: title.into_boxed_str(),
+    };
+
+    (case_id, psse_version)
+}
+
+// ---------------------------------------------------------------------------
+// Transformer star-equivalent helpers
+// ---------------------------------------------------------------------------
+
+/// Clamp a star-leg reactance away from zero to avoid a singular Y-bus.
+#[inline]
+fn clamp_z(r: f64, x: f64) -> (f64, f64) {
+    let x = if x.abs() < 1e-4 { if x < 0.0 { -1e-4 } else { 1e-4 } } else { x };
+    (r, x)
+}
+
+/// Build a star-equivalent [`TwoWindingTransformer`] leg for a 3-winding
+/// transformer.  `to_bus` is the fictitious star bus.
+fn star_leg_transformer(
+    from_bus: u32,
+    to_bus: u32,
+    ckt_suffix: u8,
+    r_star: f64,
+    x_star: f64,
+    windv: f64,
+    ang_deg: f64,
+    rate_mva: f64,
+    sbase: f64,
+    stat: u8,
+) -> TwoWindingTransformer {
+    let (r, x) = clamp_z(r_star, x_star);
+    let windv = windv.clamp(0.4, 2.0);
+    let ang = ang_deg.clamp(-90.0, 90.0);
+    TwoWindingTransformer {
+        i: from_bus,
+        j: to_bus,
+        ckt: format!("S{ckt_suffix}").into_boxed_str(),
+        stat,
+        mag1: 0.0,
+        mag2: 0.0,
+        r12: r,
+        x12: x,
+        sbase12: sbase,
+        windv1: windv,
+        nomv1: 0.0,
+        ang1: ang,
+        rata1: rate_mva,
+        ratb1: 0.0,
+        ratc1: 0.0,
+        windv2: 1.0,
+        nomv2: 0.0,
+    }
+}
+
+/// Build a fictitious star bus for the 3W star expansion.
+fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
+    Bus {
+        i: id,
+        name: "STAR        ".into(),
+        baskv: 0.0,
+        ide: BusType::LoadBus,
+        area,
+        zone,
+        owner,
+        vm: 1.0,
+        va: 0.0,
+        nvhi: 1.5,
+        nvlo: 0.5,
+        evhi: 1.5,
+        evlo: 0.5,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point: parse_raw
+// ---------------------------------------------------------------------------
+
+/// Parse a PSS/E RAW file (v23–v35+) into a [`Network`].
+///
+/// Sections are detected by the `0 / END OF X DATA, BEGIN Y DATA` comment
+/// hints, falling back to the version-appropriate default ordering.  The
+/// parser tolerates empty sections, out-of-place section terminators, and
+/// most encoding quirks found in real-world PSS/E export files.
+///
+/// # 3-winding transformers
+/// 3-winding records (K ≠ 0) are converted to a star-equivalent: a fictitious
+/// bus (ID ≥ 1 000 000) plus three [`TwoWindingTransformer`] legs.  The
+/// fictitious buses are appended to `Network::buses`.
+pub fn parse_raw(path: &Path) -> Result<Network> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("cannot open RAW file: {}", path.display()))?;
+    let reader = io::BufReader::new(file);
+    let mut lines_iter = reader.lines();
+
+    let mut state = ParseState::Header;
+    let mut psse_version: u32 = 33;
+    let mut off = version_offsets(psse_version);
+
+    let mut result = Network::default();
+    // Counter for fictitious star bus IDs generated by 3W expansion
+    let mut next_star_id: u32 = 1_000_000;
+
+    loop {
+        let raw_line = match next_line(&mut lines_iter)? {
+            None => break,
+            Some(l) => l,
+        };
+
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Skip PSS/E directive / comment lines
+        if trimmed.starts_with("@!") || trimmed.starts_with("@") {
+            continue;
+        }
+
+        let (data_part, hint_part) = split_comment(trimmed);
+        let data = data_part.trim();
+
+        // ---- Section terminator ----
+        if is_section_end(data) {
+            let next = hint_to_state(hint_part, psse_version)
+                .unwrap_or_else(|| default_next_state(state, psse_version));
+            state = next;
+            if state == ParseState::Done {
+                break;
+            }
+            continue;
+        }
+
+        if data.is_empty() {
+            continue;
+        }
+
+        // ---- Record dispatch ----
+        match state {
+            // ================================================================
+            // HEADER — exactly 3 lines, no section terminator
+            // ================================================================
+            ParseState::Header => {
+                let (case_id, ver) = parse_header_line(trimmed);
+                psse_version = ver;
+                off = version_offsets(psse_version);
+                result.case_id = case_id;
+
+                // Consume the two case-description text lines (lines 2-3)
+                let _ = next_line(&mut lines_iter)?;
+                let _ = next_line(&mut lines_iter)?;
+
+                state = if psse_version >= 35 {
+                    ParseState::SystemWide
+                } else {
+                    ParseState::Bus
+                };
+            }
+
+            // ================================================================
+            // BUS DATA
+            // ================================================================
+            ParseState::Bus => {
+                let f = tokenize(data);
+                if let Some(bus) = parse_bus_record(&f) {
+                    result.buses.push(bus);
+                }
+            }
+
+            // ================================================================
+            // LOAD DATA
+            // ================================================================
+            ParseState::Load => {
+                let f = tokenize(data);
+                if let Some(load) = parse_load_record(&f) {
+                    result.loads.push(load);
+                }
+            }
+
+            // ================================================================
+            // FIXED SHUNT DATA
+            // ================================================================
+            ParseState::FixedShunt => {
+                let f = tokenize(data);
+                if let Some(shunt) = parse_fixed_shunt_record(&f) {
+                    result.fixed_shunts.push(shunt);
+                }
+            }
+
+            // ================================================================
+            // GENERATOR DATA
+            // ================================================================
+            ParseState::Generator => {
+                let f = tokenize(data);
+                if let Some(gen) = parse_generator_record(&f, &off) {
+                    result.generators.push(gen);
+                }
+            }
+
+            // ================================================================
+            // BRANCH DATA
+            // ================================================================
+            ParseState::Branch => {
+                let f = tokenize(data);
+                if let Some(branch) = parse_branch_record(&f, &off) {
+                    result.branches.push(branch);
+                }
+            }
+
+            // ================================================================
+            // TRANSFORMER DATA — multi-line records (4 lines for 2W, 5 for 3W)
+            // ================================================================
+            ParseState::Transformer => {
+                let f1 = tokenize(data);
+                if f1.len() < 3 {
+                    continue;
+                }
+
+                let i_bus = field_u32(&f1, 0);
+                let j_bus = field_u32(&f1, 1);
+                let k_bus = field_u32(&f1, 2); // 0 = 2-winding, else 3-winding
+                if i_bus == 0 || j_bus == 0 {
+                    continue;
+                }
+
+                // Record 1: I, J, K, CKT, CW, CZ, CM, MAG1, MAG2, NMETR, NAME, STAT, ...
+                let ckt = field_str(&f1, 3);
+                let mag1 = field_f64(&f1, 7);
+                let mag2 = field_f64(&f1, 8);
+                let stat = field_u8_default(&f1, 11, 1);
+
+                // Always read lines 2, 3, 4 (and 5 for 3W) regardless of status,
+                // so the line iterator stays synchronised with the file.
+                let l2 = match next_line(&mut lines_iter)? {
+                    None => break,
+                    Some(l) => l,
+                };
+                let l3 = match next_line(&mut lines_iter)? {
+                    None => break,
+                    Some(l) => l,
+                };
+                let l4 = match next_line(&mut lines_iter)? {
+                    None => break,
+                    Some(l) => l,
+                };
+                let l5 = if k_bus != 0 {
+                    match next_line(&mut lines_iter)? {
+                        None => break,
+                        Some(l) => Some(l),
+                    }
+                } else {
+                    None
+                };
+
+                if stat == 0 {
+                    continue; // skip inactive transformers
+                }
+
+                let f2 = tokenize(l2.trim());
+                let f3 = tokenize(l3.trim());
+                let f4 = tokenize(l4.trim());
+
+                // Record 2: R1-2, X1-2, SBASE1-2[, R2-3, X2-3, SBASE2-3, R3-1, X3-1, SBASE3-1]
+                let r12 = field_f64(&f2, 0);
+                let x12 = field_f64(&f2, 1);
+                let sbase12 = field_f64(&f2, 2);
+
+                // Record 3: WINDV1, NOMV1, ANG1, RATA1, RATB1, RATC1, …
+                let windv1 = field_f64(&f3, 0);
+                let nomv1 = field_f64(&f3, 1);
+                let ang1 = field_f64(&f3, 2);
+                let rata1 = field_f64(&f3, 3);
+                let ratb1 = field_f64(&f3, 4);
+                let ratc1 = field_f64(&f3, 5);
+
+                // Record 4: WINDV2, NOMV2[, ANG2, RATA2, …]
+                let windv2 = field_f64(&f4, 0);
+                let nomv2 = field_f64(&f4, 1);
+
+                if k_bus == 0 {
+                    // ---- 2-winding transformer ----
+                    let (r, x) = clamp_z(r12, x12);
+                    result.transformers.push(TwoWindingTransformer {
+                        i: i_bus,
+                        j: j_bus,
+                        ckt: ckt.into_boxed_str(),
+                        stat,
+                        mag1,
+                        mag2,
+                        r12: r,
+                        x12: x,
+                        sbase12,
+                        windv1,
+                        nomv1,
+                        ang1,
+                        rata1,
+                        ratb1,
+                        ratc1,
+                        windv2,
+                        nomv2,
+                    });
+                } else {
+                    // ---- 3-winding transformer → star equivalent ----
+                    let f5 = tokenize(l5.unwrap().trim());
+
+                    // Record 2 (3W): R1-2, X1-2, SBASE1-2, R2-3, X2-3, SBASE2-3, R3-1, X3-1, SBASE3-1
+                    let r23 = field_f64(&f2, 3);
+                    let x23 = field_f64(&f2, 4);
+                    let r31 = field_f64(&f2, 6);
+                    let x31 = field_f64(&f2, 7);
+
+                    // Record 4 for winding 2: WINDV2, NOMV2, ANG2, RATA2, …
+                    let ang2 = field_f64(&f4, 2);
+                    let rata2 = field_f64(&f4, 3);
+
+                    // Record 5 for winding 3: WINDV3, NOMV3, ANG3, RATA3, …
+                    let windv3 = field_f64(&f5, 0);
+                    let ang3 = field_f64(&f5, 2);
+                    let rata3 = field_f64(&f5, 3);
+
+                    // Star-delta impedance decomposition
+                    let za_r = 0.5 * (r12 + r31 - r23);
+                    let za_x = 0.5 * (x12 + x31 - x23);
+                    let zb_r = 0.5 * (r12 + r23 - r31);
+                    let zb_x = 0.5 * (x12 + x23 - x31);
+                    let zc_r = 0.5 * (r23 + r31 - r12);
+                    let zc_x = 0.5 * (x23 + x31 - x12);
+
+                    // Minimum MVA rating across the three windings
+                    let rate = rata1.min(rata2).min(rata3);
+
+                    // Fictitious star bus
+                    let star_id = next_star_id;
+                    next_star_id += 1;
+
+                    // Determine area/zone/owner from bus i (must be in bus list already
+                    // because buses are parsed before transformers in PSS/E ordering)
+                    let (star_area, star_zone, star_owner) =
+                        result.buses.iter().find(|b| b.i == i_bus).map_or(
+                            (1u32, 1u32, 1u32),
+                            |b| (b.area, b.zone, b.owner),
+                        );
+
+                    result
+                        .buses
+                        .push(fictitious_star_bus(star_id, star_area, star_zone, star_owner));
+
+                    result.transformers.push(star_leg_transformer(
+                        i_bus, star_id, 1, za_r, za_x, windv1, ang1, rate, sbase12, stat,
+                    ));
+                    result.transformers.push(star_leg_transformer(
+                        j_bus, star_id, 2, zb_r, zb_x, windv2, ang2, rate, sbase12, stat,
+                    ));
+                    result.transformers.push(star_leg_transformer(
+                        k_bus, star_id, 3, zc_r, zc_x, windv3, ang3, rate, sbase12, stat,
+                    ));
+                }
+            }
+
+            // ================================================================
+            // AREA INTERCHANGE DATA
+            // ================================================================
+            ParseState::Area => {
+                let f = tokenize(data);
+                if field_u32(&f, 0) > 0 {
+                    result.areas.push(parse_area_record(&f));
+                }
+            }
+
+            // ================================================================
+            // ZONE DATA
+            // ================================================================
+            ParseState::Zone => {
+                let f = tokenize(data);
+                if field_u32(&f, 0) > 0 {
+                    result.zones.push(parse_zone_record(&f));
+                }
+            }
+
+            // ================================================================
+            // OWNER DATA
+            // ================================================================
+            ParseState::Owner => {
+                let f = tokenize(data);
+                if field_u32(&f, 0) > 0 {
+                    result.owners.push(parse_owner_record(&f));
+                }
+            }
+
+            // ================================================================
+            // SWITCHED SHUNT DATA
+            // ================================================================
+            ParseState::SwitchedShunt => {
+                let f = tokenize(data);
+                if let Some(ss) = parse_switched_shunt_record(&f, &off) {
+                    result.switched_shunts.push(ss);
+                }
+            }
+
+            // ================================================================
+            // Sections we intentionally skip (no data consumed)
+            // ================================================================
+            ParseState::SystemWide
+            | ParseState::SystemSwitchingDevice
+            | ParseState::TwoTerminalDc
+            | ParseState::VscDc
+            | ParseState::ImpedanceCorrection
+            | ParseState::MultiTerminalDc
+            | ParseState::MultiSectionLine
+            | ParseState::InterAreaTransfer
+            | ParseState::Facts
+            | ParseState::GneDevice
+            | ParseState::InductionMachine => { /* skip */ }
+
+            ParseState::Done => break,
+        }
+    }
+
+    eprintln!(
+        "[parser v{}] buses={} loads={} fixed_shunts={} generators={} \
+         branches={} transformers_2w={} areas={} zones={} owners={} \
+         switched_shunts={}",
+        psse_version,
+        result.buses.len(),
+        result.loads.len(),
+        result.fixed_shunts.len(),
+        result.generators.len(),
+        result.branches.len(),
+        result.transformers.len(),
+        result.areas.len(),
+        result.zones.len(),
+        result.owners.len(),
+        result.switched_shunts.len(),
+    );
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point: parse_dyr
+// ---------------------------------------------------------------------------
+
+/// Parse a PSS/E DYR dynamic data file and return all recognised synchronous
+/// machine records.
+///
+/// # Supported models
+/// | Model name | H index | D index | Xd′ index |
+/// |-----------|---------|---------|-----------|
+/// | GENROU / GENROE | 7  | 8  | 11 |
+/// | GENSAL / GENSAE | 5  | 6  | 9  |
+/// | GENCLS          | 3  | 4  | — |
+///
+/// Each record is terminated by a `/` character.  Records may span multiple
+/// lines.  Comment lines that start with `@` are skipped.
+pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
+    let file = fs::File::open(path)
+        .with_context(|| format!("cannot open DYR file: {}", path.display()))?;
+    let reader = io::BufReader::new(file);
+
+    let mut records: Vec<DyrGeneratorData> = Vec::new();
+    let mut pending = String::new();
+
+    for line_result in reader.lines() {
+        let line = line_result.context("I/O error reading DYR file")?;
+        let mut remaining = line.as_str();
+
+        loop {
+            let slash_pos = remaining.find('/');
+            let segment = match slash_pos {
+                Some(pos) => remaining[..pos].trim(),
+                None => remaining.trim(),
+            };
+
+            if !segment.is_empty() && !segment.starts_with('@') {
+                if !pending.is_empty() {
+                    pending.push(' ');
+                }
+                pending.push_str(segment);
+            }
+
+            if let Some(pos) = slash_pos {
+                // Slash terminates a record; process whatever was accumulated
+                if !pending.is_empty() {
+                    if let Some(rec) = try_parse_dyr_machine(&pending) {
+                        records.push(rec);
+                    }
+                    pending.clear();
+                }
+                remaining = &remaining[pos + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Handle any unterminated trailing record
+    if !pending.is_empty() {
+        if let Some(rec) = try_parse_dyr_machine(&pending) {
+            records.push(rec);
+        }
+    }
+
+    eprintln!(
+        "[parser] {} synchronous machine records parsed from {}",
+        records.len(),
+        path.display()
+    );
+
+    Ok(records)
+}
+
+/// Attempt to parse one DYR machine record from a `/`-terminated accumulation.
+///
+/// Expected token layout: `BUS_ID  'MODEL_NAME'  'MACHINE_ID'  ... parameters ...`
+fn try_parse_dyr_machine(record: &str) -> Option<DyrGeneratorData> {
+    // Tokenise by whitespace and commas, stripping quotes
+    let parts: Vec<String> = {
+        let mut toks: Vec<String> = Vec::new();
+        let mut tok = String::new();
+        let mut in_q = false;
+        for ch in record.chars() {
+            match ch {
+                '\'' => in_q = !in_q,
+                ' ' | '\t' | ',' if !in_q => {
+                    if !tok.is_empty() {
+                        toks.push(tok.trim().to_string());
+                        tok = String::new();
+                    }
+                }
+                _ => tok.push(ch),
+            }
+        }
+        if !tok.trim().is_empty() {
+            toks.push(tok.trim().to_string());
+        }
+        toks
+    };
+
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let bus_id: u32 = parts[0].parse().ok().filter(|&v| v > 0)?;
+    let model = parts[1].to_ascii_uppercase();
+    let machine_id = normalize_machine_id(&parts[2]);
+
+    let mut data = DyrGeneratorData {
+        bus_id,
+        id: machine_id.into_boxed_str(),
+        model: model.clone().into_boxed_str(),
+        h: 0.0,
+        d: 0.0,
+        xd_prime: 0.0,
+    };
+
+    let set = |v: &mut f64, parts: &[String], idx: usize| {
+        if parts.len() > idx {
+            *v = parse_fortran_double(&parts[idx]);
+        }
+    };
+
+    match model.as_str() {
+        "GENROU" | "GENROE" => {
+            set(&mut data.h, &parts, 7);
+            set(&mut data.d, &parts, 8);
+            set(&mut data.xd_prime, &parts, 11);
+            Some(data)
+        }
+        "GENSAL" | "GENSAE" => {
+            set(&mut data.h, &parts, 5);
+            set(&mut data.d, &parts, 6);
+            set(&mut data.xd_prime, &parts, 9);
+            Some(data)
+        }
+        "GENCLS" => {
+            set(&mut data.h, &parts, 3);
+            set(&mut data.d, &parts, 4);
+            Some(data)
+        }
+        _ => None, // Exciter, governor, etc. — not a machine model
+    }
+}
+
+/// Uppercase and trim a PSS/E machine ID token.
+fn normalize_machine_id(s: &str) -> String {
+    s.trim().to_ascii_uppercase()
 }

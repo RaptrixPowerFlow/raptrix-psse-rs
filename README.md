@@ -131,19 +131,48 @@ raptrix-psse-rs/
 ├── LICENSE                     # MPL-2.0
 ├── README.md                   # this file
 ├── MIGRATION.md                # guide for porting C++ parser logic
-├── raptrix-cim-arrow/          # local stub — replace with the real crate
-│   ├── Cargo.toml
-│   └── src/lib.rs
 ├── src/
-│   ├── lib.rs                  # crate root, module declarations
+│   ├── lib.rs                  # crate root + PSS/E → RPF converter
 │   ├── main.rs                 # CLI entry-point (clap)
 │   ├── models.rs               # PSS/E data structures
-│   └── parser.rs               # RAW / DYR parser (C++ port scaffold)
+│   └── parser.rs               # RAW / DYR parser
 ├── docs/
 │   └── psse-mapping.md         # field-by-field PSS/E → RPF mapping rules
 └── tests/
-    └── golden/
-        └── README.md           # golden-file test workflow
+    ├── data/
+    │   └── external/           # test RAW files (e.g. Texas7k_20210804.RAW)
+    ├── golden/
+    │   └── README.md           # golden-file workflow
+    └── golden_test.rs          # integration test: converts Texas7k and checks row counts
+```
+
+---
+
+## Producing your first RPF from Texas7k
+
+```bash
+cargo run --release -- convert \
+  --raw tests/data/external/Texas7k_20210804.RAW \
+  --output case.rpf
+```
+
+Then inspect it:
+
+```bash
+cargo run --release -- view --input case.rpf
+```
+
+Expected output (abbrev.):
+
+```
+RPF file: case.rpf
+  tables: 15   total rows: <N>   all canonical: true
+  metadata                            1 rows
+  buses                            7717 rows
+  branches                         8082 rows
+  generators                        706 rows
+  loads                            5135 rows
+  ...
 ```
 
 ---
@@ -166,10 +195,24 @@ an AMD Ryzen 9 7950X with files mapped via `memmap2`.
 
 ## Contributing & porting from C++
 
-See [MIGRATION.md](MIGRATION.md) for the step-by-step guide to porting each
-PSS/E section parser from the existing C++ codebase, and
-[docs/psse-mapping.md](docs/psse-mapping.md) for the field-by-field mapping
-rules.
+### Next: port C++ logic
+
+The current Rust parser handles PSS/E RAW format v29–v35 with a simple
+line-by-line approach.  To match the speed and completeness of the C++ codebase:
+
+1. **Zero-copy tokeniser** — replace `String`-per-field splitting with a
+   `memmap2`-backed zero-copy line iterator.
+2. **3-winding transformers** — implement the 5-line record parser and add a
+   `ThreeWindingTransformer` struct; populate `TABLE_TRANSFORMERS_3W`.
+3. **DYR parsing** — parse GENSAL / GENROU / ESST1A / IEEEG1 records and
+   fill `TABLE_DYNAMICS_MODELS`.
+4. **Bus aggregated fields** — compute `p_sched`, `q_sched`, `g_shunt`,
+   `b_shunt`, `p_min_agg`, `p_max_agg` from loads / generators / shunts.
+5. **Vector group mapping** — detect CW/CZ codes and emit correct CIM
+   VectorGroup strings in `TABLE_TRANSFORMERS_2W`.
+
+See [MIGRATION.md](MIGRATION.md) for section-by-section porting notes and
+[docs/psse-mapping.md](docs/psse-mapping.md) for field-by-field mapping rules.
 
 ---
 

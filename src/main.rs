@@ -10,10 +10,11 @@
 //! ## Subcommands
 //! * `convert` — parse a PSS/E `.raw` file (and optional `.dyr`) and write a
 //!   Raptrix PowerFlow Interchange `.rpf` file.
-//! * `view`    — pretty-print an existing `.rpf` file.
+//! * `view`    — pretty-print an existing `.rpf` file summary.
 
 use std::path::PathBuf;
 
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// High-performance PSS/E → Raptrix PowerFlow Interchange converter.
@@ -34,7 +35,7 @@ enum Commands {
     /// Parse a PSS/E case and write a Raptrix PowerFlow Interchange (.rpf) file.
     ///
     /// Example:
-    ///   raptrix-psse-rs convert --raw case.raw --dyr case.dyr --output case.rpf
+    ///   raptrix-psse-rs convert --raw tests/data/external/Texas7k_20210804.RAW --output case.rpf
     Convert {
         /// Path to the PSS/E RAW file (.raw).
         #[arg(long)]
@@ -49,7 +50,7 @@ enum Commands {
         output: PathBuf,
     },
 
-    /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file.
+    /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file summary.
     ///
     /// Example:
     ///   raptrix-psse-rs view --input case.rpf
@@ -60,37 +61,48 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Convert { raw, dyr, output } => {
-            eprintln!("[raptrix-psse-rs] Parsing RAW file: {}", raw.display());
-            if let Some(ref dyr_path) = dyr {
-                eprintln!("[raptrix-psse-rs] Parsing DYR file: {}", dyr_path.display());
+            let raw_str = raw
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("RAW path is not valid UTF-8"))?;
+            let dyr_str: Option<&str> = dyr.as_deref().and_then(|p| p.to_str());
+            if let Some(d) = dyr_str {
+                eprintln!("[raptrix-psse-rs] DYR file: {d}");
             }
+            let out_str = output
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("output path is not valid UTF-8"))?;
 
-            // TODO: invoke the real parser once ported from C++.
-            let network = raptrix_psse_rs::parser::parse_raw(&raw)?;
-            let _dyn_data = dyr
-                .map(|p| raptrix_psse_rs::parser::parse_dyr(&p))
-                .transpose()?;
+            raptrix_psse_rs::write_psse_to_rpf(raw_str, dyr_str, out_str)?;
 
+            let summary = raptrix_cim_arrow::summarize_rpf(&output)?;
             eprintln!(
-                "[raptrix-psse-rs] Parsed {} buses. Writing {}…",
-                network.buses.len(),
-                output.display()
+                "[raptrix-psse-rs] Wrote {} — {} tables, {} total rows",
+                output.display(),
+                summary.tables.len(),
+                summary.total_rows,
             );
-
-            // TODO: encode `network` with raptrix_cim_arrow and write to `output`.
-            raptrix_cim_arrow::write_rpf(&output, &[])?;
-
-            eprintln!("[raptrix-psse-rs] Done.");
+            for t in &summary.tables {
+                eprintln!("  {:30} {:6} rows", t.table_name, t.rows);
+            }
         }
 
         Commands::View { input } => {
-            eprintln!("[raptrix-psse-rs] Reading {}", input.display());
-            raptrix_cim_arrow::view_rpf(&input)?;
+            let summary = raptrix_cim_arrow::summarize_rpf(&input)?;
+            println!("RPF file: {}", input.display());
+            println!(
+                "  tables: {}  total rows: {}  all canonical: {}",
+                summary.tables.len(),
+                summary.total_rows,
+                summary.has_all_canonical_tables,
+            );
+            for t in &summary.tables {
+                println!("  {:30} {:6} rows", t.table_name, t.rows);
+            }
         }
     }
 

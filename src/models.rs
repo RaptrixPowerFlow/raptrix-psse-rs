@@ -5,10 +5,10 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! Zero-copy PSS/E data model stubs.
+//! Zero-copy PSS/E data model.
 //!
-//! Each struct corresponds to a PSS/E RAW record section.  Field names match
-//! the PSS/E 35 documentation exactly so that the C++ port can map 1-to-1.
+//! Each struct corresponds to one PSS/E RAW record section.  Field names match
+//! the PSS/E v35 documentation exactly so that the C++ parser can map 1-to-1.
 //! See [`docs/psse-mapping.md`] for the full field-by-field mapping to the
 //! Raptrix PowerFlow Interchange schema.
 //!
@@ -19,6 +19,8 @@
 // ---------------------------------------------------------------------------
 
 /// Complete PSS/E network case, populated by the parser.
+///
+/// All field names match PSS/E 35 documentation for 1-to-1 C++ mapping.
 #[derive(Debug, Default)]
 pub struct Network {
     /// Case identification record (section 0).
@@ -33,13 +35,22 @@ pub struct Network {
     pub generators: Vec<Generator>,
     /// Non-transformer branch data records (section 5).
     pub branches: Vec<Branch>,
-    /// Transformer data records (section 6).
-    pub transformers: Vec<Transformer>,
+    /// Two-winding transformer data records (section 6; K=0, plus star legs for 3W).
+    pub transformers: Vec<TwoWindingTransformer>,
     /// Area interchange data records (section 7).
     pub areas: Vec<Area>,
+    /// Zone data records (section 13).
+    pub zones: Vec<Zone>,
+    /// Owner data records (section 15).
+    pub owners: Vec<Owner>,
     /// Switched shunt data records (section 17).
     pub switched_shunts: Vec<SwitchedShunt>,
+    /// Dynamic model records parsed from a paired `.dyr` file.
+    pub dyr_generators: Vec<DyrGeneratorData>,
 }
+
+/// Backward-compatible alias used in tests and external tooling.
+pub type RawCase = Network;
 
 // ---------------------------------------------------------------------------
 // Section 0 — Case identification
@@ -50,13 +61,13 @@ pub struct Network {
 pub struct CaseId {
     /// System MVA base (SBASE).
     pub sbase: f64,
-    /// RAW file revision (REV), e.g. 35.
+    /// RAW file revision (REV), e.g. 33 or 35.
     pub rev: u32,
     /// Transformer rated voltage / system base voltage ratio (XFRRAT).
     pub xfrrat: u8,
     /// Nominal system frequency in Hz (BASFRQ), e.g. 60.0.
     pub basfrq: f64,
-    /// Free-form case title / description.
+    /// Free-form case title / description (from the `/` comment on line 1).
     pub title: Box<str>,
 }
 
@@ -96,7 +107,7 @@ pub struct Bus {
     pub zone: u32,
     /// Owner number (OWNER).
     pub owner: u32,
-    /// Per-unit voltage magnitude setpoint (VM).
+    /// Per-unit voltage magnitude (VM).
     pub vm: f64,
     /// Voltage angle in degrees (VA).
     pub va: f64,
@@ -242,11 +253,13 @@ pub struct Branch {
     pub rateb: f64,
     /// Third rating in MVA (RATEC).
     pub ratec: f64,
-    /// Line admittance in per-unit for gi + jbi (GI, BI).
+    /// Line shunt admittance — from-bus side, conductance (GI).
     pub gi: f64,
+    /// Line shunt admittance — from-bus side, susceptance (BI).
     pub bi: f64,
-    /// Line admittance in per-unit for gj + jbj (GJ, BJ).
+    /// Line shunt admittance — to-bus side, conductance (GJ).
     pub gj: f64,
+    /// Line shunt admittance — to-bus side, susceptance (BJ).
     pub bj: f64,
     /// Branch status: 1 = in service (ST).
     pub st: u8,
@@ -259,26 +272,52 @@ pub struct Branch {
 }
 
 // ---------------------------------------------------------------------------
-// Section 6 — Transformer data (stub)
+// Section 6 — Two-winding transformer data
 // ---------------------------------------------------------------------------
 
-/// PSS/E transformer data record (2-winding; 3-winding shares this struct
-/// with additional winding-3 fields).
+/// PSS/E two-winding transformer data record (K = 0 on line 1).
 ///
-/// # TODO
-/// Expand this struct with the full field list from the PSS/E 35 spec.
+/// Also used for star-equivalent legs generated from 3-winding transformers
+/// (K ≠ 0) during parsing.
 #[derive(Debug, Default)]
-pub struct Transformer {
-    /// "From" bus number (I).
+pub struct TwoWindingTransformer {
+    /// "From" bus number — winding 1 (I).
     pub i: u32,
-    /// "To" bus number (J).
+    /// "To" bus number — winding 2 (J).
     pub j: u32,
-    /// Third winding bus number, 0 for 2-winding (K).
-    pub k: u32,
-    /// Circuit identifier (CKT), up to 2 characters.
+    /// Circuit identifier, up to 2 characters (CKT).
     pub ckt: Box<str>,
     /// Transformer status: 1 = in service (STAT).
     pub stat: u8,
+    /// Magnetising conductance (MAG1, p.u. on system base).
+    pub mag1: f64,
+    /// Magnetising susceptance (MAG2, p.u. on system base).
+    pub mag2: f64,
+    // --- Line 2: leakage impedance on SBASE1-2 base ---
+    /// Series resistance of the two-winding branch (R1-2).
+    pub r12: f64,
+    /// Series reactance of the two-winding branch (X1-2).
+    pub x12: f64,
+    /// Winding 1–2 MVA base (SBASE1-2).
+    pub sbase12: f64,
+    // --- Line 3: winding 1 (primary) ---
+    /// Off-nominal turns ratio — winding 1 (WINDV1).
+    pub windv1: f64,
+    /// Nominal (rated) voltage of winding 1 in kV (NOMV1).
+    pub nomv1: f64,
+    /// Phase shift angle in degrees (ANG1).
+    pub ang1: f64,
+    /// Normal MVA rating — winding 1 (RATA1).
+    pub rata1: f64,
+    /// Emergency MVA rating — winding 1 (RATB1).
+    pub ratb1: f64,
+    /// Short-term MVA rating — winding 1 (RATC1).
+    pub ratc1: f64,
+    // --- Line 4: winding 2 (secondary) ---
+    /// Off-nominal turns ratio — winding 2 (WINDV2).
+    pub windv2: f64,
+    /// Nominal voltage of winding 2 in kV (NOMV2).
+    pub nomv2: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +340,32 @@ pub struct Area {
 }
 
 // ---------------------------------------------------------------------------
+// Section 13 — Zone data
+// ---------------------------------------------------------------------------
+
+/// PSS/E zone data record.
+#[derive(Debug, Default)]
+pub struct Zone {
+    /// Zone number (I).
+    pub i: u32,
+    /// Zone name, up to 12 characters (ZONAM).
+    pub zonam: Box<str>,
+}
+
+// ---------------------------------------------------------------------------
+// Section 15 — Owner data
+// ---------------------------------------------------------------------------
+
+/// PSS/E owner data record.
+#[derive(Debug, Default)]
+pub struct Owner {
+    /// Owner number (I).
+    pub i: u32,
+    /// Owner name, up to 12 characters (OWNAM).
+    pub ownam: Box<str>,
+}
+
+// ---------------------------------------------------------------------------
 // Section 17 — Switched shunt data
 // ---------------------------------------------------------------------------
 
@@ -315,8 +380,9 @@ pub struct SwitchedShunt {
     pub adjm: u8,
     /// Shunt status: 1 = in service (STAT).
     pub stat: u8,
-    /// Voltage setpoint in per-unit (VSWHI / VSWLO centre).
+    /// Voltage upper limit in per-unit (VSWHI).
     pub vswhi: f64,
+    /// Voltage lower limit in per-unit (VSWLO).
     pub vswlo: f64,
     /// Remotely regulated bus number (SWREM).
     pub swrem: u32,
@@ -324,6 +390,33 @@ pub struct SwitchedShunt {
     pub rmpct: f64,
     /// Remotely regulated bus name (RMIDNT), up to 12 characters.
     pub rmidnt: Box<str>,
-    /// Initial admittance in MVAr at unity voltage (BINIT).
+    /// Initial reactive power output in MVAr (BINIT).
     pub binit: f64,
+    /// Flat list of per-step susceptance values in MVAr: N_k copies of B_k
+    /// for each Nk/Bk pair in the RAW record.
+    pub steps: Vec<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic model data — from `.dyr` file
+// ---------------------------------------------------------------------------
+
+/// Dynamic model data for one synchronous machine, parsed from a `.dyr` file.
+///
+/// Only GENROU, GENSAL, GENCLS (and their enhanced variants GENROE/GENSAE)
+/// are extracted.  Exciter, governor, and PSS model records are ignored.
+#[derive(Debug, Default, Clone)]
+pub struct DyrGeneratorData {
+    /// Bus number the machine is connected to.
+    pub bus_id: u32,
+    /// Machine identifier, up to 2 characters (matches [`Generator::id`]).
+    pub id: Box<str>,
+    /// Model name, e.g. `"GENROU"`, `"GENSAL"`, `"GENCLS"`.
+    pub model: Box<str>,
+    /// Inertia constant H in MW·s/MVA.
+    pub h: f64,
+    /// Damping coefficient D (pu torque / pu speed deviation).
+    pub d: f64,
+    /// d-axis transient reactance Xd′ in per-unit on machine base.
+    pub xd_prime: f64,
 }
