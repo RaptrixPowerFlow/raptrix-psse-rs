@@ -1,0 +1,18 @@
+# Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC
+# Copyright (c) 2026 Musto Technologies LLC
+#
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, You can obtain one at
+# https://mozilla.org/MPL/2.0/.
+
+[package]
+name = "raptrix-cim-arrow"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["Musto Technologies LLC <dev@mustotechnologies.com>"]
+license = "MPL-2.0"
+description = "Shared CIM-Arrow writer/serialiser for the Raptrix PowerFlow Interchange format (stub — replace with the real crate from raptrix-cim-rs)"
+repository = "https://github.com/MustoTechnologies/raptrix-cim-rs"
+
+[dependencies]
