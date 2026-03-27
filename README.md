@@ -13,7 +13,7 @@
 Copyright (c) 2026 Musto Technologies LLC
 
 High-performance **PSS/E (`.raw` + `.dyr`) → Raptrix PowerFlow Interchange v0.6.0** converter,  
-written in Rust 2021 with a zero-copy mindset.
+written in Rust 2024 with a zero-copy mindset.
 
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 
@@ -48,7 +48,7 @@ provides the Arrow schema, encoding, and `.rpf` I/O primitives.
 
 ### Prerequisites
 
-* Rust 1.70 or later (`rustup install stable`)
+* Rust 1.85 or later (`rustup install stable`)
 * The sibling workspace `raptrix-cim-rs` checked out at `../raptrix-cim-rs`
   (or update the path dependency — see [below](#how-to-depend-on-raptrix-cim-arrow))
 

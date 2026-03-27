@@ -978,8 +978,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             // ================================================================
             ParseState::Generator => {
                 let f = tokenize(data);
-                if let Some(gen) = parse_generator_record(&f, &off) {
-                    result.generators.push(gen);
+                if let Some(generator) = parse_generator_record(&f, &off) {
+                    result.generators.push(generator);
                 }
             }
 

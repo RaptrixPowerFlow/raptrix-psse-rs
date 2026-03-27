@@ -8,8 +8,8 @@
 [package]
 name = "raptrix-psse-rs"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.70"
+edition = "2024"
+rust-version = "1.85"
 authors = ["Musto Technologies LLC <dev@mustotechnologies.com>"]
 license = "MPL-2.0"
 description = "High-performance PSS/E (.raw + .dyr) → Raptrix PowerFlow Interchange v0.6.0 converter"

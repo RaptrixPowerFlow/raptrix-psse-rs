@@ -8,8 +8,8 @@
 [package]
 name = "raptrix-cim-arrow"
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.70"
+edition = "2024"
+rust-version = "1.85"
 authors = ["Musto Technologies LLC <dev@mustotechnologies.com>"]
 license = "MPL-2.0"
 description = "Shared CIM-Arrow writer/serialiser for the Raptrix PowerFlow Interchange format (stub — replace with the real crate from raptrix-cim-rs)"

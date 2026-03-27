@@ -296,18 +296,18 @@ fn build_generators_batch(generators: &[models::Generator]) -> Result<RecordBatc
     let mut d = Float64Builder::new();
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
 
-    for gen in generators {
-        bus_id.append_value(gen.i as i32);
-        id.append_value(gen.id.as_ref());
-        p_sched_mw.append_value(gen.pg);
-        p_min_mw.append_value(gen.pb);
-        p_max_mw.append_value(gen.pt);
-        q_min_mvar.append_value(gen.qb);
-        q_max_mvar.append_value(gen.qt);
-        status.append_value(gen.stat != 0);
-        mbase_mva.append_value(gen.mbase);
+    for generator in generators {
+        bus_id.append_value(generator.i as i32);
+        id.append_value(generator.id.as_ref());
+        p_sched_mw.append_value(generator.pg);
+        p_min_mw.append_value(generator.pb);
+        p_max_mw.append_value(generator.pt);
+        q_min_mvar.append_value(generator.qb);
+        q_max_mvar.append_value(generator.qt);
+        status.append_value(generator.stat != 0);
+        mbase_mva.append_value(generator.mbase);
         h.append_value(0.0);        // TODO: from DYR GENSAL/GENROU
-        xd_prime.append_value(gen.zx); // stub: ZX as xd'
+        xd_prime.append_value(generator.zx); // stub: ZX as xd'
         d.append_value(0.0);        // TODO: from DYR
         name_b.append_null();
     }
