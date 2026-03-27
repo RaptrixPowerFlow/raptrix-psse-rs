@@ -30,7 +30,8 @@ use anyhow::{Context, Result};
 use arrow::{
     array::{
         new_null_array, BooleanBuilder, Float64Builder, Int32Builder,
-        Int8Builder, ListBuilder, StringBuilder, StringDictionaryBuilder,
+        Int8Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder,
+        StringDictionaryBuilder,
     },
     datatypes::{Int32Type, UInt32Type},
     record_batch::RecordBatch,
@@ -68,12 +69,19 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
             .with_context(|| format!("failed to parse DYR file: {dyr}"))?;
     }
 
+    // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
+    let dyr_lookup: HashMap<(u32, String), &models::DyrGeneratorData> = network
+        .dyr_generators
+        .iter()
+        .map(|r| ((r.bus_id, r.id.to_string()), r))
+        .collect();
+
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
 
     table_batches.insert(TABLE_METADATA, build_metadata_batch(&network)?);
     table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses)?);
     table_batches.insert(TABLE_BRANCHES, build_branches_batch(&network.branches)?);
-    table_batches.insert(TABLE_GENERATORS, build_generators_batch(&network.generators)?);
+    table_batches.insert(TABLE_GENERATORS, build_generators_batch(&network.generators, &dyr_lookup)?);
     table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads)?);
     table_batches.insert(TABLE_FIXED_SHUNTS, build_fixed_shunts_batch(&network.fixed_shunts)?);
     table_batches.insert(TABLE_SWITCHED_SHUNTS, build_switched_shunts_batch(&network.switched_shunts)?);
@@ -84,7 +92,12 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
     table_batches.insert(TABLE_OWNERS, build_owners_batch(&network.owners)?);
     table_batches.insert(TABLE_CONTINGENCIES, empty_table(TABLE_CONTINGENCIES)?);
     table_batches.insert(TABLE_INTERFACES, empty_table(TABLE_INTERFACES)?);
-    table_batches.insert(TABLE_DYNAMICS_MODELS, empty_table(TABLE_DYNAMICS_MODELS)?);
+    let dynamics_batch = if network.dyr_generators.is_empty() {
+        empty_table(TABLE_DYNAMICS_MODELS)?
+    } else {
+        build_dynamics_models_batch(&network.dyr_generators)?
+    };
+    table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
 
     write_root_rpf(output, &table_batches, &RootWriteOptions::default())
         .with_context(|| format!("failed to write RPF file: {output}"))?;
@@ -279,7 +292,10 @@ fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
     .context("building branches batch")
 }
 
-fn build_generators_batch(generators: &[models::Generator]) -> Result<RecordBatch> {
+fn build_generators_batch(
+    generators: &[models::Generator],
+    dyr_lookup: &HashMap<(u32, String), &models::DyrGeneratorData>,
+) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_GENERATORS).expect("generators schema must exist"));
 
     let mut bus_id = Int32Builder::new();
@@ -306,9 +322,15 @@ fn build_generators_batch(generators: &[models::Generator]) -> Result<RecordBatc
         q_max_mvar.append_value(generator.qt);
         status.append_value(generator.stat != 0);
         mbase_mva.append_value(generator.mbase);
-        h.append_value(0.0);        // TODO: from DYR GENSAL/GENROU
-        xd_prime.append_value(generator.zx); // stub: ZX as xd'
-        d.append_value(0.0);        // TODO: from DYR
+        if let Some(dyn_data) = dyr_lookup.get(&(generator.i, generator.id.to_string())) {
+            h.append_value(dyn_data.h);
+            xd_prime.append_value(dyn_data.xd_prime);
+            d.append_value(dyn_data.d);
+        } else {
+            h.append_value(0.0);
+            xd_prime.append_value(generator.zx); // fallback: ZX as xd'
+            d.append_value(0.0);
+        }
         name_b.append_null();
     }
 
@@ -589,4 +611,57 @@ fn build_owners_batch(owners: &[models::Owner]) -> Result<RecordBatch> {
         vec![Arc::new(owner_id.finish()), Arc::new(name.finish())],
     )
     .context("building owners batch")
+}
+
+fn build_dynamics_models_batch(records: &[models::DyrGeneratorData]) -> Result<RecordBatch> {
+    let schema = Arc::new(
+        table_schema(TABLE_DYNAMICS_MODELS).expect("dynamics_models schema must exist"),
+    );
+
+    let mut bus_id = Int32Builder::new();
+    let mut gen_id = StringDictionaryBuilder::<Int32Type>::new();
+    let mut model_type = StringDictionaryBuilder::<Int32Type>::new();
+    // Map<Utf8, Float64> — field names must match the schema: "entries" / "key" / "value"
+    let map_field_names = MapFieldNames {
+        entry: "entries".to_string(),
+        key: "key".to_string(),
+        value: "value".to_string(),
+    };
+    let mut params = MapBuilder::new(Some(map_field_names), StringBuilder::new(), Float64Builder::new());
+
+    for rec in records {
+        bus_id.append_value(rec.bus_id as i32);
+        gen_id.append_value(rec.id.as_ref());
+        model_type.append_value(rec.model.as_ref());
+
+        params.keys().append_value("H");
+        params.values().append_value(rec.h);
+        params.keys().append_value("D");
+        params.values().append_value(rec.d);
+        params.keys().append_value("xd_prime");
+        params.values().append_value(rec.xd_prime);
+        params.append(true).context("building dynamics params map entry")?;
+    }
+
+    let params_arr = params.finish();
+    // Cast to the exact schema type to align nullability (Float64Builder emits
+    // nullable values; the canonical schema requires non-null Float64 values).
+    let params_target_type = schema
+        .field_with_name("params")
+        .expect("params field must exist in dynamics_models schema")
+        .data_type()
+        .clone();
+    let params_cast =
+        arrow::compute::cast(&params_arr, &params_target_type).context("casting dynamics params map")?;
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(bus_id.finish()),
+            Arc::new(gen_id.finish()),
+            Arc::new(model_type.finish()),
+            params_cast,
+        ],
+    )
+    .context("building dynamics_models batch")
 }
