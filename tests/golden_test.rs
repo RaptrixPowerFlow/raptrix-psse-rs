@@ -9,9 +9,11 @@
 
 use std::time::Instant;
 
+use arrow::array::{Array, BooleanArray, Float64Array, ListArray};
 use raptrix_cim_arrow::{
     TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
-    TABLE_GENERATORS, TABLE_LOADS, TABLE_TRANSFORMERS_2W,
+    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_SWITCHED_SHUNTS,
+    TABLE_TRANSFORMERS_2W,
 };
 
 const RAW_PATH: &str = "tests/data/external/Texas7k_20210804.RAW";
@@ -40,6 +42,65 @@ fn print_summary(label: &str, summary: &raptrix_cim_arrow::RpfSummary, elapsed_m
     }
 }
 
+fn col_f64<'a>(batch: &'a arrow::record_batch::RecordBatch, name: &str) -> &'a Float64Array {
+    batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing column '{name}'"))
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap_or_else(|| panic!("column '{name}' is not Float64"))
+}
+
+fn col_bool<'a>(batch: &'a arrow::record_batch::RecordBatch, name: &str) -> &'a BooleanArray {
+    batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing column '{name}'"))
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .unwrap_or_else(|| panic!("column '{name}' is not Boolean"))
+}
+
+fn col_list<'a>(batch: &'a arrow::record_batch::RecordBatch, name: &str) -> &'a ListArray {
+    batch
+        .column_by_name(name)
+        .unwrap_or_else(|| panic!("missing column '{name}'"))
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .unwrap_or_else(|| panic!("column '{name}' is not List"))
+}
+
+fn sum_f64(values: &Float64Array) -> f64 {
+    let mut total = 0.0;
+    for i in 0..values.len() {
+        if !values.is_null(i) {
+            total += values.value(i);
+        }
+    }
+    total
+}
+
+fn sum_f64_where(values: &Float64Array, mask: &BooleanArray) -> f64 {
+    assert_eq!(values.len(), mask.len(), "value/mask length mismatch");
+    let mut total = 0.0;
+    for i in 0..values.len() {
+        if !values.is_null(i) && !mask.is_null(i) && mask.value(i) {
+            total += values.value(i);
+        }
+    }
+    total
+}
+
+fn table_by_name<'a>(
+    tables: &'a [(String, arrow::record_batch::RecordBatch)],
+    table_name: &str,
+) -> &'a arrow::record_batch::RecordBatch {
+    tables
+        .iter()
+        .find(|(name, _)| name == table_name)
+        .map(|(_, batch)| batch)
+        .unwrap_or_else(|| panic!("missing table '{table_name}'"))
+}
+
 // ---------------------------------------------------------------------------
 // Static (no DYR) — writes tests/golden/Texas7k_20210804_static.rpf
 // ---------------------------------------------------------------------------
@@ -63,6 +124,56 @@ fn golden_texas7k_static() {
     assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
     assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "dynamics_models must be empty without DYR");
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_STATIC))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+
+    let metadata = table_by_name(&tables, TABLE_METADATA);
+    let base_mva = col_f64(metadata, "base_mva").value(0);
+
+    let buses = table_by_name(&tables, TABLE_BUSES);
+    let bus_p_sched = col_f64(buses, "p_sched");
+    let bus_q_sched = col_f64(buses, "q_sched");
+    let bus_sched_l1 = bus_p_sched.values().iter().map(|v| v.abs()).sum::<f64>()
+        + bus_q_sched.values().iter().map(|v| v.abs()).sum::<f64>();
+    assert!(
+        bus_sched_l1 > 1.0e-6,
+        "bus p/q schedules should be materialized (L1={bus_sched_l1})"
+    );
+
+    let generators = table_by_name(&tables, TABLE_GENERATORS);
+    let gen_status = col_bool(generators, "status");
+    let gen_p_mw = col_f64(generators, "p_sched_mw");
+    let gen_p_pu = sum_f64_where(gen_p_mw, gen_status) / base_mva;
+
+    let loads = table_by_name(&tables, TABLE_LOADS);
+    let load_status = col_bool(loads, "status");
+    let load_p_mw = col_f64(loads, "p_mw");
+    let load_p_pu = sum_f64_where(load_p_mw, load_status) / base_mva;
+
+    let net_p_from_components = gen_p_pu - load_p_pu;
+    let net_p_from_buses = sum_f64(bus_p_sched);
+
+    let p_err = (net_p_from_buses - net_p_from_components).abs();
+    assert!(p_err < 1.0e-3, "bus/component net P mismatch: {p_err}");
+
+    let switched = table_by_name(&tables, TABLE_SWITCHED_SHUNTS);
+    let b_steps = col_list(switched, "b_steps");
+    let values = b_steps
+        .values()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("b_steps inner values must be Float64");
+    let mut max_abs_step = 0.0_f64;
+    for i in 0..values.len() {
+        if !values.is_null(i) {
+            max_abs_step = max_abs_step.max(values.value(i).abs());
+        }
+    }
+    assert!(
+        max_abs_step < 5.0,
+        "switched shunt steps must be per-unit scale (max |B|={max_abs_step})"
+    );
 }
 
 // ---------------------------------------------------------------------------
