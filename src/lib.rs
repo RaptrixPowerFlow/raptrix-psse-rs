@@ -24,7 +24,7 @@ pub mod parser;
 // Re-export reader utilities so tests and tools can use them directly.
 pub use raptrix_cim_arrow::{read_rpf_tables, summarize_rpf, RpfSummary, TableSummary};
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 
 use anyhow::{Context, Result};
 use arrow::{
@@ -45,6 +45,20 @@ use raptrix_cim_arrow::{
 };
 
 use crate::models::Network;
+
+#[derive(Debug, Clone, Default)]
+struct BusAggregate {
+    p_sched: f64,
+    q_sched: f64,
+    q_min: f64,
+    q_max: f64,
+    g_shunt: f64,
+    b_shunt: f64,
+    p_min_agg: f64,
+    p_max_agg: f64,
+    has_generator: bool,
+    v_mag_set_override: Option<f64>,
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -69,6 +83,8 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
             .with_context(|| format!("failed to parse DYR file: {dyr}"))?;
     }
 
+    emit_fast_diagnostics(&network, dyr_path);
+
     // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
     let dyr_lookup: HashMap<(u32, String), &models::DyrGeneratorData> = network
         .dyr_generators
@@ -77,14 +93,23 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         .collect();
 
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
+    let bus_aggregates = build_bus_aggregates(&network);
+    let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
+        network.case_id.sbase
+    } else {
+        100.0
+    };
 
     table_batches.insert(TABLE_METADATA, build_metadata_batch(&network)?);
-    table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses)?);
+    table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses, &bus_aggregates)?);
     table_batches.insert(TABLE_BRANCHES, build_branches_batch(&network.branches)?);
     table_batches.insert(TABLE_GENERATORS, build_generators_batch(&network.generators, &dyr_lookup)?);
     table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads)?);
     table_batches.insert(TABLE_FIXED_SHUNTS, build_fixed_shunts_batch(&network.fixed_shunts)?);
-    table_batches.insert(TABLE_SWITCHED_SHUNTS, build_switched_shunts_batch(&network.switched_shunts)?);
+    table_batches.insert(
+        TABLE_SWITCHED_SHUNTS,
+        build_switched_shunts_batch(&network.switched_shunts, base_mva)?,
+    );
     table_batches.insert(TABLE_TRANSFORMERS_2W, build_transformers_2w_batch(&network.transformers)?);
     table_batches.insert(TABLE_TRANSFORMERS_3W, empty_table(TABLE_TRANSFORMERS_3W)?);
     table_batches.insert(TABLE_AREAS, build_areas_batch(&network.areas)?);
@@ -104,6 +129,137 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
 
     eprintln!("[converter] wrote {output}");
     Ok(())
+}
+
+fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
+    let mut warnings: Vec<String> = Vec::new();
+
+    let mut bus_ids: HashSet<u32> = HashSet::with_capacity(network.buses.len());
+    for bus in &network.buses {
+        bus_ids.insert(bus.i);
+    }
+
+    if network.buses.is_empty() {
+        warnings.push("RAW produced 0 buses; case is likely invalid or empty".to_string());
+    }
+    if network.branches.is_empty() {
+        warnings.push("RAW produced 0 branches; network may be disconnected or incomplete".to_string());
+    }
+
+    let slack_count = network
+        .buses
+        .iter()
+        .filter(|b| b.ide == models::BusType::Slack)
+        .count();
+    if slack_count == 0 {
+        warnings.push("no explicit slack bus (IDE=4) found in RAW".to_string());
+    }
+
+    let in_service_gen_count = network.generators.iter().filter(|g| g.stat != 0).count();
+    if in_service_gen_count == 0 {
+        warnings.push("no in-service generators found in RAW".to_string());
+    }
+
+    let dangling_loads = network
+        .loads
+        .iter()
+        .filter(|l| l.status != 0 && !bus_ids.contains(&l.i))
+        .count();
+    if dangling_loads > 0 {
+        warnings.push(format!(
+            "{dangling_loads} in-service load records reference missing buses"
+        ));
+    }
+
+    let dangling_fixed_shunts = network
+        .fixed_shunts
+        .iter()
+        .filter(|s| s.status != 0 && !bus_ids.contains(&s.i))
+        .count();
+    if dangling_fixed_shunts > 0 {
+        warnings.push(format!(
+            "{dangling_fixed_shunts} in-service fixed-shunt records reference missing buses"
+        ));
+    }
+
+    let dangling_generators = network
+        .generators
+        .iter()
+        .filter(|g| g.stat != 0 && !bus_ids.contains(&g.i))
+        .count();
+    if dangling_generators > 0 {
+        warnings.push(format!(
+            "{dangling_generators} in-service generator records reference missing buses"
+        ));
+    }
+
+    let dangling_switched_shunts = network
+        .switched_shunts
+        .iter()
+        .filter(|s| s.stat != 0 && !bus_ids.contains(&s.i))
+        .count();
+    if dangling_switched_shunts > 0 {
+        warnings.push(format!(
+            "{dangling_switched_shunts} in-service switched-shunt records reference missing buses"
+        ));
+    }
+
+    if let Some(dyr) = dyr_path {
+        if network.dyr_generators.is_empty() {
+            warnings.push(format!(
+                "DYR file '{dyr}' produced 0 supported machine models (GENROU/GENSAL/GENCLS family)"
+            ));
+        }
+
+        let mut in_service_gen_keys: HashSet<(u32, &str)> = HashSet::with_capacity(network.generators.len());
+        for g in &network.generators {
+            if g.stat != 0 {
+                in_service_gen_keys.insert((g.i, g.id.as_ref()));
+            }
+        }
+
+        let mut unmatched_dyr = 0usize;
+        for dyn_rec in &network.dyr_generators {
+            if !in_service_gen_keys.contains(&(dyn_rec.bus_id, dyn_rec.id.as_ref())) {
+                unmatched_dyr += 1;
+            }
+        }
+        if unmatched_dyr > 0 {
+            warnings.push(format!(
+                "{unmatched_dyr} DYR machine records do not match any in-service RAW generator (bus,id)"
+            ));
+        }
+
+        let mut dyr_keys: HashSet<(u32, &str)> = HashSet::with_capacity(network.dyr_generators.len());
+        for dyn_rec in &network.dyr_generators {
+            dyr_keys.insert((dyn_rec.bus_id, dyn_rec.id.as_ref()));
+        }
+
+        let mut raw_without_dyr = 0usize;
+        for g in &network.generators {
+            if g.stat != 0 && !dyr_keys.contains(&(g.i, g.id.as_ref())) {
+                raw_without_dyr += 1;
+            }
+        }
+        if raw_without_dyr > 0 {
+            warnings.push(format!(
+                "{raw_without_dyr} in-service RAW generators have no matching supported DYR model"
+            ));
+        }
+    }
+
+    if warnings.is_empty() {
+        eprintln!("[converter] fast validation: no obvious RAW/DYR completeness issues detected");
+        return;
+    }
+
+    eprintln!(
+        "[converter] fast validation: {} potential RAW/DYR completeness issue(s) detected:",
+        warnings.len()
+    );
+    for warning in warnings {
+        eprintln!("  - {warning}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +321,79 @@ fn build_metadata_batch(network: &Network) -> Result<RecordBatch> {
     .context("building metadata batch")
 }
 
-fn build_buses_batch(buses: &[models::Bus]) -> Result<RecordBatch> {
+fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
+    let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
+        network.case_id.sbase
+    } else {
+        100.0
+    };
+
+    let mut agg_by_bus = HashMap::with_capacity(network.buses.len());
+    for bus in &network.buses {
+        let mut agg = BusAggregate::default();
+        if bus.ide == models::BusType::LoadBus {
+            agg.q_min = -9999.0;
+            agg.q_max = 9999.0;
+            agg.p_max_agg = 9999.0;
+        }
+        agg_by_bus.insert(bus.i, agg);
+    }
+
+    for load in &network.loads {
+        if load.status == 0 {
+            continue;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&load.i) {
+            agg.p_sched -= load.pl / base_mva;
+            agg.q_sched -= load.ql / base_mva;
+        }
+    }
+
+    for generator in &network.generators {
+        if generator.stat == 0 {
+            continue;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&generator.i) {
+            agg.p_sched += generator.pg / base_mva;
+            agg.q_sched += generator.qg / base_mva;
+
+            let qmin = generator.qb / base_mva;
+            let qmax = generator.qt / base_mva;
+            if agg.has_generator {
+                agg.q_min = agg.q_min.min(qmin);
+                agg.q_max = agg.q_max.max(qmax);
+            } else {
+                agg.q_min = qmin;
+                agg.q_max = qmax;
+                agg.has_generator = true;
+            }
+
+            agg.p_min_agg += generator.pb / base_mva;
+            agg.p_max_agg += generator.pt / base_mva;
+
+            if (0.85..1.15).contains(&generator.vs) {
+                agg.v_mag_set_override = Some(generator.vs);
+            }
+        }
+    }
+
+    for shunt in &network.fixed_shunts {
+        if shunt.status == 0 {
+            continue;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&shunt.i) {
+            agg.g_shunt += shunt.gl / base_mva;
+            agg.b_shunt += shunt.bl / base_mva;
+        }
+    }
+
+    agg_by_bus
+}
+
+fn build_buses_batch(
+    buses: &[models::Bus],
+    agg_by_bus: &HashMap<u32, BusAggregate>,
+) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BUSES).expect("buses schema must exist"));
 
     let mut bus_id = Int32Builder::new();
@@ -188,24 +416,31 @@ fn build_buses_batch(buses: &[models::Bus]) -> Result<RecordBatch> {
     let mut p_max_agg = Float64Builder::new();
 
     for bus in buses {
+        let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
+        let mut q_min_val = agg.q_min;
+        let mut q_max_val = agg.q_max;
+        if q_min_val > q_max_val {
+            std::mem::swap(&mut q_min_val, &mut q_max_val);
+        }
+
         bus_id.append_value(bus.i as i32);
         name.append_value(bus.name.as_ref());
         bus_type.append_value(bus.ide as i8);
-        p_sched.append_value(0.0); // TODO: aggregate from generators/loads
-        q_sched.append_value(0.0);
-        v_mag_set.append_value(bus.vm);
-        v_ang_set.append_value(bus.va);
-        q_min.append_value(0.0); // TODO: aggregate from generators
-        q_max.append_value(0.0);
-        g_shunt.append_value(0.0); // TODO: aggregate from fixed_shunts by bus
-        b_shunt.append_value(0.0);
+        p_sched.append_value(agg.p_sched);
+        q_sched.append_value(agg.q_sched);
+        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(bus.vm));
+        v_ang_set.append_value(bus.va.to_radians());
+        q_min.append_value(q_min_val);
+        q_max.append_value(q_max_val);
+        g_shunt.append_value(agg.g_shunt);
+        b_shunt.append_value(agg.b_shunt);
         area.append_value(bus.area as i32);
         zone.append_value(bus.zone as i32);
         owner.append_value(bus.owner as i32);
         v_min.append_value(bus.nvlo);
         v_max.append_value(bus.nvhi);
-        p_min_agg.append_value(0.0); // TODO: aggregate from generators
-        p_max_agg.append_value(0.0);
+        p_min_agg.append_value(agg.p_min_agg);
+        p_max_agg.append_value(agg.p_max_agg);
     }
 
     RecordBatch::try_new(
@@ -418,7 +653,30 @@ fn build_fixed_shunts_batch(shunts: &[models::FixedShunt]) -> Result<RecordBatch
     .context("building fixed_shunts batch")
 }
 
-fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt]) -> Result<RecordBatch> {
+fn estimate_current_step(target_binit: f64, steps: &[f64]) -> i32 {
+    if steps.is_empty() {
+        return 0;
+    }
+
+    let mut best_step = 0usize;
+    let mut best_error = target_binit.abs();
+    let mut cumulative = 0.0;
+
+    for (idx, step) in steps.iter().enumerate() {
+        cumulative += *step;
+        let error = (cumulative - target_binit).abs();
+        if error < best_error - 1.0e-12
+            || ((error - best_error).abs() <= 1.0e-12 && (idx + 1) > best_step)
+        {
+            best_error = error;
+            best_step = idx + 1;
+        }
+    }
+
+    best_step as i32
+}
+
+fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) -> Result<RecordBatch> {
     let schema = Arc::new(
         table_schema(TABLE_SWITCHED_SHUNTS).expect("switched_shunts schema must exist"),
     );
@@ -442,21 +700,19 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt]) -> Result<Recor
         status.append_value(shunt.stat != 0);
         v_low.append_value(shunt.vswlo);
         v_high.append_value(shunt.vswhi);
+
+        let mut step_values_pu = Vec::with_capacity(shunt.steps.len());
+        for &step_mvar in &shunt.steps {
+            step_values_pu.push(step_mvar / base_mva);
+        }
         // Append each step value to the inner list
-        for &step in &shunt.steps {
-            b_steps.values().append_value(step);
+        for &step_pu in &step_values_pu {
+            b_steps.values().append_value(step_pu);
         }
         b_steps.append(true);
-        // Estimate current step count from BINIT / first non-zero step
-        let step_count = if let Some(&s) = shunt.steps.first() {
-            if s != 0.0 {
-                (shunt.binit / s).round() as i32
-            } else {
-                0
-            }
-        } else {
-            0
-        };
+
+        let binit_pu = shunt.binit / base_mva;
+        let step_count = estimate_current_step(binit_pu, &step_values_pu);
         current_step.append_value(step_count);
     }
 
@@ -516,7 +772,7 @@ fn build_transformers_2w_batch(
         b.append_value(t.mag2);
         tap_ratio.append_value(t.windv1);
         nominal_tap_ratio.append_value(1.0); // TODO: derive from NOMV1/NOMV2
-        phase_shift.append_value(t.ang1);
+        phase_shift.append_value(t.ang1.to_radians());
         vector_group.append_value("Yy0"); // TODO: derive from CW/CZ
         rate_a.append_value(t.rata1);
         rate_b.append_value(t.ratb1);
