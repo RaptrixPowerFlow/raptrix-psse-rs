@@ -1,4 +1,4 @@
-// Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC
+// raptrix-psse-rs
 // Copyright (c) 2026 Musto Technologies LLC
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 
 /// High-performance PSS/E → Raptrix PowerFlow Interchange converter.
 ///
-/// Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC
+/// raptrix-psse-rs
 /// Copyright (c) 2026 Musto Technologies LLC
 #[derive(Parser, Debug)]
 #[command(name = "raptrix-psse-rs")]

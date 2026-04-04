@@ -1,4 +1,4 @@
-﻿// Raptrix CIM-Arrow â€” High-performance open CIM profile by Musto Technologies LLC
+﻿// raptrix-psse-rs
 // Copyright (c) 2026 Musto Technologies LLC
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -15,7 +15,7 @@
 //! Serialisation to `.rpf` is delegated to the [`raptrix_cim_arrow`] crate.
 //!
 //! # Branding
-//! Raptrix CIM-Arrow â€” High-performance open CIM profile by Musto Technologies LLC
+//! raptrix-psse-rs
 //! Copyright (c) 2026 Musto Technologies LLC
 
 pub mod models;

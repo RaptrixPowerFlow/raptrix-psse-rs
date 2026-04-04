@@ -1,5 +1,5 @@
 <!--
-  Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC
+  raptrix-psse-rs
   Copyright (c) 2026 Musto Technologies LLC
 
   This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -9,7 +9,7 @@
 
 # Golden-file tests for raptrix-psse-rs
 
-**Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC**  
+**raptrix-psse-rs**  
 Copyright (c) 2026 Musto Technologies LLC
 
 This directory holds input/output pairs used to drive regression tests for the
