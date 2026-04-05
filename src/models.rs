@@ -107,6 +107,14 @@ pub struct Bus {
     pub zone: u32,
     /// Owner number (OWNER).
     pub owner: u32,
+    /// Optional inline bus shunt conductance in MW at V=1.0 pu (GL).
+    ///
+    /// Present in some legacy/variant BUS record layouts.
+    pub gl: f64,
+    /// Optional inline bus shunt susceptance in MVAr at V=1.0 pu (BL).
+    ///
+    /// Present in some legacy/variant BUS record layouts.
+    pub bl: f64,
     /// Per-unit voltage magnitude (VM).
     pub vm: f64,
     /// Voltage angle in degrees (VA).
