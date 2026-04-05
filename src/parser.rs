@@ -434,6 +434,11 @@ fn field_u8_default(fields: &[String], idx: usize, default: u8) -> u8 {
         .unwrap_or(default)
 }
 
+fn token_looks_float(token: &str) -> bool {
+    let t = token.trim();
+    t.contains('.') || t.contains('e') || t.contains('E') || t.contains('d') || t.contains('D')
+}
+
 // ---------------------------------------------------------------------------
 // Per-record parsers (single-line sections)
 // ---------------------------------------------------------------------------
@@ -461,11 +466,72 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
 
     let baskv_idx = if has_name { 2 } else { 1 };
     let ide_idx = baskv_idx + 1;
-    let area_idx = baskv_idx + 2;
-    let zone_idx = baskv_idx + 3;
-    let owner_idx = baskv_idx + 4;
-    let vm_idx = baskv_idx + 5;
-    let va_idx = baskv_idx + 6;
+    let (gl_idx, bl_idx, area_idx, zone_idx, owner_idx, vm_idx, va_idx) = {
+        let modern_area_idx = baskv_idx + 2;
+        let modern_zone_idx = baskv_idx + 3;
+        let modern_owner_idx = baskv_idx + 4;
+        let modern_vm_idx = baskv_idx + 5;
+        let modern_va_idx = baskv_idx + 6;
+
+        // Some legacy/variant RAW exports include inline GL/BL in BUS records:
+        // I, NAME, BASKV, IDE, GL, BL, AREA, ZONE, OWNER, VM, VA, ...
+        // Use a conservative heuristic so v33/v35 layouts remain unchanged.
+        let has_inline_shunt = if f.len() > modern_va_idx + 2 {
+            let old_area_idx = baskv_idx + 4;
+            let old_zone_idx = baskv_idx + 5;
+            let old_owner_idx = baskv_idx + 6;
+            let old_vm_idx = baskv_idx + 7;
+
+            let modern_area = field_u32(f, modern_area_idx);
+            let modern_zone = field_u32(f, modern_zone_idx);
+            let modern_owner = field_u32(f, modern_owner_idx);
+            let modern_vm = field_f64(f, modern_vm_idx);
+
+            let old_area = field_u32(f, old_area_idx);
+            let old_zone = field_u32(f, old_zone_idx);
+            let old_owner = field_u32(f, old_owner_idx);
+            let old_vm = field_f64(f, old_vm_idx);
+
+            let modern_score = (modern_area > 0) as u8
+                + (modern_zone > 0) as u8
+                + (modern_owner > 0) as u8
+                + ((0.2..=2.0).contains(&modern_vm)) as u8;
+            let old_score = (old_area > 0) as u8
+                + (old_zone > 0) as u8
+                + (old_owner > 0) as u8
+                + ((0.2..=2.0).contains(&old_vm)) as u8;
+
+            let gl_token = f.get(baskv_idx + 2).map(|s| s.as_str()).unwrap_or("");
+            let bl_token = f.get(baskv_idx + 3).map(|s| s.as_str()).unwrap_or("");
+            let shunt_tokens_floaty = token_looks_float(gl_token) || token_looks_float(bl_token);
+
+            old_score > modern_score || (old_score == modern_score && shunt_tokens_floaty)
+        } else {
+            false
+        };
+
+        if has_inline_shunt {
+            (
+                Some(baskv_idx + 2),
+                Some(baskv_idx + 3),
+                baskv_idx + 4,
+                baskv_idx + 5,
+                baskv_idx + 6,
+                baskv_idx + 7,
+                baskv_idx + 8,
+            )
+        } else {
+            (
+                None,
+                None,
+                modern_area_idx,
+                modern_zone_idx,
+                modern_owner_idx,
+                modern_vm_idx,
+                modern_va_idx,
+            )
+        }
+    };
 
     let ide_raw = field_u8(f, ide_idx);
     let ide = match ide_raw {
@@ -510,6 +576,8 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
         area: field_u32_default(f, area_idx, 1),
         zone: field_u32_default(f, zone_idx, 1),
         owner: field_u32_default(f, owner_idx, 1),
+        gl: gl_idx.map(|idx| field_f64(f, idx)).unwrap_or(0.0),
+        bl: bl_idx.map(|idx| field_f64(f, idx)).unwrap_or(0.0),
         vm,
         va: field_f64(f, va_idx).clamp(-180.0, 180.0),
         nvhi,
@@ -850,6 +918,8 @@ fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
         area,
         zone,
         owner,
+        gl: 0.0,
+        bl: 0.0,
         vm: 1.0,
         va: 0.0,
         nvhi: 1.5,

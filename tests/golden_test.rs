@@ -9,7 +9,7 @@
 
 use std::time::Instant;
 
-use arrow::array::{Array, BooleanArray, Float64Array, ListArray};
+use arrow::array::{Array, BooleanArray, Float64Array, ListArray, StringArray};
 use raptrix_cim_arrow::{
     TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
     TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_SWITCHED_SHUNTS,
@@ -113,6 +113,8 @@ fn golden_texas7k_static() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_STATIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_STATIC))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
     print_summary("Texas7k — static (no DYR)", &summary, elapsed_ms);
 
@@ -124,32 +126,59 @@ fn golden_texas7k_static() {
     assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
     assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "dynamics_models must be empty without DYR");
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "v0.8.2",
+        "rpf_version metadata must be v0.8.2"
+    );
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_STATIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
 
     let metadata = table_by_name(&tables, TABLE_METADATA);
-    let base_mva = col_f64(metadata, "base_mva").value(0);
+    let case_fingerprint = metadata
+        .column_by_name("case_fingerprint")
+        .expect("missing metadata.case_fingerprint")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("metadata.case_fingerprint must be Utf8")
+        .value(0)
+        .to_string();
+    assert!(
+        case_fingerprint.starts_with("psse:"),
+        "case_fingerprint should be deterministic psse:* identity"
+    );
 
     let buses = table_by_name(&tables, TABLE_BUSES);
     let bus_p_sched = col_f64(buses, "p_sched");
     let bus_q_sched = col_f64(buses, "q_sched");
+    let bus_g_shunt = col_f64(buses, "g_shunt");
+    let bus_b_shunt = col_f64(buses, "b_shunt");
     let bus_sched_l1 = bus_p_sched.values().iter().map(|v| v.abs()).sum::<f64>()
         + bus_q_sched.values().iter().map(|v| v.abs()).sum::<f64>();
     assert!(
         bus_sched_l1 > 1.0e-6,
         "bus p/q schedules should be materialized (L1={bus_sched_l1})"
     );
+    let bus_shunt_l1 = bus_g_shunt.values().iter().map(|v| v.abs()).sum::<f64>()
+        + bus_b_shunt.values().iter().map(|v| v.abs()).sum::<f64>();
+    assert!(
+        bus_shunt_l1 < 1.0e-9,
+        "buses.g_shunt/b_shunt should be zeroed for fixed_shunt rebuild path (L1={bus_shunt_l1})"
+    );
 
     let generators = table_by_name(&tables, TABLE_GENERATORS);
     let gen_status = col_bool(generators, "status");
-    let gen_p_mw = col_f64(generators, "p_sched_mw");
-    let gen_p_pu = sum_f64_where(gen_p_mw, gen_status) / base_mva;
+    let gen_p_pu_col = col_f64(generators, "p_sched_pu");
+    let gen_p_pu = sum_f64_where(gen_p_pu_col, gen_status);
 
     let loads = table_by_name(&tables, TABLE_LOADS);
     let load_status = col_bool(loads, "status");
-    let load_p_mw = col_f64(loads, "p_mw");
-    let load_p_pu = sum_f64_where(load_p_mw, load_status) / base_mva;
+    let load_p_pu_col = col_f64(loads, "p_pu");
+    let load_p_pu = sum_f64_where(load_p_pu_col, load_status);
 
     let net_p_from_components = gen_p_pu - load_p_pu;
     let net_p_from_buses = sum_f64(bus_p_sched);
@@ -188,6 +217,8 @@ fn golden_texas7k_dynamic() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_DYNAMIC))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
     print_summary("Texas7k — dynamic (with DYR)", &summary, elapsed_ms);
 
@@ -195,4 +226,12 @@ fn golden_texas7k_dynamic() {
     assert!(rows(&summary, TABLE_GENERATORS) > 0,      "generators should be non-empty");
     assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "dynamics_models should be non-empty with DYR");
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "v0.8.2",
+        "rpf_version metadata must be v0.8.2"
+    );
 }

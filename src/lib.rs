@@ -24,7 +24,7 @@ pub mod parser;
 // Re-export reader utilities so tests and tools can use them directly.
 pub use raptrix_cim_arrow::{read_rpf_tables, summarize_rpf, RpfSummary, TableSummary};
 
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{collections::{HashMap, HashSet}, hash::{Hash, Hasher}, sync::Arc};
 
 use anyhow::{Context, Result};
 use arrow::{
@@ -37,7 +37,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use raptrix_cim_arrow::{
-    table_schema, write_root_rpf, RootWriteOptions,
+    table_schema, write_root_rpf_with_metadata,
+    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
     TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_CONTINGENCIES,
     TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_INTERFACES,
     TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
@@ -94,18 +95,29 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
 
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
     let bus_aggregates = build_bus_aggregates(&network);
+    let bus_nominal_kv = build_bus_nominal_kv_map(&network);
     let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
         network.case_id.sbase
     } else {
         100.0
     };
+    let case_fingerprint = compute_case_fingerprint(&network);
 
-    table_batches.insert(TABLE_METADATA, build_metadata_batch(&network)?);
+    table_batches.insert(TABLE_METADATA, build_metadata_batch(&network, &case_fingerprint)?);
     table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses, &bus_aggregates)?);
-    table_batches.insert(TABLE_BRANCHES, build_branches_batch(&network.branches)?);
-    table_batches.insert(TABLE_GENERATORS, build_generators_batch(&network.generators, &dyr_lookup)?);
-    table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads)?);
-    table_batches.insert(TABLE_FIXED_SHUNTS, build_fixed_shunts_batch(&network.fixed_shunts)?);
+    table_batches.insert(
+        TABLE_BRANCHES,
+        build_branches_batch(&network.branches, &bus_nominal_kv)?,
+    );
+    table_batches.insert(
+        TABLE_GENERATORS,
+        build_generators_batch(&network.generators, &dyr_lookup, base_mva)?,
+    );
+    table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads, base_mva)?);
+    table_batches.insert(
+        TABLE_FIXED_SHUNTS,
+        build_fixed_shunts_batch(&network.fixed_shunts, &network.buses, base_mva)?,
+    );
     table_batches.insert(
         TABLE_SWITCHED_SHUNTS,
         build_switched_shunts_batch(&network.switched_shunts, base_mva)?,
@@ -124,7 +136,22 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
     };
     table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
 
-    write_root_rpf(output, &table_batches, &RootWriteOptions::default())
+    let root_options = RootWriteOptions {
+        contingencies_are_stub: true,
+        dynamics_are_stub: network.dyr_generators.is_empty(),
+        ..RootWriteOptions::default()
+    };
+    let mut additional_root_metadata = HashMap::new();
+    additional_root_metadata.insert(
+        METADATA_KEY_CASE_FINGERPRINT.to_string(),
+        case_fingerprint.clone(),
+    );
+    additional_root_metadata.insert(
+        METADATA_KEY_VALIDATION_MODE.to_string(),
+        "converter_export".to_string(),
+    );
+
+    write_root_rpf_with_metadata(output, &table_batches, &root_options, &additional_root_metadata)
         .with_context(|| format!("failed to write RPF file: {output}"))?;
 
     eprintln!("[converter] wrote {output}");
@@ -272,11 +299,42 @@ fn empty_table(name: &'static str) -> Result<RecordBatch> {
     Ok(RecordBatch::new_empty(Arc::new(schema)))
 }
 
+fn build_bus_nominal_kv_map(network: &Network) -> HashMap<u32, f64> {
+    network
+        .buses
+        .iter()
+        .map(|b| (b.i, b.baskv))
+        .collect::<HashMap<_, _>>()
+}
+
+fn compute_case_fingerprint(network: &Network) -> String {
+    // Deterministic FNV-1a over core case identity fields and topology counts.
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    network.case_id.rev.hash(&mut hasher);
+    network.case_id.sbase.to_bits().hash(&mut hasher);
+    network.case_id.basfrq.to_bits().hash(&mut hasher);
+    network.case_id.title.hash(&mut hasher);
+    network.buses.len().hash(&mut hasher);
+    network.branches.len().hash(&mut hasher);
+    network.generators.len().hash(&mut hasher);
+    network.loads.len().hash(&mut hasher);
+    network.transformers.len().hash(&mut hasher);
+    network
+        .buses
+        .iter()
+        .for_each(|b| {
+            b.i.hash(&mut hasher);
+            b.vm.to_bits().hash(&mut hasher);
+            b.va.to_bits().hash(&mut hasher);
+        });
+    format!("psse:{:016x}", hasher.finish())
+}
+
 // ---------------------------------------------------------------------------
 // Table builders
 // ---------------------------------------------------------------------------
 
-fn build_metadata_batch(network: &Network) -> Result<RecordBatch> {
+fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Result<RecordBatch> {
     let schema = Arc::new(
         table_schema(TABLE_METADATA).expect("metadata schema must exist"),
     );
@@ -290,12 +348,20 @@ fn build_metadata_batch(network: &Network) -> Result<RecordBatch> {
     // dict string columns
     let mut study_name = StringDictionaryBuilder::<Int32Type>::new();
     study_name.append_value(network.case_id.title.as_ref());
+    let mut source_case_id = StringDictionaryBuilder::<Int32Type>::new();
+    source_case_id.append_value(network.case_id.title.as_ref());
+    let mut validation_mode = StringDictionaryBuilder::<Int32Type>::new();
+    validation_mode.append_value("converter_export");
 
     // plain string columns
     let mut timestamp_utc = StringBuilder::new();
     timestamp_utc.append_value("2026-01-01T00:00:00Z"); // TODO: real system time
+    let mut snapshot_timestamp_utc = StringBuilder::new();
+    snapshot_timestamp_utc.append_value("2026-01-01T00:00:00Z");
     let mut raptrix_version = StringBuilder::new();
     raptrix_version.append_value(env!("CARGO_PKG_VERSION"));
+    let mut case_fingerprint = StringBuilder::new();
+    case_fingerprint.append_value(case_fingerprint_value);
 
     // custom_metadata is nullable â€” emit a single null value.
     let custom_meta_type = schema
@@ -315,6 +381,10 @@ fn build_metadata_batch(network: &Network) -> Result<RecordBatch> {
             Arc::new(timestamp_utc.finish()),
             Arc::new(raptrix_version.finish()),
             Arc::new(is_planning_case),
+            Arc::new(source_case_id.finish()),
+            Arc::new(snapshot_timestamp_utc.finish()),
+            Arc::new(case_fingerprint.finish()),
+            Arc::new(validation_mode.finish()),
             custom_metadata,
         ],
     )
@@ -377,16 +447,6 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
         }
     }
 
-    for shunt in &network.fixed_shunts {
-        if shunt.status == 0 {
-            continue;
-        }
-        if let Some(agg) = agg_by_bus.get_mut(&shunt.i) {
-            agg.g_shunt += shunt.gl / base_mva;
-            agg.b_shunt += shunt.bl / base_mva;
-        }
-    }
-
     agg_by_bus
 }
 
@@ -414,6 +474,8 @@ fn build_buses_batch(
     let mut v_max = Float64Builder::new();
     let mut p_min_agg = Float64Builder::new();
     let mut p_max_agg = Float64Builder::new();
+    let mut nominal_kv = Float64Builder::new();
+    let mut bus_uuid = StringDictionaryBuilder::<Int32Type>::new();
 
     for bus in buses {
         let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
@@ -441,6 +503,8 @@ fn build_buses_batch(
         v_max.append_value(bus.nvhi);
         p_min_agg.append_value(agg.p_min_agg);
         p_max_agg.append_value(agg.p_max_agg);
+        nominal_kv.append_value(bus.baskv);
+        bus_uuid.append_value(format!("psse:bus:{}", bus.i));
     }
 
     RecordBatch::try_new(
@@ -464,12 +528,17 @@ fn build_buses_batch(
             Arc::new(v_max.finish()),
             Arc::new(p_min_agg.finish()),
             Arc::new(p_max_agg.finish()),
+            Arc::new(nominal_kv.finish()),
+            Arc::new(bus_uuid.finish()),
         ],
     )
     .context("building buses batch")
 }
 
-fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
+fn build_branches_batch(
+    branches: &[models::Branch],
+    bus_nominal_kv: &HashMap<u32, f64>,
+) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BRANCHES).expect("branches schema must exist"));
 
     let mut branch_id = Int32Builder::new();
@@ -487,6 +556,8 @@ fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
     let mut status = BooleanBuilder::new();
     // name is nullable dict_utf8_u32
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
+    let mut from_nominal_kv = Float64Builder::new();
+    let mut to_nominal_kv = Float64Builder::new();
 
     for (idx, branch) in branches.iter().enumerate() {
         branch_id.append_value((idx + 1) as i32);
@@ -503,6 +574,8 @@ fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
         rate_c.append_value(branch.ratec);
         status.append_value(branch.st != 0);
         name_b.append_null(); // branches have no name in RAW
+        from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
+        to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
     }
 
     RecordBatch::try_new(
@@ -522,6 +595,8 @@ fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
             Arc::new(rate_c.finish()),
             Arc::new(status.finish()),
             Arc::new(name_b.finish()),
+            Arc::new(from_nominal_kv.finish()),
+            Arc::new(to_nominal_kv.finish()),
         ],
     )
     .context("building branches batch")
@@ -530,16 +605,17 @@ fn build_branches_batch(branches: &[models::Branch]) -> Result<RecordBatch> {
 fn build_generators_batch(
     generators: &[models::Generator],
     dyr_lookup: &HashMap<(u32, String), &models::DyrGeneratorData>,
+    base_mva: f64,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_GENERATORS).expect("generators schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut id = StringDictionaryBuilder::<Int32Type>::new();
-    let mut p_sched_mw = Float64Builder::new();
-    let mut p_min_mw = Float64Builder::new();
-    let mut p_max_mw = Float64Builder::new();
-    let mut q_min_mvar = Float64Builder::new();
-    let mut q_max_mvar = Float64Builder::new();
+    let mut p_sched_pu = Float64Builder::new();
+    let mut p_min_pu = Float64Builder::new();
+    let mut p_max_pu = Float64Builder::new();
+    let mut q_min_pu = Float64Builder::new();
+    let mut q_max_pu = Float64Builder::new();
     let mut status = BooleanBuilder::new();
     let mut mbase_mva = Float64Builder::new();
     let mut h = Float64Builder::new();
@@ -550,11 +626,11 @@ fn build_generators_batch(
     for generator in generators {
         bus_id.append_value(generator.i as i32);
         id.append_value(generator.id.as_ref());
-        p_sched_mw.append_value(generator.pg);
-        p_min_mw.append_value(generator.pb);
-        p_max_mw.append_value(generator.pt);
-        q_min_mvar.append_value(generator.qb);
-        q_max_mvar.append_value(generator.qt);
+        p_sched_pu.append_value(generator.pg / base_mva);
+        p_min_pu.append_value(generator.pb / base_mva);
+        p_max_pu.append_value(generator.pt / base_mva);
+        q_min_pu.append_value(generator.qb / base_mva);
+        q_max_pu.append_value(generator.qt / base_mva);
         status.append_value(generator.stat != 0);
         mbase_mva.append_value(generator.mbase);
         if let Some(dyn_data) = dyr_lookup.get(&(generator.i, generator.id.to_string())) {
@@ -574,11 +650,11 @@ fn build_generators_batch(
         vec![
             Arc::new(bus_id.finish()),
             Arc::new(id.finish()),
-            Arc::new(p_sched_mw.finish()),
-            Arc::new(p_min_mw.finish()),
-            Arc::new(p_max_mw.finish()),
-            Arc::new(q_min_mvar.finish()),
-            Arc::new(q_max_mvar.finish()),
+            Arc::new(p_sched_pu.finish()),
+            Arc::new(p_min_pu.finish()),
+            Arc::new(p_max_pu.finish()),
+            Arc::new(q_min_pu.finish()),
+            Arc::new(q_max_pu.finish()),
             Arc::new(status.finish()),
             Arc::new(mbase_mva.finish()),
             Arc::new(h.finish()),
@@ -590,22 +666,22 @@ fn build_generators_batch(
     .context("building generators batch")
 }
 
-fn build_loads_batch(loads: &[models::Load]) -> Result<RecordBatch> {
+fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_LOADS).expect("loads schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut id = StringDictionaryBuilder::<Int32Type>::new();
     let mut status = BooleanBuilder::new();
-    let mut p_mw = Float64Builder::new();
-    let mut q_mvar = Float64Builder::new();
+    let mut p_pu = Float64Builder::new();
+    let mut q_pu = Float64Builder::new();
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
 
     for load in loads {
         bus_id.append_value(load.i as i32);
         id.append_value(load.id.as_ref());
         status.append_value(load.status != 0);
-        p_mw.append_value(load.pl);
-        q_mvar.append_value(load.ql);
+        p_pu.append_value(load.pl / base_mva);
+        q_pu.append_value(load.ql / base_mva);
         name_b.append_null();
     }
 
@@ -615,29 +691,46 @@ fn build_loads_batch(loads: &[models::Load]) -> Result<RecordBatch> {
             Arc::new(bus_id.finish()),
             Arc::new(id.finish()),
             Arc::new(status.finish()),
-            Arc::new(p_mw.finish()),
-            Arc::new(q_mvar.finish()),
+            Arc::new(p_pu.finish()),
+            Arc::new(q_pu.finish()),
             Arc::new(name_b.finish()),
         ],
     )
     .context("building loads batch")
 }
 
-fn build_fixed_shunts_batch(shunts: &[models::FixedShunt]) -> Result<RecordBatch> {
+fn build_fixed_shunts_batch(
+    shunts: &[models::FixedShunt],
+    buses: &[models::Bus],
+    base_mva: f64,
+) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_FIXED_SHUNTS).expect("fixed_shunts schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut id = StringDictionaryBuilder::<Int32Type>::new();
     let mut status = BooleanBuilder::new();
-    let mut g_mw = Float64Builder::new();
-    let mut b_mvar = Float64Builder::new();
+    let mut g_pu = Float64Builder::new();
+    let mut b_pu = Float64Builder::new();
 
     for shunt in shunts {
         bus_id.append_value(shunt.i as i32);
         id.append_value(shunt.id.as_ref());
         status.append_value(shunt.status != 0);
-        g_mw.append_value(shunt.gl);
-        b_mvar.append_value(shunt.bl);
+        g_pu.append_value(shunt.gl / base_mva);
+        b_pu.append_value(shunt.bl / base_mva);
+    }
+
+    // Export inline bus GL/BL as synthetic fixed-shunt rows so downstream
+    // readers that rebuild from fixed_shunts can recover full shunt injections.
+    for bus in buses {
+        if bus.gl.abs() <= 1.0e-12 && bus.bl.abs() <= 1.0e-12 {
+            continue;
+        }
+        bus_id.append_value(bus.i as i32);
+        id.append_value("1");
+        status.append_value(true);
+        g_pu.append_value(bus.gl / base_mva);
+        b_pu.append_value(bus.bl / base_mva);
     }
 
     RecordBatch::try_new(
@@ -646,8 +739,8 @@ fn build_fixed_shunts_batch(shunts: &[models::FixedShunt]) -> Result<RecordBatch
             Arc::new(bus_id.finish()),
             Arc::new(id.finish()),
             Arc::new(status.finish()),
-            Arc::new(g_mw.finish()),
-            Arc::new(b_mvar.finish()),
+            Arc::new(g_pu.finish()),
+            Arc::new(b_pu.finish()),
         ],
     )
     .context("building fixed_shunts batch")
@@ -757,6 +850,8 @@ fn build_transformers_2w_batch(
     let mut rate_c = Float64Builder::new();
     let mut status = BooleanBuilder::new();
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
+    let mut from_nominal_kv = Float64Builder::new();
+    let mut to_nominal_kv = Float64Builder::new();
 
     for t in transformers {
         from_bus_id.append_value(t.i as i32);
@@ -779,6 +874,8 @@ fn build_transformers_2w_batch(
         rate_c.append_value(t.ratc1);
         status.append_value(t.stat != 0);
         name_b.append_null();
+        from_nominal_kv.append_option(if t.nomv1 > 0.0 { Some(t.nomv1) } else { None });
+        to_nominal_kv.append_option(if t.nomv2 > 0.0 { Some(t.nomv2) } else { None });
     }
 
     RecordBatch::try_new(
@@ -804,6 +901,8 @@ fn build_transformers_2w_batch(
             Arc::new(rate_c.finish()),
             Arc::new(status.finish()),
             Arc::new(name_b.finish()),
+            Arc::new(from_nominal_kv.finish()),
+            Arc::new(to_nominal_kv.finish()),
         ],
     )
     .context("building transformers_2w batch")
