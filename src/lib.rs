@@ -404,12 +404,38 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
     let mut agg_by_bus = HashMap::with_capacity(network.buses.len());
     for bus in &network.buses {
         let mut agg = BusAggregate::default();
+        agg.g_shunt = bus.gl / base_mva;
+        agg.b_shunt = bus.bl / base_mva;
         if bus.ide == models::BusType::LoadBus {
             agg.q_min = -9999.0;
             agg.q_max = 9999.0;
             agg.p_max_agg = 9999.0;
         }
         agg_by_bus.insert(bus.i, agg);
+    }
+
+    for shunt in &network.fixed_shunts {
+        if shunt.status == 0 {
+            continue;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&shunt.i) {
+            agg.g_shunt += shunt.gl / base_mva;
+            agg.b_shunt += shunt.bl / base_mva;
+        }
+    }
+
+    for branch in &network.branches {
+        if branch.st == 0 {
+            continue;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&branch.i) {
+            agg.g_shunt += branch.gi / base_mva;
+            agg.b_shunt += branch.bi / base_mva;
+        }
+        if let Some(agg) = agg_by_bus.get_mut(&branch.j) {
+            agg.g_shunt += branch.gj / base_mva;
+            agg.b_shunt += branch.bj / base_mva;
+        }
     }
 
     for load in &network.loads {

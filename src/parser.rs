@@ -76,6 +76,8 @@ struct VersionOffsets {
     pub branch_status_idx: usize,
     /// Index of RATEA in a BRANCH record.
     pub branch_ratea_idx: usize,
+    /// Index of GI in a BRANCH record.
+    pub branch_gi_idx: usize,
     // ---- GENERATOR ----
     /// Index of MBASE in a GENERATOR record.
     pub gen_mbase_idx: usize,
@@ -123,6 +125,7 @@ fn version_offsets(psse_version: u32) -> VersionOffsets {
         VersionOffsets {
             branch_status_idx: 23,
             branch_ratea_idx: 7,
+            branch_gi_idx: 19,
             gen_mbase_idx: 9,
             gen_zr_idx: 10,
             gen_stat_idx: 15,
@@ -146,6 +149,7 @@ fn version_offsets(psse_version: u32) -> VersionOffsets {
         VersionOffsets {
             branch_status_idx: 13,
             branch_ratea_idx: 6,
+            branch_gi_idx: 9,
             gen_mbase_idx: 8,
             gen_zr_idx: 9,
             gen_stat_idx: 14,
@@ -718,12 +722,10 @@ fn parse_branch_record(f: &[String], off: &VersionOffsets) -> Option<Branch> {
         ratea: field_f64(f, ra),
         rateb: field_f64(f, ra + 1),
         ratec: field_f64(f, ra + 2),
-        // GI/BI/GJ/BJ: always at positions 9-12 for v33; for v35 they are at 19-22.
-        // We read them as v33 positions; the values are rarely used beyond zero-check.
-        gi: field_f64(f, 9),
-        bi: field_f64(f, 10),
-        gj: field_f64(f, 11),
-        bj: field_f64(f, 12),
+        gi: field_f64(f, off.branch_gi_idx),
+        bi: field_f64(f, off.branch_gi_idx + 1),
+        gj: field_f64(f, off.branch_gi_idx + 2),
+        bj: field_f64(f, off.branch_gi_idx + 3),
         st,
         met: field_u8(f, off.branch_status_idx + 1),
         len: field_f64(f, off.branch_status_idx + 2),
