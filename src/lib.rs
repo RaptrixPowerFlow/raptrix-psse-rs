@@ -1,4 +1,4 @@
-﻿// raptrix-psse-rs
+// raptrix-psse-rs
 // Copyright (c) 2026 Musto Technologies LLC
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.6.0 converter.
+//! Raptrix PowerFlow Interchange v0.8.3 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -791,6 +791,9 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
     ));
     let mut b_steps = ListBuilder::new(Float64Builder::new()).with_field(inner_field);
     let mut current_step = Int32Builder::new();
+    // v0.8.3: b_init_pu is the authoritative initial susceptance — written directly
+    // from BINIT / base_mva so mixed-sign banks round-trip exactly regardless of step ordering.
+    let mut b_init_pu = Float64Builder::new();
 
     for shunt in shunts {
         bus_id.append_value(shunt.i as i32);
@@ -811,6 +814,7 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
         let binit_pu = shunt.binit / base_mva;
         let step_count = estimate_current_step(binit_pu, &step_values_pu);
         current_step.append_value(step_count);
+        b_init_pu.append_value(binit_pu);
     }
 
     RecordBatch::try_new(
@@ -822,6 +826,7 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
             Arc::new(v_high.finish()),
             Arc::new(b_steps.finish()),
             Arc::new(current_step.finish()),
+            Arc::new(b_init_pu.finish()),
         ],
     )
     .context("building switched_shunts batch")

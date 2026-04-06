@@ -542,7 +542,6 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
     };
 
     let vm_raw = field_f64(f, vm_idx);
-    let vm = vm_raw.clamp(0.5, 1.5);
 
     let nvhi_raw = field_f64(f, va_idx + 1);
     let nvlo_raw = field_f64(f, va_idx + 2);
@@ -578,8 +577,8 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
         owner: field_u32_default(f, owner_idx, 1),
         gl: gl_idx.map(|idx| field_f64(f, idx)).unwrap_or(0.0),
         bl: bl_idx.map(|idx| field_f64(f, idx)).unwrap_or(0.0),
-        vm,
-        va: field_f64(f, va_idx).clamp(-180.0, 180.0),
+        vm: vm_raw,
+        va: field_f64(f, va_idx),
         nvhi,
         nvlo,
         evhi,
@@ -846,7 +845,6 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
     let basfrq = if basfrq <= 0.0 { 60.0 } else { basfrq };
 
     let sbase = f.get(1).and_then(|s| s.parse::<f64>().ok()).unwrap_or(100.0);
-    let sbase = sbase.clamp(10.0, 1.0e7);
 
     let case_id = CaseId {
         sbase,
@@ -863,13 +861,6 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
 // Transformer star-equivalent helpers
 // ---------------------------------------------------------------------------
 
-/// Clamp a star-leg reactance away from zero to avoid a singular Y-bus.
-#[inline]
-fn clamp_z(r: f64, x: f64) -> (f64, f64) {
-    let x = if x.abs() < 1e-4 { if x < 0.0 { -1e-4 } else { 1e-4 } } else { x };
-    (r, x)
-}
-
 /// Build a star-equivalent [`TwoWindingTransformer`] leg for a 3-winding
 /// transformer.  `to_bus` is the fictitious star bus.
 fn star_leg_transformer(
@@ -884,9 +875,6 @@ fn star_leg_transformer(
     sbase: f64,
     stat: u8,
 ) -> TwoWindingTransformer {
-    let (r, x) = clamp_z(r_star, x_star);
-    let windv = windv.clamp(0.4, 2.0);
-    let ang = ang_deg.clamp(-90.0, 90.0);
     TwoWindingTransformer {
         i: from_bus,
         j: to_bus,
@@ -894,12 +882,12 @@ fn star_leg_transformer(
         stat,
         mag1: 0.0,
         mag2: 0.0,
-        r12: r,
-        x12: x,
+        r12: r_star,
+        x12: x_star,
         sbase12: sbase,
         windv1: windv,
         nomv1: 0.0,
-        ang1: ang,
+        ang1: ang_deg,
         rata1: rate_mva,
         ratb1: 0.0,
         ratc1: 0.0,
@@ -1108,10 +1096,6 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
                     None
                 };
 
-                if stat == 0 {
-                    continue; // skip inactive transformers
-                }
-
                 let f2 = tokenize(l2.trim());
                 let f3 = tokenize(l3.trim());
                 let f4 = tokenize(l4.trim());
@@ -1135,7 +1119,6 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 
                 if k_bus == 0 {
                     // ---- 2-winding transformer ----
-                    let (r, x) = clamp_z(r12, x12);
                     result.transformers.push(TwoWindingTransformer {
                         i: i_bus,
                         j: j_bus,
@@ -1143,8 +1126,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
                         stat,
                         mag1,
                         mag2,
-                        r12: r,
-                        x12: x,
+                        r12,
+                        x12,
                         sbase12,
                         windv1,
                         nomv1,

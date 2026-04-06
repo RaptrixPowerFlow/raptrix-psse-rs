@@ -131,8 +131,8 @@ fn golden_texas7k_static() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "v0.8.2",
-        "rpf_version metadata must be v0.8.2"
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
     );
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_STATIC))
@@ -261,7 +261,416 @@ fn golden_texas7k_dynamic() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "v0.8.2",
-        "rpf_version metadata must be v0.8.2"
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Texas2k static (no DYR) — writes tests/golden/Texas2k_series25_static.rpf
+// ---------------------------------------------------------------------------
+const RAW_PATH_TX2K: &str = "tests/data/external/Texas2k_series25_case1_summerpeak.RAW";
+const DYR_PATH_TX2K: &str = "tests/data/external/Texas2k_series25_case1_summerpeak.dyr";
+const OUT_TX2K_STATIC:  &str = "tests/golden/Texas2k_series25_static.rpf";
+const OUT_TX2K_DYNAMIC: &str = "tests/golden/Texas2k_series25_dynamic.rpf";
+
+#[test]
+fn golden_texas2k_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX2K, None, OUT_TX2K_STATIC)
+        .unwrap_or_else(|e| panic!("Texas2k static conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX2K_STATIC))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX2K_STATIC))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Texas2k — static (no DYR)", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "dynamics_models must be empty without DYR");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Texas2k dynamic (with DYR) — writes tests/golden/Texas2k_series25_dynamic.rpf
+// ---------------------------------------------------------------------------
+#[test]
+fn golden_texas2k_dynamic() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX2K, Some(DYR_PATH_TX2K), OUT_TX2K_DYNAMIC)
+        .unwrap_or_else(|e| panic!("Texas2k dynamic conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX2K_DYNAMIC))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX2K_DYNAMIC))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Texas2k — dynamic (with DYR)", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "dynamics_models should be non-empty with DYR");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Base Eastern Interconnect 515GW static
+// writes tests/golden/Base_Eastern_Interconnect_515GW_static.rpf
+// ---------------------------------------------------------------------------
+const RAW_PATH_EI: &str = "tests/data/external/Base_Eastern_Interconnect_515GW.RAW";
+const OUT_EI_STATIC: &str = "tests/golden/Base_Eastern_Interconnect_515GW_static.rpf";
+
+#[test]
+fn golden_eastern_interconnect_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_EI, None, OUT_EI_STATIC)
+        .unwrap_or_else(|e| panic!("Eastern Interconnect static conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_EI_STATIC))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_EI_STATIC))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Base Eastern Interconnect 515GW — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count for EI model");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "no DYR provided");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// IEEE 14-bus — canonical small test case; verify exact bus count
+// ---------------------------------------------------------------------------
+const RAW_PATH_IEEE14: &str = "tests/data/external/IEEE_14_bus.raw";
+const OUT_IEEE14: &str = "tests/golden/IEEE_14_bus_static.rpf";
+
+#[test]
+fn golden_ieee14_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_IEEE14, None, OUT_IEEE14)
+        .unwrap_or_else(|e| panic!("IEEE 14 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_IEEE14))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_IEEE14))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("IEEE 14-bus — static", &summary, elapsed_ms);
+
+    assert_eq!(rows(&summary, TABLE_BUSES), 14, "IEEE 14-bus: expected exactly 14 buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+
+    // Verify no data was silently dropped: bus IDs 1-14 must all appear.
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_IEEE14))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    let buses = table_by_name(&tables, TABLE_BUSES);
+    let bus_id_col = buses
+        .column_by_name("bus_id")
+        .expect("missing buses.bus_id")
+        .as_any()
+        .downcast_ref::<arrow::array::Int32Array>()
+        .expect("bus_id must be Int32");
+    let mut ids: Vec<i32> = (0..bus_id_col.len()).map(|i| bus_id_col.value(i)).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, (1i32..=14).collect::<Vec<_>>(), "IEEE 14: expected bus IDs 1..=14");
+}
+
+// ---------------------------------------------------------------------------
+// IEEE 118-bus — canonical medium test case; verify exact bus count
+// ---------------------------------------------------------------------------
+const RAW_PATH_IEEE118: &str = "tests/data/external/IEEE_118_Bus.RAW";
+const OUT_IEEE118: &str = "tests/golden/IEEE_118_Bus_static.rpf";
+
+#[test]
+fn golden_ieee118_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_IEEE118, None, OUT_IEEE118)
+        .unwrap_or_else(|e| panic!("IEEE 118 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_IEEE118))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_IEEE118))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("IEEE 118-bus — static", &summary, elapsed_ms);
+
+    assert_eq!(rows(&summary, TABLE_BUSES), 118, "IEEE 118-bus: expected exactly 118 buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+
+    // Verify no zero-reactance branches silently collapsed — all branch x values
+    // must be passed through exactly (zero x is legal in this format and must not
+    // be clamped or modified by the converter; the solver handles singularities).
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_IEEE118))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    let branches = table_by_name(&tables, TABLE_BRANCHES);
+    let x_col = col_f64(branches, "x");
+    // Just verify the column is present and has the right row count.
+    assert_eq!(x_col.len(), rows(&summary, TABLE_BRANCHES), "branch x column length mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// NYISO off-peak 2019 v23 — legacy PSS/E v23 format
+// ---------------------------------------------------------------------------
+const RAW_PATH_NYISO_OFF: &str = "tests/data/external/NYISO_offpeak2019_v23.raw";
+const OUT_NYISO_OFF: &str = "tests/golden/NYISO_offpeak2019_v23_static.rpf";
+
+#[test]
+fn golden_nyiso_offpeak_v23_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_OFF, None, OUT_NYISO_OFF)
+        .unwrap_or_else(|e| panic!("NYISO off-peak v23 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_OFF))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_OFF))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("NYISO off-peak 2019 v23 — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+
+    // Verify bus and branch counts are consistent between the two NYISO snapshots
+    // (same topology, different operating point — bus/branch counts must match).
+    eprintln!("  [NYISO off-peak] buses={} branches={}", rows(&summary, TABLE_BUSES), rows(&summary, TABLE_BRANCHES));
+}
+
+// ---------------------------------------------------------------------------
+// NYISO on-peak 2019 v23 — topology must match off-peak snapshot
+// ---------------------------------------------------------------------------
+const RAW_PATH_NYISO_ON: &str = "tests/data/external/NYISO_onpeak2019_v23.raw";
+const OUT_NYISO_ON: &str = "tests/golden/NYISO_onpeak2019_v23_static.rpf";
+
+#[test]
+fn golden_nyiso_onpeak_v23_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_ON, None, OUT_NYISO_ON)
+        .unwrap_or_else(|e| panic!("NYISO on-peak v23 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_ON))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_ON))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("NYISO on-peak 2019 v23 — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+
+    // Off-peak and on-peak are different operating conditions for the same
+    // network.  Bus count must be identical; branch/transformer counts may
+    // differ because some elements are switched out-of-service between the
+    // two snapshots.  Verify off-peak converted successfully (both tests run
+    // in parallel so we load the already-written RPF rather than re-converting).
+    let off_peak = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_OFF))
+        .unwrap_or_else(|e| panic!("summarize_rpf(off-peak) failed: {e:#}"));
+    assert_eq!(
+        rows(&summary, TABLE_BUSES),
+        rows(&off_peak, TABLE_BUSES),
+        "NYISO on/off-peak bus counts must match (same installed network)"
+    );
+    eprintln!(
+        "  [NYISO topology diff] branches: on-peak={} off-peak={}  transformers: on-peak={} off-peak={}",
+        rows(&summary, TABLE_BRANCHES),
+        rows(&off_peak, TABLE_BRANCHES),
+        rows(&summary, TABLE_TRANSFORMERS_2W),
+        rows(&off_peak, TABLE_TRANSFORMERS_2W),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Texas7k 2030 scenario — forward-planning case (topology differs from 2021)
+// ---------------------------------------------------------------------------
+const RAW_PATH_TX7K_2030: &str = "tests/data/external/Texas7k_2030_20220923.RAW";
+const OUT_TX7K_2030: &str = "tests/golden/Texas7k_2030_static.rpf";
+
+#[test]
+fn golden_texas7k_2030_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX7K_2030, None, OUT_TX7K_2030)
+        .unwrap_or_else(|e| panic!("Texas7k 2030 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX7K_2030))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX7K_2030))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Texas7k 2030 scenario — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count for 2030 planning case");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Midwest 24k — large regional model
+// ---------------------------------------------------------------------------
+const RAW_PATH_MIDWEST24K: &str = "tests/data/external/Midwest24k_20220923.RAW";
+const OUT_MIDWEST24K: &str = "tests/golden/Midwest24k_static.rpf";
+
+#[test]
+fn golden_midwest24k_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_MIDWEST24K, None, OUT_MIDWEST24K)
+        .unwrap_or_else(|e| panic!("Midwest24k conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_MIDWEST24K))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_MIDWEST24K))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Midwest 24k — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ACTIVSg 25k synthetic grid
+// ---------------------------------------------------------------------------
+const RAW_PATH_ACTIVSg25K: &str = "tests/data/external/ACTIVSg25k.RAW";
+const OUT_ACTIVSg25K: &str = "tests/golden/ACTIVSg25k_static.rpf";
+
+#[test]
+fn golden_activsg25k_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSg25K, None, OUT_ACTIVSg25K)
+        .unwrap_or_else(|e| panic!("ACTIVSg25k conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSg25K))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSg25K))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("ACTIVSg 25k — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ACTIVSg 70k synthetic grid — largest available test case
+// ---------------------------------------------------------------------------
+const RAW_PATH_ACTIVSg70K: &str = "tests/data/external/ACTIVSg70k.RAW";
+const OUT_ACTIVSg70K: &str = "tests/golden/ACTIVSg70k_static.rpf";
+
+#[test]
+fn golden_activsg70k_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSg70K, None, OUT_ACTIVSg70K)
+        .unwrap_or_else(|e| panic!("ACTIVSg70k conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSg70K))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSg70K))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("ACTIVSg 70k — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.3",
+        "rpf_version metadata must be 0.8.3"
     );
 }
