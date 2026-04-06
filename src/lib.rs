@@ -107,7 +107,7 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
     table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses, &bus_aggregates)?);
     table_batches.insert(
         TABLE_BRANCHES,
-        build_branches_batch(&network.branches, &bus_nominal_kv)?,
+        build_branches_batch(&network.branches, &bus_nominal_kv, base_mva)?,
     );
     table_batches.insert(
         TABLE_GENERATORS,
@@ -122,7 +122,10 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         TABLE_SWITCHED_SHUNTS,
         build_switched_shunts_batch(&network.switched_shunts, base_mva)?,
     );
-    table_batches.insert(TABLE_TRANSFORMERS_2W, build_transformers_2w_batch(&network.transformers)?);
+    table_batches.insert(
+        TABLE_TRANSFORMERS_2W,
+        build_transformers_2w_batch(&network.transformers, base_mva)?,
+    );
     table_batches.insert(TABLE_TRANSFORMERS_3W, empty_table(TABLE_TRANSFORMERS_3W)?);
     table_batches.insert(TABLE_AREAS, build_areas_batch(&network.areas)?);
     table_batches.insert(TABLE_ZONES, build_zones_batch(&network.zones)?);
@@ -538,6 +541,7 @@ fn build_buses_batch(
 fn build_branches_batch(
     branches: &[models::Branch],
     bus_nominal_kv: &HashMap<u32, f64>,
+    base_mva: f64,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BRANCHES).expect("branches schema must exist"));
 
@@ -569,9 +573,9 @@ fn build_branches_batch(
         b_shunt.append_value(branch.b);
         tap.append_value(1.0);   // PSS/E lines always have tap = 1.0
         phase.append_value(0.0); // no phase shift on line branches
-        rate_a.append_value(branch.ratea);
-        rate_b.append_value(branch.rateb);
-        rate_c.append_value(branch.ratec);
+        rate_a.append_value(branch.ratea / base_mva);
+        rate_b.append_value(branch.rateb / base_mva);
+        rate_c.append_value(branch.ratec / base_mva);
         status.append_value(branch.st != 0);
         name_b.append_null(); // branches have no name in RAW
         from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
@@ -825,6 +829,7 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
 
 fn build_transformers_2w_batch(
     transformers: &[models::TwoWindingTransformer],
+    base_mva: f64,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(
         table_schema(TABLE_TRANSFORMERS_2W).expect("transformers_2w schema must exist"),
@@ -869,9 +874,9 @@ fn build_transformers_2w_batch(
         nominal_tap_ratio.append_value(1.0); // TODO: derive from NOMV1/NOMV2
         phase_shift.append_value(t.ang1.to_radians());
         vector_group.append_value("Yy0"); // TODO: derive from CW/CZ
-        rate_a.append_value(t.rata1);
-        rate_b.append_value(t.ratb1);
-        rate_c.append_value(t.ratc1);
+        rate_a.append_value(t.rata1 / base_mva);
+        rate_b.append_value(t.ratb1 / base_mva);
+        rate_c.append_value(t.ratc1 / base_mva);
         status.append_value(t.stat != 0);
         name_b.append_null();
         from_nominal_kv.append_option(if t.nomv1 > 0.0 { Some(t.nomv1) } else { None });

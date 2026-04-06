@@ -203,6 +203,36 @@ fn golden_texas7k_static() {
         max_abs_step < 5.0,
         "switched shunt steps must be per-unit scale (max |B|={max_abs_step})"
     );
+
+    let branches = table_by_name(&tables, TABLE_BRANCHES);
+    let branch_rate_a = col_f64(branches, "rate_a");
+    let branch_rate_b = col_f64(branches, "rate_b");
+    let branch_rate_c = col_f64(branches, "rate_c");
+    let branch_max_rate = branch_rate_a
+        .values()
+        .iter()
+        .chain(branch_rate_b.values().iter())
+        .chain(branch_rate_c.values().iter())
+        .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+    assert!(
+        branch_max_rate < 50.0,
+        "branch rates should be per-unit scale (max |rate|={branch_max_rate})"
+    );
+
+    let transformers = table_by_name(&tables, TABLE_TRANSFORMERS_2W);
+    let tx_rate_a = col_f64(transformers, "rate_a");
+    let tx_rate_b = col_f64(transformers, "rate_b");
+    let tx_rate_c = col_f64(transformers, "rate_c");
+    let tx_max_rate = tx_rate_a
+        .values()
+        .iter()
+        .chain(tx_rate_b.values().iter())
+        .chain(tx_rate_c.values().iter())
+        .fold(0.0_f64, |acc, v| acc.max(v.abs()));
+    assert!(
+        tx_max_rate < 50.0,
+        "transformer rates should be per-unit scale (max |rate|={tx_max_rate})"
+    );
 }
 
 // ---------------------------------------------------------------------------
