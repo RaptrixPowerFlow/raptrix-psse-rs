@@ -13,9 +13,12 @@
 Copyright (c) 2026 Musto Technologies LLC
 
 This document provides the field-by-field rules for translating PSS/E RAW
-records into the Raptrix PowerFlow Interchange (`.rpf`) Arrow schema.
+records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.3) Arrow schema.
 
-> **Status: placeholder** — fill in as each section is ported from C++.
+> **Fidelity policy**: all numeric fields are written exactly as they appear in
+> the source RAW file.  No value clamping, substitution, or normalization is
+> applied at parse time.  Validation and singularity handling are the
+> responsibility of the downstream solver.
 
 ---
 
