@@ -166,8 +166,8 @@ fn golden_texas7k_static() {
     let bus_shunt_l1 = bus_g_shunt.values().iter().map(|v| v.abs()).sum::<f64>()
         + bus_b_shunt.values().iter().map(|v| v.abs()).sum::<f64>();
     assert!(
-        bus_shunt_l1 < 1.0e-9,
-        "buses.g_shunt/b_shunt should be zeroed for fixed_shunt rebuild path (L1={bus_shunt_l1})"
+        bus_shunt_l1 > 1.0e-9,
+        "bus g/b shunt aggregates should be materialized in per-unit (L1={bus_shunt_l1})"
     );
 
     let generators = table_by_name(&tables, TABLE_GENERATORS);
