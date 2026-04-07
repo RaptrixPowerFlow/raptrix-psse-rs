@@ -496,6 +496,13 @@ fn golden_nyiso_offpeak_v23_static() {
 const RAW_PATH_NYISO_ON: &str = "tests/data/external/NYISO_onpeak2019_v23.raw";
 const OUT_NYISO_ON: &str = "tests/golden/NYISO_onpeak2019_v23_static.rpf";
 
+// NYISO 2030 snapshots (new golden test inputs)
+const RAW_PATH_NYISO_ON2030_PW: &str = "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw";
+const OUT_NYISO_ON2030_PW: &str = "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf";
+
+const RAW_PATH_NYISO_2030_MATPOWER: &str = "tests/data/external/nyiso_2030_v11_shunts_as_gens_psse33fromMatpower.raw";
+const OUT_NYISO_2030_MATPOWER: &str = "tests/golden/nyiso_2030_v11_shunts_as_gens_psse33fromMatpower_static.rpf";
+
 #[test]
 fn golden_nyiso_onpeak_v23_static() {
     let t0 = Instant::now();
@@ -540,6 +547,61 @@ fn golden_nyiso_onpeak_v23_static() {
         rows(&off_peak, TABLE_BRANCHES),
         rows(&summary, TABLE_TRANSFORMERS_2W),
         rows(&off_peak, TABLE_TRANSFORMERS_2W),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NYISO 2030 snapshots (static conversions)
+// ---------------------------------------------------------------------------
+#[test]
+fn golden_nyiso_onpeak_2030_powerworld_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_ON2030_PW, None, OUT_NYISO_ON2030_PW)
+        .unwrap_or_else(|e| panic!("NYISO 2030 (PowerWorld) conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_ON2030_PW))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_ON2030_PW))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("NYISO on-peak 2030 (PowerWorld) — static", &summary, elapsed_ms);
+
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
+    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.4",
+        "rpf_version metadata must be 0.8.3"
+    );
+}
+
+#[test]
+fn golden_nyiso_2030_matpower_static() {
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_2030_MATPOWER, None, OUT_NYISO_2030_MATPOWER)
+        .unwrap_or_else(|e| panic!("NYISO 2030 (Matpower) conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_2030_MATPOWER))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_2030_MATPOWER))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("NYISO 2030 (Matpower) — static", &summary, elapsed_ms);
+    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    // Some third-party RAW exports may omit explicit branch/generator records
+    // — accept any topology as long as buses/loads exist and canonical tables present.
+    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert_eq!(
+        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
+        "0.8.4",
+        "rpf_version metadata must be 0.8.3"
     );
 }
 

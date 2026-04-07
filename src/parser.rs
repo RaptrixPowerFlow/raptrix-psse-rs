@@ -713,11 +713,8 @@ fn parse_branch_record(f: &[String], off: &VersionOffsets) -> Option<Branch> {
         j,
         ckt: field_str(f, 2).into_boxed_str(),
         r: field_f64(f, 3),
-        x: {
-            let x = field_f64(f, 4);
-            // Guard against near-zero reactance which would cause singular Y-bus
-            if x.abs() < 1e-4 { if x < 0.0 { -1e-4 } else { 1e-4 } } else { x }
-        },
+        // Preserve RAW branch reactance exactly; solver-side handling owns singularity policy.
+        x: field_f64(f, 4),
         b: field_f64(f, 5),
         ratea: field_f64(f, ra),
         rateb: field_f64(f, ra + 1),
