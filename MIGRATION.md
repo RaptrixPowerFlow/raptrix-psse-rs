@@ -12,6 +12,48 @@
 **raptrix-psse-rs**  
 Copyright (c) 2026 Musto Technologies LLC
 
+# Porting the C++ PSS/E Parser to Rust & Schema Version Migrations
+
+**raptrix-psse-rs**  
+Copyright (c) 2026 Musto Technologies LLC
+
+---
+
+## RPF Schema Version Migrations
+
+### v0.8.3 → v0.8.4: Planning-vs-Solved Semantics
+
+**Summary of changes:**
+- **Metadata table**: 6 new columns added (case_mode, solved_state_presence, solver_version, solver_iterations, solver_accuracy, solver_mode)
+- **Root metadata**: 2 new keys added (rpf.case_mode, rpf.solved_state_presence)
+- **Voltage planning semantics**: v_mag_set and v_ang_set now represent flat-start planning values, not snapshot state
+
+**PSS/E converter impact:**
+
+1. **All RAW files now export as `case_mode = flat_start_planning`** (planning case, not solved snapshot)
+2. **Voltage setpoint (`buses.v_mag_set`)**:
+   - **Before v0.8.4**: For buses without a valid generator VS, fallback to BUS.VM (snapshot voltage) — **INCORRECT** for planning
+   - **After v0.8.4**: For buses without a valid generator VS, use 1.0 pu flat-start default — **CORRECT** for planning
+   - Valid generator VS (0.85–1.15 pu) still used for PV buses
+3. **Voltage angle (`buses.v_ang_set`)**:
+   - **Before v0.8.4**: Used BUS.VA (snapshot angle) — **INCORRECT** for planning
+   - **After v0.8.4**: Always 0.0 rad (flat start) — **CORRECT** for planning
+4. **Solved state (`buses_solved`, `generators_solved`)**:
+   - **Before v0.8.4**: Not present (no solved tables)
+   - **After v0.8.4**: Not present (no solved tables; PSS/E is planning-only converter)
+5. **Solver provenance**:
+   - **Before v0.8.4**: Not present
+   - **After v0.8.4**: All null (planning export, no solver provenance)
+
+**Backward compatibility:**
+- v0.8.3-produced MFR files with incorrect v_mag_set/v_ang_set will **NOT** auto-convert
+- Regenerate all golden test files using v0.8.4 converter
+- Reader tools must support both versions (locked contract) but will observe planning vs solved semantics enforced by case_mode
+
+---
+
+## C++ PSS/E Parser Porting Guide
+
 This document is a step-by-step guide for incrementally porting the existing
 C++ PSS/E parser into `src/parser.rs` and `src/models.rs`.
 

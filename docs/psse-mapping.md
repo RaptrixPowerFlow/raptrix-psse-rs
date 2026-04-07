@@ -13,12 +13,36 @@
 Copyright (c) 2026 Musto Technologies LLC
 
 This document provides the field-by-field rules for translating PSS/E RAW
-records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.3) Arrow schema.
+records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.4) Arrow schema.
 
 > **Fidelity policy**: all numeric fields are written exactly as they appear in
 > the source RAW file.  No value clamping, substitution, or normalization is
 > applied at parse time.  Validation and singularity handling are the
 > responsibility of the downstream solver.
+
+---
+
+## Planning vs. Solved Semantics (v0.8.4+)
+
+**PSS/E RAW files represent a case snapshot at a single point in time.** Each file contains:
+- **Topology**: bus and branch connectivity (fixed)
+- **Operating point**: generator dispatch, load, voltages (the snapshot)
+
+When exported to RPF, this snapshot is treated as a **planning case** with the following semantics:
+
+- **Case mode**: `flat_start_planning` (always)
+- **Voltage setpoint** (`buses.v_mag_set`): 
+  - For PV buses: generator `VS` when valid (0.85–1.15 pu), otherwise flat-start default of 1.0 pu
+  - For PQ buses: flat-start default of 1.0 pu (never BUS.VM, which is snapshot state)
+- **Voltage angle** (`buses.v_ang_set`):
+  - Always 0.0 rad (flat start) — never BUS.VA, which is the solved angle snapshot
+- **Solved state**: not present (no `buses_solved` or `generators_solved` tables)
+- **Solver provenance**: all null
+
+> **PSS/E semantics clarification**:  
+> - BUS.VM and BUS.VA are **snapshot values** (what the grid state was when the file was saved)
+> - GENERATOR.VS is a **control setpoint** (what the AVR is targeting)
+> - Only VS is used for planning voltage targets; VM/VA are discarded for planning exports
 
 ---
 
