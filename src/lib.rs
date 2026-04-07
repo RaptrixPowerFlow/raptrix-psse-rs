@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.3 converter.
+//! Raptrix PowerFlow Interchange v0.8.4 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -38,7 +38,8 @@ use arrow::{
 };
 use raptrix_cim_arrow::{
     table_schema, write_root_rpf_with_metadata,
-    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
+    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_SOLVED_STATE_PRESENCE,
+    METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
     TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_CONTINGENCIES,
     TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_INTERFACES,
     TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
@@ -152,6 +153,16 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
     additional_root_metadata.insert(
         METADATA_KEY_VALIDATION_MODE.to_string(),
         "converter_export".to_string(),
+    );
+    // v0.8.4: case_mode — PSS/E imports are always planning (flat_start_planning).
+    additional_root_metadata.insert(
+        METADATA_KEY_CASE_MODE.to_string(),
+        "flat_start_planning".to_string(),
+    );
+    // v0.8.4: solved_state_presence — this converter never produces solved data.
+    additional_root_metadata.insert(
+        METADATA_KEY_SOLVED_STATE_PRESENCE.to_string(),
+        "not_computed".to_string(),
     );
 
     write_root_rpf_with_metadata(output, &table_batches, &root_options, &additional_root_metadata)
@@ -346,7 +357,7 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
     let base_mva = arrow::array::Float64Array::from(vec![network.case_id.sbase]);
     let frequency_hz = arrow::array::Float64Array::from(vec![network.case_id.basfrq]);
     let psse_version = arrow::array::Int32Array::from(vec![network.case_id.rev as i32]);
-    let is_planning_case = arrow::array::BooleanArray::from(vec![false]);
+    let is_planning_case = arrow::array::BooleanArray::from(vec![true]);
 
     // dict string columns
     let mut study_name = StringDictionaryBuilder::<Int32Type>::new();
@@ -374,6 +385,24 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
         .clone();
     let custom_metadata = new_null_array(&custom_meta_type, 1);
 
+    // v0.8.4: case_mode (required) — PSS/E imports are always flat_start_planning.
+    let mut case_mode_arr = StringDictionaryBuilder::<Int32Type>::new();
+    case_mode_arr.append_value("flat_start_planning");
+
+    // v0.8.4: solved_state_presence — this converter never produces solved data.
+    let mut solved_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
+    solved_state_presence_arr.append_value("not_computed");
+
+    // v0.8.4: solver provenance — all null for planning exports.
+    let mut solver_version_arr = StringBuilder::new();
+    solver_version_arr.append_null();
+    let mut solver_iterations_arr = Int32Builder::new();
+    solver_iterations_arr.append_null();
+    let mut solver_accuracy_arr = Float64Builder::new();
+    solver_accuracy_arr.append_null();
+    let mut solver_mode_arr = StringDictionaryBuilder::<Int32Type>::new();
+    solver_mode_arr.append_null();
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -389,6 +418,13 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
             Arc::new(case_fingerprint.finish()),
             Arc::new(validation_mode.finish()),
             custom_metadata,
+            // v0.8.4 columns
+            Arc::new(case_mode_arr.finish()),
+            Arc::new(solved_state_presence_arr.finish()),
+            Arc::new(solver_version_arr.finish()),
+            Arc::new(solver_iterations_arr.finish()),
+            Arc::new(solver_accuracy_arr.finish()),
+            Arc::new(solver_mode_arr.finish()),
         ],
     )
     .context("building metadata batch")
@@ -519,8 +555,10 @@ fn build_buses_batch(
         bus_type.append_value(bus.ide as i8);
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
-        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(bus.vm));
-        v_ang_set.append_value(bus.va.to_radians());
+        // v0.8.4: flat-start planning semantics: v_mag_set from generator VS (if valid), else 1.0 (never bus.vm).
+        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(1.0));
+        // v0.8.4: flat-start planning angle is always 0.0 (never bus.va which is snapshot state).
+        v_ang_set.append_value(0.0);
         q_min.append_value(q_min_val);
         q_max.append_value(q_max_val);
         g_shunt.append_value(agg.g_shunt);
