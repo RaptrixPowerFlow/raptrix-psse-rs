@@ -131,7 +131,7 @@ fn golden_texas7k_static() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -261,7 +261,7 @@ fn golden_texas7k_dynamic() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -297,7 +297,7 @@ fn golden_texas2k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -325,7 +325,7 @@ fn golden_texas2k_dynamic() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -360,7 +360,7 @@ fn golden_eastern_interconnect_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -392,7 +392,7 @@ fn golden_ieee14_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -438,7 +438,7 @@ fn golden_ieee118_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -481,7 +481,7 @@ fn golden_nyiso_offpeak_v23_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -525,7 +525,7 @@ fn golden_nyiso_onpeak_v23_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -575,7 +575,7 @@ fn golden_nyiso_onpeak_2030_powerworld_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -600,7 +600,7 @@ fn golden_nyiso_2030_matpower_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -633,7 +633,7 @@ fn golden_texas7k_2030_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -666,7 +666,7 @@ fn golden_midwest24k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -699,7 +699,7 @@ fn golden_activsg25k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -732,7 +732,7 @@ fn golden_activsg70k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.4",
+        "0.8.5",
         "rpf_version metadata must be 0.8.3"
     );
 }
