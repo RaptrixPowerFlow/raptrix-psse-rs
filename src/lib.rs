@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.4 converter.
+//! Raptrix PowerFlow Interchange v0.8.5 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -103,8 +103,10 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         100.0
     };
     let case_fingerprint = compute_case_fingerprint(&network);
+    // v0.8.5: detect warm vs flat start from RAW bus voltage state.
+    let case_mode = detect_case_mode(&network);
 
-    table_batches.insert(TABLE_METADATA, build_metadata_batch(&network, &case_fingerprint)?);
+    table_batches.insert(TABLE_METADATA, build_metadata_batch(&network, &case_fingerprint, case_mode)?);
     table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses, &bus_aggregates)?);
     table_batches.insert(
         TABLE_BRANCHES,
@@ -154,12 +156,12 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         METADATA_KEY_VALIDATION_MODE.to_string(),
         "converter_export".to_string(),
     );
-    // v0.8.4: case_mode — PSS/E imports are always planning (flat_start_planning).
+    // v0.8.5: case_mode — detected from RAW bus voltage state.
     additional_root_metadata.insert(
         METADATA_KEY_CASE_MODE.to_string(),
-        "flat_start_planning".to_string(),
+        case_mode.to_string(),
     );
-    // v0.8.4: solved_state_presence — this converter never produces solved data.
+    // v0.8.5: solved_state_presence — this converter never produces solved data.
     additional_root_metadata.insert(
         METADATA_KEY_SOLVED_STATE_PRESENCE.to_string(),
         "not_computed".to_string(),
@@ -344,11 +346,28 @@ fn compute_case_fingerprint(network: &Network) -> String {
     format!("psse:{:016x}", hasher.finish())
 }
 
+/// Determine case_mode from RAW bus voltage state.
+///
+/// If all buses have vm ≈ 1.0 pu and va ≈ 0.0°, the RAW file is a flat-start
+/// case and we export `flat_start_planning`.  Otherwise bus.vm / bus.va contain
+/// a solved operating point from the RAW file so we export `warm_start_planning`
+/// and preserve those values in the buses table v_mag_set / v_ang_set columns.
+fn detect_case_mode(network: &Network) -> &'static str {
+    let is_flat = network.buses.iter().all(|b| {
+        (b.vm - 1.0).abs() < 1.0e-4 && b.va.abs() < 1.0e-4
+    });
+    if is_flat {
+        "flat_start_planning"
+    } else {
+        "warm_start_planning"
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Table builders
 // ---------------------------------------------------------------------------
 
-fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Result<RecordBatch> {
+fn build_metadata_batch(network: &Network, case_fingerprint_value: &str, case_mode: &str) -> Result<RecordBatch> {
     let schema = Arc::new(
         table_schema(TABLE_METADATA).expect("metadata schema must exist"),
     );
@@ -385,15 +404,15 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
         .clone();
     let custom_metadata = new_null_array(&custom_meta_type, 1);
 
-    // v0.8.4: case_mode (required) — PSS/E imports are always flat_start_planning.
+    // v0.8.5: case_mode (required) — determined by caller based on RAW voltage state.
     let mut case_mode_arr = StringDictionaryBuilder::<Int32Type>::new();
-    case_mode_arr.append_value("flat_start_planning");
+    case_mode_arr.append_value(case_mode);
 
-    // v0.8.4: solved_state_presence — this converter never produces solved data.
+    // v0.8.5: solved_state_presence — this converter never produces solved data.
     let mut solved_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
     solved_state_presence_arr.append_value("not_computed");
 
-    // v0.8.4: solver provenance — all null for planning exports.
+    // v0.8.5: solver provenance — all null for planning exports.
     let mut solver_version_arr = StringBuilder::new();
     solver_version_arr.append_null();
     let mut solver_iterations_arr = Int32Builder::new();
@@ -402,6 +421,16 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
     solver_accuracy_arr.append_null();
     let mut solver_mode_arr = StringDictionaryBuilder::<Int32Type>::new();
     solver_mode_arr.append_null();
+
+    // v0.8.5: angle-reference metadata — all null for planning exports.
+    let mut slack_bus_id_solved_arr = Int32Builder::new();
+    slack_bus_id_solved_arr.append_null();
+    let mut angle_reference_deg_arr = Float64Builder::new();
+    angle_reference_deg_arr.append_null();
+    // v0.8.5: solved_shunt_state_presence — null for planning exports;
+    // only populated by the solver when case_mode=solved_snapshot.
+    let mut solved_shunt_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
+    solved_shunt_state_presence_arr.append_null();
 
     RecordBatch::try_new(
         schema,
@@ -425,6 +454,10 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str) -> Resu
             Arc::new(solver_iterations_arr.finish()),
             Arc::new(solver_accuracy_arr.finish()),
             Arc::new(solver_mode_arr.finish()),
+            // v0.8.5 columns
+            Arc::new(slack_bus_id_solved_arr.finish()),
+            Arc::new(angle_reference_deg_arr.finish()),
+            Arc::new(solved_shunt_state_presence_arr.finish()),
         ],
     )
     .context("building metadata batch")
@@ -555,10 +588,12 @@ fn build_buses_batch(
         bus_type.append_value(bus.ide as i8);
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
-        // v0.8.4: flat-start planning semantics: v_mag_set from generator VS (if valid), else 1.0 (never bus.vm).
-        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(1.0));
-        // v0.8.4: flat-start planning angle is always 0.0 (never bus.va which is snapshot state).
-        v_ang_set.append_value(0.0);
+        // v0.8.5: preserve RAW voltage setpoints for warm-start parity.
+        // Use generator VS for regulated buses; fallback to RAW bus VM so
+        // solved NYISO/external snapshots retain their initial conditions.
+        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(bus.vm));
+        // Preserve RAW bus angle (PSS/E degrees → radians for raptrix-core).
+        v_ang_set.append_value(bus.va.to_radians());
         q_min.append_value(q_min_val);
         q_max.append_value(q_max_val);
         g_shunt.append_value(agg.g_shunt);
@@ -858,6 +893,11 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
     // v0.8.3: b_init_pu is the authoritative initial susceptance — written directly
     // from BINIT / base_mva so mixed-sign banks round-trip exactly regardless of step ordering.
     let mut b_init_pu = Float64Builder::new();
+    // v0.8.5: shunt_id — stable per-bank identity; synthesized as "{bus_id}_shunt_{n}"
+    // (1-indexed among banks sharing a bus).  Matches CIM ShuntCompensator mRID path.
+    let mut shunt_id = StringDictionaryBuilder::<Int32Type>::new();
+    // Track per-bus shunt index for synthesizing shunt_id.
+    let mut bus_shunt_counter: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
 
     for shunt in shunts {
         bus_id.append_value(shunt.i as i32);
@@ -879,6 +919,14 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
         let step_count = estimate_current_step(binit_pu, &step_values_pu);
         current_step.append_value(step_count);
         b_init_pu.append_value(binit_pu);
+
+        // v0.8.5: synthesize stable shunt_id — "{bus_id}_shunt_{n}" (1-indexed per bus).
+        let n = {
+            let cnt = bus_shunt_counter.entry(shunt.i).or_insert(0);
+            *cnt += 1;
+            *cnt
+        };
+        shunt_id.append_value(format!("{}_shunt_{}", shunt.i, n));
     }
 
     RecordBatch::try_new(
@@ -891,6 +939,7 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
             Arc::new(b_steps.finish()),
             Arc::new(current_step.finish()),
             Arc::new(b_init_pu.finish()),
+            Arc::new(shunt_id.finish()),
         ],
     )
     .context("building switched_shunts batch")
