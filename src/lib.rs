@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.5 converter.
+//! Raptrix PowerFlow Interchange v0.8.6 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -20,6 +20,7 @@
 
 pub mod models;
 pub mod parser;
+pub mod validation;
 
 // Re-export reader utilities so tests and tools can use them directly.
 pub use raptrix_cim_arrow::{read_rpf_tables, summarize_rpf, RpfSummary, TableSummary};
@@ -84,8 +85,6 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         network.dyr_generators = parser::parse_dyr(std::path::Path::new(dyr))
             .with_context(|| format!("failed to parse DYR file: {dyr}"))?;
     }
-
-    emit_fast_diagnostics(&network, dyr_path);
 
     // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
     let dyr_lookup: HashMap<(u32, String), &models::DyrGeneratorData> = network
@@ -172,6 +171,20 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
 
     eprintln!("[converter] wrote {output}");
     Ok(())
+}
+
+/// Parse a PSS/E RAW file and run the full MMWG §7.3 validation suite
+/// against the resulting network model.
+///
+/// This function never writes an output file — it is purely diagnostic.
+/// For the default (speed-optimised) conversion path see [`write_psse_to_rpf`].
+///
+/// # Errors
+/// Returns an error if the RAW file cannot be parsed.
+pub fn validate_psse_raw(raw_path: &str) -> Result<validation::ValidationReport> {
+    let network = parser::parse_raw(std::path::Path::new(raw_path))
+        .with_context(|| format!("failed to parse RAW file: {raw_path}"))?;
+    Ok(validation::run_mmwg_checks(&network))
 }
 
 fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
@@ -681,6 +694,26 @@ fn build_branches_batch(
         to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
     }
 
+    let n_rows = branches.len();
+    let dict_int32_utf8 = arrow::datatypes::DataType::Dictionary(
+        Box::new(arrow::datatypes::DataType::Int32),
+        Box::new(arrow::datatypes::DataType::Utf8),
+    );
+    let map_str_f64 = arrow::datatypes::DataType::Map(
+        std::sync::Arc::new(arrow::datatypes::Field::new(
+            "entries",
+            arrow::datatypes::DataType::Struct(
+                vec![
+                    arrow::datatypes::Field::new("key", arrow::datatypes::DataType::Utf8, false),
+                    arrow::datatypes::Field::new("value", arrow::datatypes::DataType::Float64, false),
+                ]
+                .into(),
+            ),
+            false,
+        )),
+        false,
+    );
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -700,6 +733,15 @@ fn build_branches_batch(
             Arc::new(name_b.finish()),
             Arc::new(from_nominal_kv.finish()),
             Arc::new(to_nominal_kv.finish()),
+            // v0.8.6: FACTS control metadata — all null for non-FACTS branches
+            new_null_array(&dict_int32_utf8, n_rows),
+            new_null_array(&dict_int32_utf8, n_rows),
+            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
+            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
+            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
+            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
+            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
+            new_null_array(&map_str_f64, n_rows),
         ],
     )
     .context("building branches batch")

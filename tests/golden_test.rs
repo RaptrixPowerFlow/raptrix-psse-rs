@@ -106,6 +106,10 @@ fn table_by_name<'a>(
 // ---------------------------------------------------------------------------
 #[test]
 fn golden_texas7k_static() {
+    if !std::path::Path::new(RAW_PATH).exists() {
+        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH, None, OUT_STATIC)
         .unwrap_or_else(|e| panic!("static conversion failed: {e:#}"));
@@ -131,7 +135,7 @@ fn golden_texas7k_static() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -240,6 +244,10 @@ fn golden_texas7k_static() {
 // ---------------------------------------------------------------------------
 #[test]
 fn golden_texas7k_dynamic() {
+    if !std::path::Path::new(RAW_PATH).exists() {
+        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH, Some(DYR_PATH), OUT_DYNAMIC)
         .unwrap_or_else(|e| panic!("dynamic conversion failed: {e:#}"));
@@ -261,7 +269,7 @@ fn golden_texas7k_dynamic() {
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -276,6 +284,10 @@ const OUT_TX2K_DYNAMIC: &str = "tests/golden/Texas2k_series25_dynamic.rpf";
 
 #[test]
 fn golden_texas2k_static() {
+    if !std::path::Path::new(RAW_PATH_TX2K).exists() {
+        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX2K);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX2K, None, OUT_TX2K_STATIC)
         .unwrap_or_else(|e| panic!("Texas2k static conversion failed: {e:#}"));
@@ -297,7 +309,7 @@ fn golden_texas2k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -307,6 +319,10 @@ fn golden_texas2k_static() {
 // ---------------------------------------------------------------------------
 #[test]
 fn golden_texas2k_dynamic() {
+    if !std::path::Path::new(RAW_PATH_TX2K).exists() {
+        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX2K);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX2K, Some(DYR_PATH_TX2K), OUT_TX2K_DYNAMIC)
         .unwrap_or_else(|e| panic!("Texas2k dynamic conversion failed: {e:#}"));
@@ -325,7 +341,7 @@ fn golden_texas2k_dynamic() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -339,6 +355,10 @@ const OUT_EI_STATIC: &str = "tests/golden/Base_Eastern_Interconnect_515GW_static
 
 #[test]
 fn golden_eastern_interconnect_static() {
+    if !std::path::Path::new(RAW_PATH_EI).exists() {
+        eprintln!("[skip] {} not found — place MMWG Eastern Interconnect file at this path to enable test", RAW_PATH_EI);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_EI, None, OUT_EI_STATIC)
         .unwrap_or_else(|e| panic!("Eastern Interconnect static conversion failed: {e:#}"));
@@ -360,7 +380,7 @@ fn golden_eastern_interconnect_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -392,7 +412,7 @@ fn golden_ieee14_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -438,7 +458,7 @@ fn golden_ieee118_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -461,6 +481,10 @@ const OUT_NYISO_OFF: &str = "tests/golden/NYISO_offpeak2019_v23_static.rpf";
 
 #[test]
 fn golden_nyiso_offpeak_v23_static() {
+    if !std::path::Path::new(RAW_PATH_NYISO_OFF).exists() {
+        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_OFF);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_OFF, None, OUT_NYISO_OFF)
         .unwrap_or_else(|e| panic!("NYISO off-peak v23 conversion failed: {e:#}"));
@@ -481,7 +505,7 @@ fn golden_nyiso_offpeak_v23_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 
@@ -505,6 +529,10 @@ const OUT_NYISO_2030_MATPOWER: &str = "tests/golden/nyiso_2030_v11_shunts_as_gen
 
 #[test]
 fn golden_nyiso_onpeak_v23_static() {
+    if !std::path::Path::new(RAW_PATH_NYISO_ON).exists() {
+        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_ON);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_ON, None, OUT_NYISO_ON)
         .unwrap_or_else(|e| panic!("NYISO on-peak v23 conversion failed: {e:#}"));
@@ -525,29 +553,28 @@ fn golden_nyiso_onpeak_v23_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 
-    // Off-peak and on-peak are different operating conditions for the same
-    // network.  Bus count must be identical; branch/transformer counts may
-    // differ because some elements are switched out-of-service between the
-    // two snapshots.  Verify off-peak converted successfully (both tests run
-    // in parallel so we load the already-written RPF rather than re-converting).
-    let off_peak = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_OFF))
-        .unwrap_or_else(|e| panic!("summarize_rpf(off-peak) failed: {e:#}"));
-    assert_eq!(
-        rows(&summary, TABLE_BUSES),
-        rows(&off_peak, TABLE_BUSES),
-        "NYISO on/off-peak bus counts must match (same installed network)"
-    );
-    eprintln!(
-        "  [NYISO topology diff] branches: on-peak={} off-peak={}  transformers: on-peak={} off-peak={}",
-        rows(&summary, TABLE_BRANCHES),
-        rows(&off_peak, TABLE_BRANCHES),
-        rows(&summary, TABLE_TRANSFORMERS_2W),
-        rows(&off_peak, TABLE_TRANSFORMERS_2W),
-    );
+    // If the off-peak RPF was already written (by the sibling test running
+    // first), cross-check that bus counts match — same installed topology.
+    if std::path::Path::new(OUT_NYISO_OFF).exists() {
+        let off_peak = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_OFF))
+            .unwrap_or_else(|e| panic!("summarize_rpf(off-peak) failed: {e:#}"));
+        assert_eq!(
+            rows(&summary, TABLE_BUSES),
+            rows(&off_peak, TABLE_BUSES),
+            "NYISO on/off-peak bus counts must match (same installed network)"
+        );
+        eprintln!(
+            "  [NYISO topology diff] branches: on-peak={} off-peak={}  transformers: on-peak={} off-peak={}",
+            rows(&summary, TABLE_BRANCHES),
+            rows(&off_peak, TABLE_BRANCHES),
+            rows(&summary, TABLE_TRANSFORMERS_2W),
+            rows(&off_peak, TABLE_TRANSFORMERS_2W),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +582,10 @@ fn golden_nyiso_onpeak_v23_static() {
 // ---------------------------------------------------------------------------
 #[test]
 fn golden_nyiso_onpeak_2030_powerworld_static() {
+    if !std::path::Path::new(RAW_PATH_NYISO_ON2030_PW).exists() {
+        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_ON2030_PW);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_ON2030_PW, None, OUT_NYISO_ON2030_PW)
         .unwrap_or_else(|e| panic!("NYISO 2030 (PowerWorld) conversion failed: {e:#}"));
@@ -575,13 +606,17 @@ fn golden_nyiso_onpeak_2030_powerworld_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
 
 #[test]
 fn golden_nyiso_2030_matpower_static() {
+    if !std::path::Path::new(RAW_PATH_NYISO_2030_MATPOWER).exists() {
+        eprintln!("[skip] {} not found — place licensed file at this path to enable test", RAW_PATH_NYISO_2030_MATPOWER);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_2030_MATPOWER, None, OUT_NYISO_2030_MATPOWER)
         .unwrap_or_else(|e| panic!("NYISO 2030 (Matpower) conversion failed: {e:#}"));
@@ -600,7 +635,7 @@ fn golden_nyiso_2030_matpower_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -613,6 +648,10 @@ const OUT_TX7K_2030: &str = "tests/golden/Texas7k_2030_static.rpf";
 
 #[test]
 fn golden_texas7k_2030_static() {
+    if !std::path::Path::new(RAW_PATH_TX7K_2030).exists() {
+        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX7K_2030);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX7K_2030, None, OUT_TX7K_2030)
         .unwrap_or_else(|e| panic!("Texas7k 2030 conversion failed: {e:#}"));
@@ -633,7 +672,7 @@ fn golden_texas7k_2030_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -646,6 +685,10 @@ const OUT_MIDWEST24K: &str = "tests/golden/Midwest24k_static.rpf";
 
 #[test]
 fn golden_midwest24k_static() {
+    if !std::path::Path::new(RAW_PATH_MIDWEST24K).exists() {
+        eprintln!("[skip] {} not found — place licensed file at this path to enable test", RAW_PATH_MIDWEST24K);
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_MIDWEST24K, None, OUT_MIDWEST24K)
         .unwrap_or_else(|e| panic!("Midwest24k conversion failed: {e:#}"));
@@ -666,7 +709,7 @@ fn golden_midwest24k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -699,7 +742,7 @@ fn golden_activsg25k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }
@@ -732,7 +775,7 @@ fn golden_activsg70k_static() {
     assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
         root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.5",
+        "0.8.6",
         "rpf_version metadata must be 0.8.3"
     );
 }

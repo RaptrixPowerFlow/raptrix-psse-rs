@@ -13,6 +13,32 @@ High-performance PSS/E (.raw + .dyr) to Raptrix PowerFlow Interchange (.rpf) con
 
 Part of the Raptrix PowerFlow ecosystem.
 
+---
+
+## Why RPF? The case for a modern interchange format
+
+PSS/E RAW, CIM/XML, and similar vendor formats were designed for human editors and
+1970s–1990s toolchains. They carry significant structural baggage:
+
+| Legacy format pain point | How RPF solves it |
+|---|---|
+| **Line-by-line ASCII parsing** — slow, fragile, encoding-ambiguous | **Apache Arrow IPC binary** — columnar, memory-mappable, zero-copy into the solver |
+| **Loosely specified fields** — optional columns, dialect differences between PSS/E 29–35, silent truncation | **Schema-versioned and strongly typed** — every field has a defined type, nullability, and unit; schema mismatches are caught at read time |
+| **No planning vs. solved distinction** — VM/VA in a RAW file could be a solved snapshot or a wild guess | **Explicit case semantics** — `case_mode` field encodes `flat_start_planning`, `warm_start_planning`, or `solved`; no ambiguity for the downstream solver |
+| **Monolithic single-file model** — topology, operating point, dynamics, and contingencies all mixed in opaque section blocks | **15 canonical tables** — buses, branches, generators, transformers, contingencies, dynamics models, and more, each independently addressable |
+| **Vendor lock-in** — RAW files require a PSS/E license to create or simulate | **MPL 2.0 open standard** — read, write, and inspect with any Apache Arrow library in Rust, Python, R, Go, or Java; no license required |
+| **No extensibility** — adding FACTS or hosting-capacity fields requires vendor cooperation | **Nullable extension columns** — FACTS, SCED, POI/hosting-capacity data lives in first-class nullable columns; older readers ignore unknown fields gracefully |
+
+### In practice
+
+- **Faster ingestion**: the entire RPF payload is one contiguous Arrow IPC buffer. A 70 000-bus case loads into the solver in a single memory-map call — no tokenizing, no string-to-float conversion at runtime.
+- **Safer pipelines**: schema validation catches unit errors, missing slack buses, and topology anomalies before a single solver iteration runs. The optional `raptrix-psse-rs validate` command runs MMWG §7.3 conformance checks on any RAW file before conversion.
+- **Smarter workflows**: contingency tables, interface limits, dynamics model parameters, and area interchange schedules all travel in the same file. No more assembling five separate inputs before a security analysis run.
+
+> RPF is the interchange format that PSS/E RAW would be if it were designed today.
+
+---
+
 ## Ecosystem Repos
 
 - [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs) - Unlimited-size CIM to RPF converter suite.

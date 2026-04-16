@@ -8,9 +8,11 @@
 //! CLI entry-point for `raptrix-psse-rs`.
 //!
 //! ## Subcommands
-//! * `convert` — parse a PSS/E `.raw` file (and optional `.dyr`) and write a
+//! * `convert`  — parse a PSS/E `.raw` file (and optional `.dyr`) and write a
 //!   Raptrix PowerFlow Interchange `.rpf` file.
-//! * `view`    — pretty-print an existing `.rpf` file summary.
+//! * `view`     — pretty-print an existing `.rpf` file summary.
+//! * `validate` — run MMWG §7.3 conformance checks on a PSS/E `.raw` file
+//!   without writing any output (opt-in only; zero overhead on the convert path).
 
 use std::path::PathBuf;
 
@@ -56,6 +58,24 @@ enum Commands {
         #[arg(long)]
         input: PathBuf,
     },
+
+    /// Run MMWG §7.3 power flow data quality checks on a PSS/E RAW file.
+    ///
+    /// Parses the RAW file but writes no output — prints a validation report to
+    /// stderr.  Use `--strict` in CI to exit with code 1 on any errors.
+    ///
+    /// Example:
+    ///   raptrix-psse-rs validate --raw case.raw
+    ///   raptrix-psse-rs validate --raw case.raw --strict
+    Validate {
+        /// Path to the PSS/E RAW file (.raw) to validate.
+        #[arg(long)]
+        raw: PathBuf,
+
+        /// Exit with code 1 if any ERROR-level issues are found (useful for CI).
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -99,6 +119,17 @@ fn main() -> Result<()> {
             );
             for t in &summary.tables {
                 println!("  {:30} {:6} rows", t.table_name, t.rows);
+            }
+        }
+
+        Commands::Validate { raw, strict } => {
+            let raw_str = raw
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("RAW path is not valid UTF-8"))?;
+            let report = raptrix_psse_rs::validate_psse_raw(raw_str)?;
+            report.print_summary();
+            if strict && !report.is_clean() {
+                std::process::exit(1);
             }
         }
     }
