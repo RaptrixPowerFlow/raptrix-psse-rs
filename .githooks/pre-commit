@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prevent accidental commits of sensitive or proprietary files.
+# Enable locally with: `git config core.hooksPath .githooks`
+
+bad=0
+
+# Check staged filenames
+while IFS= read -r -d '' file; do
+  case "$file" in
+    *.raw|*.RAW|*.dyr|*.DYR|*.sav|*.SAV|*.epc|*.EPC|*.pss|*.PSS|*.pdf|INTERNAL-MARKETING-GUIDE.md)
+      echo "[githooks] blocked filename staged: $file"
+      bad=1
+      ;;
+  esac
+
+  # Skip binary files for content checks
+  if git show :"$file" | head -c 8000 | grep -I --quiet -E "\.(jpg|png|exe|dll|so|dylib)"; then
+    continue
+  fi
+
+  # Look for common secret markers in staged content
+  if git show :"$file" | grep -E -n --quiet \
+       "BEGIN RSA PRIVATE KEY|BEGIN PRIVATE KEY|BEGIN DSA PRIVATE KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AKIA[0-9A-Z]{16}|password=|api_key|API_KEY|token=|-----BEGIN OPENSSH PRIVATE KEY-----"; then
+    echo "[githooks] potential secret found in staged file: $file"
+    git show :"$file" | grep -E -n "BEGIN RSA PRIVATE KEY|BEGIN PRIVATE KEY|BEGIN DSA PRIVATE KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AKIA[0-9A-Z]{16}|password=|api_key|API_KEY|token=|-----BEGIN OPENSSH PRIVATE KEY-----" | sed -n '1,5p'
+    bad=1
+  fi
+done < <(git diff --cached --name-only -z)
+
+if [ "$bad" -ne 0 ]; then
+  echo "\nCommit aborted by .githooks/pre-commit — remove or unstaged sensitive files, then try again."
+  echo "To bypass (advanced): git commit --no-verify"
+  exit 1
+fi
+
+exit 0
