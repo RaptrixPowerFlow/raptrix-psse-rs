@@ -13,6 +13,25 @@ High-performance PSS/E (.raw + .dyr) to Raptrix PowerFlow Interchange (.rpf) con
 
 Part of the Raptrix PowerFlow ecosystem.
 
+## Ecosystem Repos
+
+- [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs) - Unlimited-size CIM to RPF converter suite.
+- [raptrix-psse-rs](https://github.com/RaptrixPowerFlow/raptrix-psse-rs) - Unlimited-size PSS/E to RPF converter.
+- [raptrix-studio](https://github.com/RaptrixPowerFlow/raptrix-studio) - Free unlimited RPF viewer/editor.
+
+## Quick Start
+
+```bash
+raptrix-psse-rs convert --raw my_case.raw --output my_case.rpf
+raptrix-psse-rs view --input my_case.rpf
+```
+
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
+
+MPL 2.0 — free to use, modify, and distribute.
+
+For production-scale grids, see the commercial Raptrix Core offering. Flexible commercial licensing — contact us for seats, enterprise, or cloud options.
+
 ---
 
 ## Why RPF? The case for a modern interchange format
@@ -38,27 +57,6 @@ PSS/E RAW, CIM/XML, and similar vendor formats were designed for human editors a
 > RPF is the interchange format that PSS/E RAW would be if it were designed today.
 
 ---
-
-## Ecosystem Repos
-
-- [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs) - Unlimited-size CIM to RPF converter suite.
-- [raptrix-psse-rs](https://github.com/RaptrixPowerFlow/raptrix-psse-rs) - Unlimited-size PSS/E to RPF converter.
-- [raptrix-studio](https://github.com/RaptrixPowerFlow/raptrix-studio) - Free unlimited RPF viewer/editor.
-
-## Quick Start
-
-```bash
-raptrix-psse-rs convert --raw my_case.raw --output my_case.rpf
-raptrix-psse-rs view --input my_case.rpf
-```
-
-[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
-
-MPL 2.0 - free to use, modify, and distribute.
-
-For production-grid solving and security analysis workflows, see the commercial Raptrix core offering: [contact Raptrix PowerFlow](https://github.com/RaptrixPowerFlow).
-
-Flexible commercial licensing - contact us for seats, enterprise, or cloud options.
 
 ## Build From Source
 
