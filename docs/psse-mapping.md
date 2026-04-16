@@ -1,6 +1,6 @@
 <!--
   raptrix-psse-rs
-  Copyright (c) 2026 Musto Technologies LLC
+  Copyright (c) 2026 Raptrix PowerFlow
 
   This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
   If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -10,7 +10,7 @@
 # PSS/E → Raptrix PowerFlow Interchange — Field Mapping
 
 **raptrix-psse-rs**  
-Copyright (c) 2026 Musto Technologies LLC
+Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW
 records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.4) Arrow schema.

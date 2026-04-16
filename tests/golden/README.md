@@ -1,6 +1,6 @@
 <!--
   raptrix-psse-rs
-  Copyright (c) 2026 Musto Technologies LLC
+  Copyright (c) 2026 Raptrix PowerFlow
 
   This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
   If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -10,7 +10,7 @@
 # Golden-file tests for raptrix-psse-rs
 
 **raptrix-psse-rs**  
-Copyright (c) 2026 Musto Technologies LLC
+Copyright (c) 2026 Raptrix PowerFlow
 
 This directory holds input/output pairs used to drive regression tests for the
 PSS/E converter.  Adding a golden file is the recommended way to verify that a

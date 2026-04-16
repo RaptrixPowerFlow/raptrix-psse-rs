@@ -1,5 +1,5 @@
 # raptrix-psse-rs
-# Copyright (c) 2026 Musto Technologies LLC
+# Copyright (c) 2026 Raptrix PowerFlow
 #
 # This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 # If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -10,10 +10,10 @@ name = "raptrix-psse-rs"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-authors = ["Musto Technologies LLC <dev@mustotechnologies.com>"]
+authors = ["Raptrix PowerFlow <dev@raptrix.com>"]
 license = "MPL-2.0"
 description = "High-performance PSS/E (.raw + .dyr) → Raptrix PowerFlow Interchange v0.8.5 converter"
-repository = "https://github.com/MustoTechnologies/raptrix-psse-rs"
+repository = "https://github.com/RaptrixPowerFlow/raptrix-psse-rs"
 keywords = ["psse", "power-systems", "converter", "raptrix", "cim"]
 categories = ["command-line-utilities", "parser-implementations"]
 
