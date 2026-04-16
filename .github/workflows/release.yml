@@ -51,9 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Clone sibling raptrix-cim-rs
-        run: git clone --depth 1 https://github.com/RaptrixPowerFlow/raptrix-cim-rs ../raptrix-cim-rs
-
       - name: Resolve version
         id: version
         shell: bash
