@@ -1,5 +1,5 @@
-// Raptrix CIM-Arrow — High-performance open CIM profile by Musto Technologies LLC
-// Copyright (c) 2026 Musto Technologies LLC
+// Raptrix CIM-Arrow — High-performance open CIM profile by Raptrix PowerFlow
+// Copyright (c) 2026 Raptrix PowerFlow
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at

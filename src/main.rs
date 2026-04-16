@@ -1,5 +1,5 @@
 // raptrix-psse-rs
-// Copyright (c) 2026 Musto Technologies LLC
+// Copyright (c) 2026 Raptrix PowerFlow
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -18,12 +18,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// High-performance PSS/E → Raptrix PowerFlow Interchange converter.
-///
-/// raptrix-psse-rs
-/// Copyright (c) 2026 Musto Technologies LLC
 #[derive(Parser, Debug)]
 #[command(name = "raptrix-psse-rs")]
-#[command(author = "Musto Technologies LLC")]
+#[command(author = "Raptrix PowerFlow")]
 #[command(version, about, long_about = None)]
 struct Cli {
     #[command(subcommand)]

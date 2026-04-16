@@ -1,6 +1,6 @@
 <!--
     raptrix-psse-rs
-  Copyright (c) 2026 Musto Technologies LLC
+    Copyright (c) 2026 Raptrix PowerFlow
 
   This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
   If a copy of the MPL was not distributed with this file, You can obtain one at
@@ -10,12 +10,12 @@
 # Porting the C++ PSS/E Parser to Rust
 
 **raptrix-psse-rs**  
-Copyright (c) 2026 Musto Technologies LLC
+Copyright (c) 2026 Raptrix PowerFlow
 
 # Porting the C++ PSS/E Parser to Rust & Schema Version Migrations
 
 **raptrix-psse-rs**  
-Copyright (c) 2026 Musto Technologies LLC
+Copyright (c) 2026 Raptrix PowerFlow
 
 ---
 
