@@ -21,8 +21,8 @@ categories = ["command-line-utilities", "parser-implementations"]
 anyhow = "1.0"
 arrow = "58.0"
 clap = { version = "4", features = ["derive"] }
-# Sibling repo — use relative path so the absolute local directory stays off GitHub.
-raptrix-cim-arrow = { path = "../raptrix-cim-rs/raptrix-cim-arrow" }
+# Embedded sibling crate — lives at raptrix-cim-arrow/ inside this repo.
+raptrix-cim-arrow = { path = "./raptrix-cim-arrow" }
 
 [dev-dependencies]
 # Golden-file integration tests depend on the raptrix-cim-arrow reader.

@@ -1,18 +1,14 @@
-# Raptrix CIM-Arrow — High-performance open CIM profile by Raptrix PowerFlow
-# Copyright (c) 2026 Raptrix PowerFlow
-#
-# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
-# If a copy of the MPL was not distributed with this file, You can obtain one at
-# https://mozilla.org/MPL/2.0/.
-
 [package]
 name = "raptrix-cim-arrow"
-version = "0.1.0"
+version = "0.2.3"
 edition = "2024"
-rust-version = "1.85"
-authors = ["Raptrix PowerFlow <dev@raptrix.com>"]
+description = "Shared Raptrix CIM-Arrow schema and RPF Arrow IPC infrastructure"
 license = "MPL-2.0"
-description = "Shared CIM-Arrow writer/serialiser for the Raptrix PowerFlow Interchange format (stub — replace with the real crate from raptrix-cim-rs)"
-repository = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs"
+repository = "https://github.com/MustoTechnologies/raptrix-cim-rs"
+keywords = ["arrow", "power-systems", "schema", "rpf"]
+categories = ["data-structures", "science"]
 
 [dependencies]
+anyhow = "1.0"
+arrow = "58.0"
+memmap2 = "0.9"
