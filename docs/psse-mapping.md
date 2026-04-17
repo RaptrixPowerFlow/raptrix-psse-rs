@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.6) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.7) Apache
 Arrow schema.
 
 > **Fidelity policy**: numeric fields are written exactly as they appear in the
@@ -79,10 +79,10 @@ several `buses` columns:
 | REV | `rev` | `psse_version` | RAW file revision integer (e.g. 33, 35). |
 | BASFRQ | `basfrq` | `frequency_hz` | Nominal system frequency (Hz). |
 | `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. |
-| — | — | `raptrix_version` | Always `"0.8.6"` written by this converter. |
+| — | — | `raptrix_version` | Always `"0.8.7"` written by this converter. |
 | — | — | `is_planning_case` | Always `true` for PSS/E RAW imports. |
-| — | — | `case_mode` | Always `"flat_start_planning"`. |
-| — | — | `timestamp_utc` | UTC wall-clock time of conversion. |
+| — | — | `case_mode` | `"flat_start_planning"` when all RAW bus voltages are approximately flat (`VM≈1.0`, `VA≈0`); otherwise `"warm_start_planning"`. |
+| — | — | `timestamp_utc` | UTC wall-clock time of conversion (RFC3339, seconds precision, `Z`). |
 
 ---
 
@@ -99,11 +99,11 @@ several `buses` columns:
 | OWNER | 7 | `owner` | `owner` | Foreign key → `owners.owner_id`. |
 | GL | 8* | `gl` | `g_shunt` (partial) | Inline bus shunt conductance (MW @ 1 pu); folded into aggregated `g_shunt`. |
 | BL | 9* | `bl` | `b_shunt` (partial) | Inline bus shunt susceptance (MVAr @ 1 pu); folded into aggregated `b_shunt`. |
-| VM | — | `vm` | `v_mag_set` (fallback) | Used only when no generator VS override in range 0.85–1.15 pu. |
+| VM | — | `vm` | `v_mag_set` (fallback) | Used when no generator VS override in range 0.85–1.15 pu. If VM is non-finite or ≤ 0, export falls back to 1.0 pu and is then constrained to valid NVLO/NVHI bounds when present. |
 | VA | — | `va` | `v_ang_set` | Bus.VA × π/180 → radians. |
 | NVHI | — | `nvhi` | `v_max` | Normal voltage upper limit (pu). |
 | NVLO | — | `nvlo` | `v_min` | Normal voltage lower limit (pu). |
-| EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no RPF column in v0.8.6. |
+| EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no RPF column in v0.8.7. |
 | EVLO | — | `evlo` | *(not stored)* | " |
 
 \* GL/BL appear at columns 8–9 in some legacy RAW variants; absent in standard v35 bus records
@@ -132,7 +132,7 @@ where they belong in fixed shunt section 3.
 | STATUS | `status` | `status` | Bool: 1 → true, 0 → false. |
 | PL | `pl` | `p_pu` | Constant-power active load; PL / SBASE. |
 | QL | `ql` | `q_pu` | Constant-power reactive load; QL / SBASE. |
-| IP | `ip` | *(not stored)* | Constant-current component discarded; no RPF column in v0.8.6. |
+| IP | `ip` | *(not stored)* | Constant-current component discarded; no RPF column in v0.8.7. |
 | IQ | `iq` | *(not stored)* | " |
 | YP | `yp` | *(not stored)* | Constant-admittance component discarded. |
 | YQ | `yq` | *(not stored)* | " |
@@ -143,7 +143,7 @@ where they belong in fixed shunt section 3.
 | INTRPT | `intrpt` | *(not stored)* | Interruptible load flag. |
 | — | — | `name` | Always null (PSS/E loads have no display name). |
 
-> **ZIP load note**: RPF v0.8.6 `loads` carries only the constant-power (PQ) portion.
+> **ZIP load note**: RPF v0.8.7 `loads` carries only the constant-power (PQ) portion.
 > IP/IQ constant-current and YP/YQ constant-admittance components are dropped.
 > Future RPF versions will add explicit ZIP columns.
 
@@ -226,22 +226,23 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | — | — | `from_nominal_kv` | Looked up from `buses.nominal_kv` at export time. |
 | — | — | `to_nominal_kv` | Looked up from `buses.nominal_kv` at export time. |
 
-**v0.8.6 FACTS extension columns** (all null for non-FACTS branches from PSS/E RAW):
+**v0.8.6+ FACTS extension columns** (nullable; populated when section-18 rows can be matched safely):
 
 | RPF column | Type | Notes |
 |---|---|---|
-| `device_type` | Dict<Int32,Utf8> | null — no FACTS in PSS/E RAW section 5. |
-| `control_mode` | Dict<Int32,Utf8> | null |
-| `control_target_flow_mw` | Float64 | null |
-| `x_min_pu` | Float64 | null |
-| `x_max_pu` | Float64 | null |
-| `injected_voltage_mag_pu` | Float64 | null |
-| `injected_voltage_angle_deg` | Float64 | null |
-| `facts_params` | Map<Utf8,Float64> | null |
+| `device_type` | Dict<Int32,Utf8> | From section-18 model token when a unique branch match exists. |
+| `control_mode` | Dict<Int32,Utf8> | Currently null unless parsed by a model-specific decoder. |
+| `control_target_flow_mw` | Float64 | Currently null unless parsed by a model-specific decoder. |
+| `x_min_pu` | Float64 | Currently null unless parsed by a model-specific decoder. |
+| `x_max_pu` | Float64 | Currently null unless parsed by a model-specific decoder. |
+| `injected_voltage_mag_pu` | Float64 | Currently null unless parsed by a model-specific decoder. |
+| `injected_voltage_angle_deg` | Float64 | Currently null unless parsed by a model-specific decoder. |
+| `facts_params` | Map<Utf8,Float64> | Numeric FACTS tokens preserved as `p1..pN` for matched rows. |
 
-> FACTS devices (PSS/E section 18, STATCOM/SSSC/UPFC) are not yet parsed.
-> When support is added they will populate these columns; existing readers
-> that treat the columns as nullable will continue to work without change.
+> FACTS rows are now ingested from PSS/E section 18 in a conservative first pass.
+> Branch-level FACTS columns are populated only when a FACTS row can be matched
+> to exactly one branch by endpoint bus pair. Ambiguous matches remain null.
+> This preserves schema compatibility while enabling incremental model coverage.
 
 ---
 
@@ -249,7 +250,10 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 
 PSS/E two-winding transformer records span **four lines** in the RAW file.
 Three-winding transformers (K ≠ 0) are expanded at parse time into **three
-2-winding legs** with a synthetic star bus; all legs land in `transformers_2w`.
+2-winding legs** with a synthetic star bus for solver compatibility.
+At export time the converter enforces one representation policy per file:
+`native_3w` (default) exports only native rows in `transformers_3w`, while
+`expanded` exports only star-leg rows in `transformers_2w`.
 
 | PSS/E field | RAW line | Rust `TwoWindingTransformer` field | RPF column | Notes |
 |---|---|---|---|---|
@@ -270,16 +274,23 @@ Three-winding transformers (K ≠ 0) are expanded at parse time into **three
 | RATC1 | 3 | `ratc1` | `rate_c` | RATC1 / SBASE. |
 | WINDV2 | 4 | `windv2` | *(not stored)* | Used only during 3W star expansion. |
 | NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Rated kV; null if NOMV2 = 0. |
-| — | — | — | `nominal_tap_ratio` | Always 1.0 (TODO: derive from NOMV1/NOMV2). |
-| — | — | — | `vector_group` | Always `"Yy0"` (TODO: derive from CW/CZ). |
+| — | — | — | `nominal_tap_ratio` | Derived as `NOMV1 / NOMV2` when both rated voltages are present; falls back to `1.0` otherwise. |
+| — | — | — | `vector_group` | Always `"unknown"`. PSS/E RAW does not directly encode IEC vector-group semantics; `CW` / `CZ` describe voltage and impedance coding, not winding connection group. |
 | — | — | — | `winding1_r` / `winding1_x` | Always 0.0 (TODO: per-winding impedance decomposition). |
 | — | — | — | `winding2_r` / `winding2_x` | Always 0.0. |
 | — | — | — | `name` | Always null. |
 
-**3-winding expansion**: PSS/E 3W transformers produce a synthetic star bus
-(numbered above 999 997) and three `transformers_2w` rows (H→star, M→star,
-L→star legs). The `transformers_3w` table in RPF is populated by the CIM
-importer, not the PSS/E importer.
+**3-winding representation policy**: PSS/E 3W transformers produce both native
+and star-expanded forms during parsing, but exporter normalization guarantees
+that only one active form is written per file. Root metadata key
+`rpf.transformer_representation_mode` is set to `native_3w` or `expanded`.
+In `native_3w` mode, only `transformers_3w` rows are written with pairwise
+impedances (`r_hm/x_hm`, `r_hl/x_hl`, `r_ml/x_ml`), winding taps, scalar
+ratings (`rate_a/rate_b/rate_c` as minimum across windings), and `star_bus_id`
+for stable identity. In `expanded` mode, the file contains three
+`transformers_2w` rows (H→star, M→star, L→star) per 3-winding device. Synthetic
+star bus IDs are greater than 10 000 000 and are not emitted in the exported
+`buses` table.
 
 ---
 
@@ -290,7 +301,7 @@ importer, not the PSS/E importer.
 | I | `i` | `area_id` | Integer area number. |
 | ARNAM | `arnam` | `name` | Up to 12 characters. |
 | PDES | `pdes` | `interchange_mw` | Desired net interchange in MW (Float64). |
-| ISW | `isw` | *(not stored)* | Swing bus for the area; no RPF column in v0.8.6. |
+| ISW | `isw` | *(not stored)* | Swing bus for the area; no RPF column in v0.8.7. |
 | PTOL | `ptol` | *(not stored)* | Interchange tolerance bandwidth in MW. |
 
 ---
@@ -335,22 +346,30 @@ importer, not the PSS/E importer.
 
 ## DYR dynamic models → `dynamics_models` table
 
-The optional `.dyr` file is parsed for **GENROU**, **GENSAL**, **GENCLS**
-(and their enhanced variants GENROE / GENSAE) records only. Exciter, governor,
-and PSS model records are silently ignored.
+The optional `.dyr` file is parsed record-by-record and every numeric model row
+is preserved in `dynamics_models`. This includes synchronous machines, exciters,
+governors, PSS models, plant controllers, and renewable controls present in the
+input deck.
 
-| DYR record field | Rust `DyrGeneratorData` field | RPF column | Notes |
+| DYR record field | Rust field | RPF column | Notes |
 |---|---|---|---|
-| Bus number | `bus_id` | `bus_id` | |
-| Machine ID | `id` | `gen_id` | Matches `generators.id`. |
-| Model name | `model` | `model_type` | e.g. `"GENROU"`, `"GENSAL"`, `"GENCLS"`. |
-| H | `h` | `params["H"]` | Inertia constant (MW·s/MVA). |
-| D | `d` | `params["D"]` | Damping coefficient (pu torque / pu speed deviation). |
-| Xd′ | `xd_prime` | `params["xd_prime"]` | d-axis transient reactance (machine base pu). |
+| Bus number | `DyrModelData.bus_id` | `bus_id` | Model attachment bus. |
+| Machine / device ID | `DyrModelData.id` | `gen_id` | Preserved as the PSS/E ID token; for machine-linked models this matches `generators.id`. |
+| Model name | `DyrModelData.model` | `model_type` | Examples: `"GENROU"`, `"ESST4B"`, `"GGOV1"`, `"PSS2A"`, `"REGCA1"`. |
+| Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. |
 
-**Interaction with `generators` table**: when DYR data is present the generator
-row's `h`, `xd_prime`, and `D` columns are populated from the DYR record.
-When absent, `h = 0.0`, `D = 0.0`, and `xd_prime = ZX` are written as fallbacks.
+**Interaction with `generators` table**: a supported synchronous-machine subset
+is still lifted into the `generators` table so the solver has direct access to
+machine `h`, `xd_prime`, and `D` values.
+
+| Supported machine family | `generators.h` source | `generators.D` source | `generators.xd_prime` source |
+|---|---|---|---|
+| `GENROU`, `GENROE` | DYR parameter 5 (`p5`) | DYR parameter 6 (`p6`) | DYR parameter 9 (`p9`) |
+| `GENSAL`, `GENSAE` | DYR parameter 3 (`p3`) | DYR parameter 4 (`p4`) | DYR parameter 7 (`p7`) |
+| `GENCLS` | DYR parameter 1 (`p1`) | DYR parameter 2 (`p2`) | falls back to RAW `ZX` |
+
+When no matching supported machine model is present, `generators.h = 0.0`,
+`generators.D = 0.0`, and `generators.xd_prime = ZX` are written as fallbacks.
 
 ---
 
@@ -364,10 +383,19 @@ When absent, `h = 0.0`, `D = 0.0`, and `xd_prime = ZX` are written as fallbacks.
 | Section 11 — Multi-terminal DC | — | Skipped. |
 | Section 12 — Multi-section line | — | Skipped. |
 | Section 14 — Inter-area transfer | — | Skipped. |
-| Section 18 — FACTS devices | `branches` FACTS columns | Skipped (PSS/E v35). FACTS extension columns in `branches` will be populated when support is added. |
+| Section 18 — FACTS devices | `branches` FACTS columns | Partially implemented: parser preserves section-18 rows and populates branch FACTS fields for safe unique bus-pair matches. Model-specific decoding remains in progress. |
 | Section 19 — GNE devices | — | Skipped. |
 | Section 20 — Induction machines | — | Skipped. |
 | v35 System Switching Devices | — | State-machine advances past them; records not converted. |
+
+**DYR limitations still present**:
+
+| DYR capability | Status |
+|---|---|
+| Numeric model-row preservation into `dynamics_models` | Implemented for all parsed records. |
+| Promotion of synchronous-machine parameters into `generators` | Implemented for `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, `GENCLS`. |
+| Solver-specific interpretation of exciters, governors, PSS, renewable controls | Deferred to downstream solver logic. Converter preserves the records but does not collapse them into higher-level solved-state fields. |
+| Non-numeric user-defined model payloads | Not represented in RPF v0.8.7 because `dynamics_models.params` is `Map<Utf8, Float64>`. |
 
 ---
 
@@ -383,7 +411,7 @@ When absent, `h = 0.0`, `D = 0.0`, and `xd_prime = ZX` are written as fallbacks.
 | `fixed_shunts` | Section 3 (FixedShunt) + inline Bus GL/BL | ✓ |
 | `switched_shunts` | Section 17 (SwitchedShunt) | ✓ |
 | `transformers_2w` | Section 6 (2W and 3W star legs) | ✓ |
-| `transformers_3w` | *(not populated by PSS/E importer)* | ✓ (0 rows) |
+| `transformers_3w` | Section 6 (native 3W records, K≠0) | ✓ (0 rows when none present) |
 | `areas` | Section 7 (Area) | ✓ |
 | `zones` | Section 13 (Zone) | ✓ |
 | `owners` | Section 15 (Owner) | ✓ |

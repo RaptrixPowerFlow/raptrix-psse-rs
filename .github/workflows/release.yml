@@ -6,7 +6,7 @@
 # https://mozilla.org/MPL/2.0/.
 
 # Triggered by pushing a version tag, e.g.:
-#   git tag v0.2.0 && git push origin v0.2.0
+#   git tag vX.Y.Z && git push origin vX.Y.Z
 #
 # Builds release binaries for Windows, Linux, and macOS and attaches them to
 # the GitHub Release that is created automatically for the tag.
@@ -43,9 +43,11 @@ jobs:
             extension: tar.gz
 
           - os: macos-latest
-            target: x86_64-apple-darwin
+            # Prefer Apple Silicon (arm64) artifacts by default — most modern Macs
+            # use Apple Silicon (M1..M5). Produce an `aarch64-apple-darwin` binary.
+            target: aarch64-apple-darwin
             os_label: macos
-            arch_label: x86_64
+            arch_label: arm64
             extension: tar.gz
 
     steps:

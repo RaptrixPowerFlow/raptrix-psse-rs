@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.6 converter.
+//! Raptrix PowerFlow Interchange v0.8.7 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -23,31 +23,72 @@ pub mod parser;
 pub mod validation;
 
 // Re-export reader utilities so tests and tools can use them directly.
-pub use raptrix_cim_arrow::{read_rpf_tables, summarize_rpf, RpfSummary, TableSummary};
+pub use raptrix_cim_arrow::{RpfSummary, TableSummary, read_rpf_tables, summarize_rpf};
 
-use std::{collections::{HashMap, HashSet}, hash::{Hash, Hasher}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
 
 use anyhow::{Context, Result};
 use arrow::{
     array::{
-        new_null_array, BooleanBuilder, Float64Builder, Int32Builder,
-        Int8Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder,
-        StringDictionaryBuilder,
+        BooleanArray, BooleanBuilder, Float64Array, Float64Builder, Int8Builder, Int32Array,
+        Int32Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder,
+        StringDictionaryBuilder, new_null_array,
     },
     datatypes::{Int32Type, UInt32Type},
     record_batch::RecordBatch,
 };
+use chrono::{SecondsFormat, Utc};
 use raptrix_cim_arrow::{
-    table_schema, write_root_rpf_with_metadata,
     METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_SOLVED_STATE_PRESENCE,
-    METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
-    TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_CONTINGENCIES,
-    TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_INTERFACES,
-    TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
-    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES,
+    METADATA_KEY_VALIDATION_MODE, RootWriteOptions, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES,
+    TABLE_CONTINGENCIES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS,
+    TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
+    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema,
+    write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
+
+const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
+const SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE: u32 = 10_000_000;
+
+/// Export-time policy for representing 3-winding transformers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TransformerRepresentationMode {
+    /// Export only star-expanded 2-winding legs for 3-winding devices.
+    Expanded,
+    /// Export only native `transformers_3w` rows for 3-winding devices.
+    #[default]
+    Native3W,
+}
+
+impl TransformerRepresentationMode {
+    pub fn as_stable_str(self) -> &'static str {
+        match self {
+            TransformerRepresentationMode::Expanded => "expanded",
+            TransformerRepresentationMode::Native3W => "native_3w",
+        }
+    }
+
+    pub fn from_cli_value(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "expanded" => Some(TransformerRepresentationMode::Expanded),
+            "native" | "native_3w" | "native-3w" => Some(TransformerRepresentationMode::Native3W),
+            _ => None,
+        }
+    }
+}
+
+/// Export configuration for [`write_psse_to_rpf_with_options`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExportOptions {
+    /// Transformer representation mode used for this export run.
+    pub transformer_representation_mode: TransformerRepresentationMode,
+}
 
 #[derive(Debug, Clone, Default)]
 struct BusAggregate {
@@ -73,18 +114,31 @@ struct BusAggregate {
 /// - Populate aggregated bus P/Q fields from loads and generators.
 /// - Fill `g_shunt` / `b_shunt` from fixed-shunt records keyed by bus.
 /// - Map PSS/E vector-group codes to CIM VectorGroup enum values.
-/// - Implement dynamics-model mapping from a paired `.dyr` file.
-/// Parse `raw_path` (and optional `dyr_path`) and write an `.rpf` file.
+/// - Extend solver-side interpretation for non-machine DYR model families.
 ///
 /// Pass `dyr_path = None` when no dynamic data file is available.
 pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -> Result<()> {
+    write_psse_to_rpf_with_options(raw_path, dyr_path, output, &ExportOptions::default())
+}
+
+/// Parse `raw_path` and write a Raptrix PowerFlow Interchange `.rpf` file
+/// using explicit export options.
+pub fn write_psse_to_rpf_with_options(
+    raw_path: &str,
+    dyr_path: Option<&str>,
+    output: &str,
+    options: &ExportOptions,
+) -> Result<()> {
     let mut network = parser::parse_raw(std::path::Path::new(raw_path))
         .with_context(|| format!("failed to parse RAW file: {raw_path}"))?;
 
     if let Some(dyr) = dyr_path {
-        network.dyr_generators = parser::parse_dyr(std::path::Path::new(dyr))
+        network.dyr_models = parser::parse_dyr_records(std::path::Path::new(dyr))
             .with_context(|| format!("failed to parse DYR file: {dyr}"))?;
+        network.dyr_generators = parser::extract_dyr_generators(&network.dyr_models);
     }
+
+    normalize_transformer_representation(&mut network, options.transformer_representation_mode)?;
 
     // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
     let dyr_lookup: HashMap<(u32, String), &models::DyrGeneratorData> = network
@@ -95,6 +149,7 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
 
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
     let bus_aggregates = build_bus_aggregates(&network);
+    let connected_buses = build_connected_bus_set(&network);
     let bus_nominal_kv = build_bus_nominal_kv_map(&network);
     let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
         network.case_id.sbase
@@ -105,11 +160,22 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
     // v0.8.5: detect warm vs flat start from RAW bus voltage state.
     let case_mode = detect_case_mode(&network);
 
-    table_batches.insert(TABLE_METADATA, build_metadata_batch(&network, &case_fingerprint, case_mode)?);
-    table_batches.insert(TABLE_BUSES, build_buses_batch(&network.buses, &bus_aggregates)?);
+    table_batches.insert(
+        TABLE_METADATA,
+        build_metadata_batch(&network, &case_fingerprint, case_mode)?,
+    );
+    table_batches.insert(
+        TABLE_BUSES,
+        build_buses_batch(&network.buses, &bus_aggregates, &connected_buses)?,
+    );
     table_batches.insert(
         TABLE_BRANCHES,
-        build_branches_batch(&network.branches, &bus_nominal_kv, base_mva)?,
+        build_branches_batch(
+            &network.branches,
+            &network.facts_devices,
+            &bus_nominal_kv,
+            base_mva,
+        )?,
     );
     table_batches.insert(
         TABLE_GENERATORS,
@@ -128,22 +194,31 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         TABLE_TRANSFORMERS_2W,
         build_transformers_2w_batch(&network.transformers, base_mva)?,
     );
-    table_batches.insert(TABLE_TRANSFORMERS_3W, empty_table(TABLE_TRANSFORMERS_3W)?);
+    table_batches.insert(
+        TABLE_TRANSFORMERS_3W,
+        build_transformers_3w_batch(&network.transformers_3w, base_mva)?,
+    );
     table_batches.insert(TABLE_AREAS, build_areas_batch(&network.areas)?);
     table_batches.insert(TABLE_ZONES, build_zones_batch(&network.zones)?);
     table_batches.insert(TABLE_OWNERS, build_owners_batch(&network.owners)?);
     table_batches.insert(TABLE_CONTINGENCIES, empty_table(TABLE_CONTINGENCIES)?);
     table_batches.insert(TABLE_INTERFACES, empty_table(TABLE_INTERFACES)?);
-    let dynamics_batch = if network.dyr_generators.is_empty() {
+    let dynamics_batch = if network.dyr_models.is_empty() {
         empty_table(TABLE_DYNAMICS_MODELS)?
     } else {
-        build_dynamics_models_batch(&network.dyr_generators)?
+        build_dynamics_models_batch(&network.dyr_models)?
     };
     table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
 
+    validate_export_invariants(
+        &table_batches,
+        &connected_buses,
+        options.transformer_representation_mode,
+    )?;
+
     let root_options = RootWriteOptions {
         contingencies_are_stub: true,
-        dynamics_are_stub: network.dyr_generators.is_empty(),
+        dynamics_are_stub: network.dyr_models.is_empty(),
         ..RootWriteOptions::default()
     };
     let mut additional_root_metadata = HashMap::new();
@@ -156,18 +231,27 @@ pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -
         "converter_export".to_string(),
     );
     // v0.8.5: case_mode — detected from RAW bus voltage state.
-    additional_root_metadata.insert(
-        METADATA_KEY_CASE_MODE.to_string(),
-        case_mode.to_string(),
-    );
+    additional_root_metadata.insert(METADATA_KEY_CASE_MODE.to_string(), case_mode.to_string());
     // v0.8.5: solved_state_presence — this converter never produces solved data.
     additional_root_metadata.insert(
         METADATA_KEY_SOLVED_STATE_PRESENCE.to_string(),
         "not_computed".to_string(),
     );
+    additional_root_metadata.insert(
+        METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE.to_string(),
+        options
+            .transformer_representation_mode
+            .as_stable_str()
+            .to_string(),
+    );
 
-    write_root_rpf_with_metadata(output, &table_batches, &root_options, &additional_root_metadata)
-        .with_context(|| format!("failed to write RPF file: {output}"))?;
+    write_root_rpf_with_metadata(
+        output,
+        &table_batches,
+        &root_options,
+        &additional_root_metadata,
+    )
+    .with_context(|| format!("failed to write RPF file: {output}"))?;
 
     eprintln!("[converter] wrote {output}");
     Ok(())
@@ -187,6 +271,7 @@ pub fn validate_psse_raw(raw_path: &str) -> Result<validation::ValidationReport>
     Ok(validation::run_mmwg_checks(&network))
 }
 
+#[allow(dead_code)]
 fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -199,7 +284,8 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
         warnings.push("RAW produced 0 buses; case is likely invalid or empty".to_string());
     }
     if network.branches.is_empty() {
-        warnings.push("RAW produced 0 branches; network may be disconnected or incomplete".to_string());
+        warnings
+            .push("RAW produced 0 branches; network may be disconnected or incomplete".to_string());
     }
 
     let slack_count = network
@@ -267,7 +353,8 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
             ));
         }
 
-        let mut in_service_gen_keys: HashSet<(u32, &str)> = HashSet::with_capacity(network.generators.len());
+        let mut in_service_gen_keys: HashSet<(u32, &str)> =
+            HashSet::with_capacity(network.generators.len());
         for g in &network.generators {
             if g.stat != 0 {
                 in_service_gen_keys.insert((g.i, g.id.as_ref()));
@@ -286,7 +373,8 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
             ));
         }
 
-        let mut dyr_keys: HashSet<(u32, &str)> = HashSet::with_capacity(network.dyr_generators.len());
+        let mut dyr_keys: HashSet<(u32, &str)> =
+            HashSet::with_capacity(network.dyr_generators.len());
         for dyn_rec in &network.dyr_generators {
             dyr_keys.insert((dyn_rec.bus_id, dyn_rec.id.as_ref()));
         }
@@ -323,8 +411,8 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
 // ---------------------------------------------------------------------------
 
 fn empty_table(name: &'static str) -> Result<RecordBatch> {
-    let schema = table_schema(name)
-        .ok_or_else(|| anyhow::anyhow!("unknown canonical table: {name}"))?;
+    let schema =
+        table_schema(name).ok_or_else(|| anyhow::anyhow!("unknown canonical table: {name}"))?;
     Ok(RecordBatch::new_empty(Arc::new(schema)))
 }
 
@@ -334,6 +422,483 @@ fn build_bus_nominal_kv_map(network: &Network) -> HashMap<u32, f64> {
         .iter()
         .map(|b| (b.i, b.baskv))
         .collect::<HashMap<_, _>>()
+}
+
+fn build_connected_bus_set(network: &Network) -> HashSet<u32> {
+    let mut connected = HashSet::new();
+
+    for branch in &network.branches {
+        if branch.st != 0 {
+            connected.insert(branch.i);
+            connected.insert(branch.j);
+        }
+    }
+
+    for transformer in &network.transformers {
+        if transformer.stat != 0 {
+            connected.insert(transformer.i);
+            connected.insert(transformer.j);
+        }
+    }
+
+    for generator in &network.generators {
+        if generator.stat != 0 {
+            connected.insert(generator.i);
+        }
+    }
+
+    for load in &network.loads {
+        if load.status != 0 {
+            connected.insert(load.i);
+        }
+    }
+
+    for shunt in &network.fixed_shunts {
+        if shunt.status != 0 {
+            connected.insert(shunt.i);
+        }
+    }
+
+    for shunt in &network.switched_shunts {
+        if shunt.stat != 0 {
+            connected.insert(shunt.i);
+        }
+    }
+
+    connected
+}
+
+fn normalize_transformer_representation(
+    network: &mut Network,
+    mode: TransformerRepresentationMode,
+) -> Result<()> {
+    let star_bus_ids: HashSet<u32> = network
+        .transformers_3w
+        .iter()
+        .map(|t| t.star_bus_id)
+        .collect();
+    if star_bus_ids.is_empty() {
+        return Ok(());
+    }
+
+    if mode == TransformerRepresentationMode::Native3W {
+        // In native mode we must safely identify and remove only synthetic star legs.
+        ensure_star_leg_mapping_is_resolvable(network)?;
+
+        network
+            .transformers
+            .retain(|t| !(star_bus_ids.contains(&t.i) || star_bus_ids.contains(&t.j)));
+    } else {
+        network.transformers_3w.clear();
+    }
+
+    network.buses.retain(|b| !star_bus_ids.contains(&b.i));
+
+    Ok(())
+}
+
+fn ensure_star_leg_mapping_is_resolvable(network: &Network) -> Result<()> {
+    for tx3 in network.transformers_3w.iter().filter(|t| t.stat != 0) {
+        let mut active_legs: Vec<(usize, u32)> = Vec::new();
+        for (idx, tx2) in network.transformers.iter().enumerate() {
+            if tx2.stat == 0 {
+                continue;
+            }
+            if tx2.i == tx3.star_bus_id {
+                active_legs.push((idx + 1, tx2.j));
+            } else if tx2.j == tx3.star_bus_id {
+                active_legs.push((idx + 1, tx2.i));
+            }
+        }
+
+        if active_legs.is_empty() {
+            continue;
+        }
+
+        let expected_endpoints: HashSet<u32> =
+            [tx3.bus_h, tx3.bus_m, tx3.bus_l].into_iter().collect();
+        let observed_endpoints: HashSet<u32> =
+            active_legs.iter().map(|(_, other)| *other).collect();
+        if active_legs.len() != 3 || observed_endpoints != expected_endpoints {
+            let observed_rows: Vec<usize> = active_legs.iter().map(|(row, _)| *row).collect();
+            let observed_buses: Vec<u32> = active_legs.iter().map(|(_, other)| *other).collect();
+            anyhow::bail!(
+                "export invariant violation: ambiguous 3-winding overlap for native mode (3w ckt='{}' buses=({}, {}, {}) star_bus_id={}) expected exactly 3 star legs to endpoint buses {:?}, found rows {:?} -> buses {:?}",
+                tx3.ckt,
+                tx3.bus_h,
+                tx3.bus_m,
+                tx3.bus_l,
+                tx3.star_bus_id,
+                expected_endpoints,
+                observed_rows,
+                observed_buses,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_export_invariants(
+    table_batches: &HashMap<&'static str, RecordBatch>,
+    connected_buses: &HashSet<u32>,
+    transformer_mode: TransformerRepresentationMode,
+) -> Result<()> {
+    let buses = table_batches
+        .get(TABLE_BUSES)
+        .ok_or_else(|| anyhow::anyhow!("missing buses batch"))?;
+
+    let bus_ids = buses
+        .column_by_name("bus_id")
+        .ok_or_else(|| anyhow::anyhow!("buses.bus_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("buses.bus_id is not Int32"))?;
+
+    let v_mag_set = buses
+        .column_by_name("v_mag_set")
+        .ok_or_else(|| anyhow::anyhow!("buses.v_mag_set missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("buses.v_mag_set is not Float64"))?;
+
+    let mut invalid: Vec<i32> = Vec::new();
+    for i in 0..buses.num_rows() {
+        let bus_id = bus_ids.value(i);
+        if !connected_buses.contains(&(bus_id as u32)) {
+            continue;
+        }
+        let vm = v_mag_set.value(i);
+        if !vm.is_finite() || vm <= 0.0 {
+            invalid.push(bus_id);
+            if invalid.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    if !invalid.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: connected buses with nonpositive/invalid v_mag_set: {:?}",
+            invalid
+        );
+    }
+
+    let branches = table_batches
+        .get(TABLE_BRANCHES)
+        .ok_or_else(|| anyhow::anyhow!("missing branches batch"))?;
+    validate_nonnegative_finite_column(branches, "rate_a", TABLE_BRANCHES)?;
+    validate_nonnegative_finite_column(branches, "rate_b", TABLE_BRANCHES)?;
+    validate_nonnegative_finite_column(branches, "rate_c", TABLE_BRANCHES)?;
+
+    let transformers = table_batches
+        .get(TABLE_TRANSFORMERS_2W)
+        .ok_or_else(|| anyhow::anyhow!("missing transformers_2w batch"))?;
+    validate_nonnegative_finite_column(transformers, "rate_a", TABLE_TRANSFORMERS_2W)?;
+    validate_nonnegative_finite_column(transformers, "rate_b", TABLE_TRANSFORMERS_2W)?;
+    validate_nonnegative_finite_column(transformers, "rate_c", TABLE_TRANSFORMERS_2W)?;
+
+    let status = transformers
+        .column_by_name("status")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.status missing"))?
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.status is not Boolean"))?;
+    let tap_ratio = transformers
+        .column_by_name("tap_ratio")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.tap_ratio missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.tap_ratio is not Float64"))?;
+    let nominal_tap_ratio = transformers
+        .column_by_name("nominal_tap_ratio")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.nominal_tap_ratio missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.nominal_tap_ratio is not Float64"))?;
+
+    let mut invalid_tap_rows: Vec<usize> = Vec::new();
+    let mut invalid_nominal_tap_rows: Vec<usize> = Vec::new();
+    for i in 0..transformers.num_rows() {
+        if !status.value(i) {
+            continue;
+        }
+        let tap = tap_ratio.value(i);
+        if !tap.is_finite() || tap <= 0.0 {
+            invalid_tap_rows.push(i + 1);
+            if invalid_tap_rows.len() >= 8 {
+                break;
+            }
+        }
+    }
+    for i in 0..transformers.num_rows() {
+        if !status.value(i) {
+            continue;
+        }
+        let tap = nominal_tap_ratio.value(i);
+        if !tap.is_finite() || tap <= 0.0 {
+            invalid_nominal_tap_rows.push(i + 1);
+            if invalid_nominal_tap_rows.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    if !invalid_tap_rows.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: in-service transformers with invalid tap_ratio at 1-based row(s): {:?}",
+            invalid_tap_rows
+        );
+    }
+    if !invalid_nominal_tap_rows.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: in-service transformers with invalid nominal_tap_ratio at 1-based row(s): {:?}",
+            invalid_nominal_tap_rows
+        );
+    }
+
+    let transformers_3w = table_batches
+        .get(TABLE_TRANSFORMERS_3W)
+        .ok_or_else(|| anyhow::anyhow!("missing transformers_3w batch"))?;
+    validate_nonnegative_finite_column(transformers_3w, "rate_a", TABLE_TRANSFORMERS_3W)?;
+    validate_nonnegative_finite_column(transformers_3w, "rate_b", TABLE_TRANSFORMERS_3W)?;
+    validate_nonnegative_finite_column(transformers_3w, "rate_c", TABLE_TRANSFORMERS_3W)?;
+
+    let status_3w = transformers_3w
+        .column_by_name("status")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.status missing"))?
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.status is not Boolean"))?;
+    let tap_h = transformers_3w
+        .column_by_name("tap_h")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_h missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_h is not Float64"))?;
+    let tap_m = transformers_3w
+        .column_by_name("tap_m")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_m missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_m is not Float64"))?;
+    let tap_l = transformers_3w
+        .column_by_name("tap_l")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_l missing"))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.tap_l is not Float64"))?;
+
+    let mut invalid_3w_taps: Vec<usize> = Vec::new();
+    for i in 0..transformers_3w.num_rows() {
+        if !status_3w.value(i) {
+            continue;
+        }
+        let h = tap_h.value(i);
+        let m = tap_m.value(i);
+        let l = tap_l.value(i);
+        if !h.is_finite() || !m.is_finite() || !l.is_finite() || h <= 0.0 || m <= 0.0 || l <= 0.0 {
+            invalid_3w_taps.push(i + 1);
+            if invalid_3w_taps.len() >= 8 {
+                break;
+            }
+        }
+    }
+    if !invalid_3w_taps.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: in-service transformers_3w with invalid tap_h/tap_m/tap_l at 1-based row(s): {:?}",
+            invalid_3w_taps
+        );
+    }
+
+    validate_transformer_representation_mode(transformers, transformers_3w, transformer_mode)?;
+
+    Ok(())
+}
+
+fn validate_transformer_representation_mode(
+    transformers_2w: &RecordBatch,
+    transformers_3w: &RecordBatch,
+    transformer_mode: TransformerRepresentationMode,
+) -> Result<()> {
+    let from_2w = transformers_2w
+        .column_by_name("from_bus_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.from_bus_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.from_bus_id is not Int32"))?;
+    let to_2w = transformers_2w
+        .column_by_name("to_bus_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.to_bus_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.to_bus_id is not Int32"))?;
+    let status_2w = transformers_2w
+        .column_by_name("status")
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.status missing"))?
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_2w.status is not Boolean"))?;
+
+    let bus_h_3w = transformers_3w
+        .column_by_name("bus_h_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_h_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_h_id is not Int32"))?;
+    let bus_m_3w = transformers_3w
+        .column_by_name("bus_m_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_m_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_m_id is not Int32"))?;
+    let bus_l_3w = transformers_3w
+        .column_by_name("bus_l_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_l_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.bus_l_id is not Int32"))?;
+    let star_3w = transformers_3w
+        .column_by_name("star_bus_id")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.star_bus_id missing"))?
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.star_bus_id is not Int32"))?;
+    let status_3w = transformers_3w
+        .column_by_name("status")
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.status missing"))?
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .ok_or_else(|| anyhow::anyhow!("transformers_3w.status is not Boolean"))?;
+
+    let mut active_star_to_endpoints: HashMap<i32, Vec<(usize, i32)>> = HashMap::new();
+    for row in 0..transformers_2w.num_rows() {
+        if !status_2w.value(row) {
+            continue;
+        }
+        let from = from_2w.value(row);
+        let to = to_2w.value(row);
+        if from > SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE as i32 {
+            active_star_to_endpoints
+                .entry(from)
+                .or_default()
+                .push((row + 1, to));
+        }
+        if to > SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE as i32 {
+            active_star_to_endpoints
+                .entry(to)
+                .or_default()
+                .push((row + 1, from));
+        }
+    }
+
+    let mut overlap_examples: Vec<String> = Vec::new();
+    let mut active_3w_count = 0usize;
+    for row in 0..transformers_3w.num_rows() {
+        if !status_3w.value(row) {
+            continue;
+        }
+        active_3w_count += 1;
+
+        let star = star_3w.value(row);
+        if let Some(legs) = active_star_to_endpoints.get(&star) {
+            let expected: HashSet<i32> = [
+                bus_h_3w.value(row),
+                bus_m_3w.value(row),
+                bus_l_3w.value(row),
+            ]
+            .into_iter()
+            .collect();
+            let observed: HashSet<i32> = legs.iter().map(|(_, other)| *other).collect();
+            if legs.len() != 3 || observed != expected {
+                let leg_rows: Vec<usize> = legs.iter().map(|(r, _)| *r).collect();
+                let leg_buses: Vec<i32> = legs.iter().map(|(_, b)| *b).collect();
+                anyhow::bail!(
+                    "export invariant violation: ambiguous dual transformer materialization around star_bus_id={} (transformers_3w row={} expected buses {:?}, found transformers_2w rows {:?} -> buses {:?})",
+                    star,
+                    row + 1,
+                    expected,
+                    leg_rows,
+                    leg_buses,
+                );
+            }
+            overlap_examples.push(format!(
+                "3w_row={} star_bus_id={} tx2w_rows={:?}",
+                row + 1,
+                star,
+                legs.iter().map(|(r, _)| *r).collect::<Vec<_>>()
+            ));
+            if overlap_examples.len() >= 4 {
+                break;
+            }
+        }
+    }
+
+    if !overlap_examples.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: active transformers encode the same physical 3-winding unit in both forms: {:?}",
+            overlap_examples
+        );
+    }
+
+    match transformer_mode {
+        TransformerRepresentationMode::Expanded => {
+            if active_3w_count > 0 {
+                anyhow::bail!(
+                    "export invariant violation: transformer mode 'expanded' requires zero active transformers_3w rows, found {}",
+                    active_3w_count
+                );
+            }
+        }
+        TransformerRepresentationMode::Native3W => {
+            if !active_star_to_endpoints.is_empty() {
+                let mut stars: Vec<i32> = active_star_to_endpoints.keys().copied().collect();
+                stars.sort_unstable();
+                let preview: Vec<i32> = stars.into_iter().take(8).collect();
+                anyhow::bail!(
+                    "export invariant violation: transformer mode 'native_3w' forbids active star-leg transformers_2w rows, found star bus IDs {:?}",
+                    preview
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_nonnegative_finite_column(
+    batch: &RecordBatch,
+    column_name: &str,
+    table_name: &str,
+) -> Result<()> {
+    let values = batch
+        .column_by_name(column_name)
+        .ok_or_else(|| anyhow::anyhow!("{}.{} missing", table_name, column_name))?
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| anyhow::anyhow!("{}.{} is not Float64", table_name, column_name))?;
+
+    let mut invalid_rows: Vec<usize> = Vec::new();
+    for i in 0..batch.num_rows() {
+        let v = values.value(i);
+        if !v.is_finite() || v < 0.0 {
+            invalid_rows.push(i + 1);
+            if invalid_rows.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    if !invalid_rows.is_empty() {
+        anyhow::bail!(
+            "export invariant violation: {}.{} has negative or non-finite value(s) at 1-based row(s): {:?}",
+            table_name,
+            column_name,
+            invalid_rows
+        );
+    }
+
+    Ok(())
 }
 
 fn compute_case_fingerprint(network: &Network) -> String {
@@ -348,14 +913,11 @@ fn compute_case_fingerprint(network: &Network) -> String {
     network.generators.len().hash(&mut hasher);
     network.loads.len().hash(&mut hasher);
     network.transformers.len().hash(&mut hasher);
-    network
-        .buses
-        .iter()
-        .for_each(|b| {
-            b.i.hash(&mut hasher);
-            b.vm.to_bits().hash(&mut hasher);
-            b.va.to_bits().hash(&mut hasher);
-        });
+    network.buses.iter().for_each(|b| {
+        b.i.hash(&mut hasher);
+        b.vm.to_bits().hash(&mut hasher);
+        b.va.to_bits().hash(&mut hasher);
+    });
     format!("psse:{:016x}", hasher.finish())
 }
 
@@ -366,9 +928,10 @@ fn compute_case_fingerprint(network: &Network) -> String {
 /// a solved operating point from the RAW file so we export `warm_start_planning`
 /// and preserve those values in the buses table v_mag_set / v_ang_set columns.
 fn detect_case_mode(network: &Network) -> &'static str {
-    let is_flat = network.buses.iter().all(|b| {
-        (b.vm - 1.0).abs() < 1.0e-4 && b.va.abs() < 1.0e-4
-    });
+    let is_flat = network
+        .buses
+        .iter()
+        .all(|b| (b.vm - 1.0).abs() < 1.0e-4 && b.va.abs() < 1.0e-4);
     if is_flat {
         "flat_start_planning"
     } else {
@@ -380,10 +943,14 @@ fn detect_case_mode(network: &Network) -> &'static str {
 // Table builders
 // ---------------------------------------------------------------------------
 
-fn build_metadata_batch(network: &Network, case_fingerprint_value: &str, case_mode: &str) -> Result<RecordBatch> {
-    let schema = Arc::new(
-        table_schema(TABLE_METADATA).expect("metadata schema must exist"),
-    );
+fn build_metadata_batch(
+    network: &Network,
+    case_fingerprint_value: &str,
+    case_mode: &str,
+) -> Result<RecordBatch> {
+    let now_utc = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
+
+    let schema = Arc::new(table_schema(TABLE_METADATA).expect("metadata schema must exist"));
 
     // simple scalar columns
     let base_mva = arrow::array::Float64Array::from(vec![network.case_id.sbase]);
@@ -401,9 +968,9 @@ fn build_metadata_batch(network: &Network, case_fingerprint_value: &str, case_mo
 
     // plain string columns
     let mut timestamp_utc = StringBuilder::new();
-    timestamp_utc.append_value("2026-01-01T00:00:00Z"); // TODO: real system time
+    timestamp_utc.append_value(now_utc.as_str());
     let mut snapshot_timestamp_utc = StringBuilder::new();
-    snapshot_timestamp_utc.append_value("2026-01-01T00:00:00Z");
+    snapshot_timestamp_utc.append_value(now_utc.as_str());
     let mut raptrix_version = StringBuilder::new();
     raptrix_version.append_value(env!("CARGO_PKG_VERSION"));
     let mut case_fingerprint = StringBuilder::new();
@@ -485,9 +1052,11 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
 
     let mut agg_by_bus = HashMap::with_capacity(network.buses.len());
     for bus in &network.buses {
-        let mut agg = BusAggregate::default();
-        agg.g_shunt = bus.gl / base_mva;
-        agg.b_shunt = bus.bl / base_mva;
+        let mut agg = BusAggregate {
+            g_shunt: bus.gl / base_mva,
+            b_shunt: bus.bl / base_mva,
+            ..Default::default()
+        };
         if bus.ide == models::BusType::LoadBus {
             agg.q_min = -9999.0;
             agg.q_max = 9999.0;
@@ -564,6 +1133,7 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
 fn build_buses_batch(
     buses: &[models::Bus],
     agg_by_bus: &HashMap<u32, BusAggregate>,
+    connected_buses: &HashSet<u32>,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BUSES).expect("buses schema must exist"));
 
@@ -588,12 +1158,24 @@ fn build_buses_batch(
     let mut nominal_kv = Float64Builder::new();
     let mut bus_uuid = StringDictionaryBuilder::<Int32Type>::new();
 
+    let mut sanitized_count = 0usize;
+    let mut sanitized_examples: Vec<u32> = Vec::new();
+
     for bus in buses {
         let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
         let mut q_min_val = agg.q_min;
         let mut q_max_val = agg.q_max;
         if q_min_val > q_max_val {
             std::mem::swap(&mut q_min_val, &mut q_max_val);
+        }
+
+        let vm_raw = agg.v_mag_set_override.unwrap_or(bus.vm);
+        let vm_sanitized = sanitize_bus_v_mag_set(vm_raw, bus.nvlo, bus.nvhi);
+        if (vm_sanitized - vm_raw).abs() > 1.0e-12 {
+            sanitized_count += 1;
+            if sanitized_examples.len() < 8 {
+                sanitized_examples.push(bus.i);
+            }
         }
 
         bus_id.append_value(bus.i as i32);
@@ -604,7 +1186,7 @@ fn build_buses_batch(
         // v0.8.5: preserve RAW voltage setpoints for warm-start parity.
         // Use generator VS for regulated buses; fallback to RAW bus VM so
         // solved NYISO/external snapshots retain their initial conditions.
-        v_mag_set.append_value(agg.v_mag_set_override.unwrap_or(bus.vm));
+        v_mag_set.append_value(vm_sanitized);
         // Preserve RAW bus angle (PSS/E degrees → radians for raptrix-core).
         v_ang_set.append_value(bus.va.to_radians());
         q_min.append_value(q_min_val);
@@ -620,6 +1202,21 @@ fn build_buses_batch(
         p_max_agg.append_value(agg.p_max_agg);
         nominal_kv.append_value(bus.baskv);
         bus_uuid.append_value(format!("psse:bus:{}", bus.i));
+
+        if connected_buses.contains(&bus.i) && vm_sanitized <= 0.0 {
+            anyhow::bail!(
+                "connected bus {} would export nonpositive v_mag_set={}",
+                bus.i,
+                vm_sanitized
+            );
+        }
+    }
+
+    if sanitized_count > 0 {
+        eprintln!(
+            "[converter] sanitized {} bus voltage setpoint(s) to valid positive values (example bus IDs: {:?})",
+            sanitized_count, sanitized_examples
+        );
     }
 
     RecordBatch::try_new(
@@ -650,8 +1247,38 @@ fn build_buses_batch(
     .context("building buses batch")
 }
 
+fn sanitize_bus_v_mag_set(vm_candidate: f64, nvlo: f64, nvhi: f64) -> f64 {
+    let mut vm = if vm_candidate.is_finite() {
+        vm_candidate
+    } else {
+        1.0
+    };
+
+    // Enforce a physically meaningful positive initialization.
+    if vm <= 0.0 {
+        vm = 1.0;
+    }
+
+    // If normal voltage bounds are valid and positive, keep v_mag_set inside them.
+    if nvlo.is_finite() && nvhi.is_finite() && nvlo > 0.0 && nvhi >= nvlo {
+        if vm < nvlo {
+            vm = nvlo;
+        } else if vm > nvhi {
+            vm = nvhi;
+        }
+    }
+
+    // Final safety net in case bounds were malformed.
+    if !vm.is_finite() || vm <= 0.0 {
+        1.0
+    } else {
+        vm
+    }
+}
+
 fn build_branches_batch(
     branches: &[models::Branch],
+    facts_devices: &[models::FactsDeviceRaw],
     bus_nominal_kv: &HashMap<u32, f64>,
     base_mva: f64,
 ) -> Result<RecordBatch> {
@@ -675,6 +1302,34 @@ fn build_branches_batch(
     let mut from_nominal_kv = Float64Builder::new();
     let mut to_nominal_kv = Float64Builder::new();
 
+    let mut device_type = StringDictionaryBuilder::<Int32Type>::new();
+    let mut control_mode = StringDictionaryBuilder::<Int32Type>::new();
+    let mut control_target_flow_mw = Float64Builder::new();
+    let mut x_min_pu = Float64Builder::new();
+    let mut x_max_pu = Float64Builder::new();
+    let mut injected_voltage_mag_pu = Float64Builder::new();
+    let mut injected_voltage_angle_deg = Float64Builder::new();
+    let map_field_names = MapFieldNames {
+        entry: "entries".to_string(),
+        key: "key".to_string(),
+        value: "value".to_string(),
+    };
+    let mut facts_params = MapBuilder::new(
+        Some(map_field_names),
+        StringBuilder::new(),
+        Float64Builder::new(),
+    );
+
+    let mut facts_by_pair: HashMap<(u32, u32), Vec<&models::FactsDeviceRaw>> = HashMap::new();
+    for facts in facts_devices {
+        let key = if facts.bus_i <= facts.bus_j {
+            (facts.bus_i, facts.bus_j)
+        } else {
+            (facts.bus_j, facts.bus_i)
+        };
+        facts_by_pair.entry(key).or_default().push(facts);
+    }
+
     for (idx, branch) in branches.iter().enumerate() {
         branch_id.append_value((idx + 1) as i32);
         from_bus_id.append_value(branch.i as i32);
@@ -683,7 +1338,7 @@ fn build_branches_batch(
         r.append_value(branch.r);
         x.append_value(branch.x);
         b_shunt.append_value(branch.b);
-        tap.append_value(1.0);   // PSS/E lines always have tap = 1.0
+        tap.append_value(1.0); // PSS/E lines always have tap = 1.0
         phase.append_value(0.0); // no phase shift on line branches
         rate_a.append_value(branch.ratea / base_mva);
         rate_b.append_value(branch.rateb / base_mva);
@@ -692,27 +1347,64 @@ fn build_branches_batch(
         name_b.append_null(); // branches have no name in RAW
         from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
         to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
+
+        let pair_key = if branch.i <= branch.j {
+            (branch.i, branch.j)
+        } else {
+            (branch.j, branch.i)
+        };
+        let matched_facts = facts_by_pair.get(&pair_key).and_then(|records| {
+            if records.len() == 1 {
+                Some(records[0])
+            } else {
+                None
+            }
+        });
+
+        if let Some(facts) = matched_facts {
+            device_type.append_value(facts.device_type.as_ref());
+            control_mode.append_option(facts.control_mode.as_deref());
+            control_target_flow_mw.append_option(facts.target_flow_mw);
+            x_min_pu.append_option(facts.x_min_pu);
+            x_max_pu.append_option(facts.x_max_pu);
+            injected_voltage_mag_pu.append_option(facts.injected_voltage_mag_pu);
+            injected_voltage_angle_deg.append_option(facts.injected_voltage_angle_deg);
+
+            if facts.params.is_empty() {
+                facts_params
+                    .append(false)
+                    .context("building branch facts_params null entry")?;
+            } else {
+                for (k, v) in &facts.params {
+                    facts_params.keys().append_value(k.as_ref());
+                    facts_params.values().append_value(*v);
+                }
+                facts_params
+                    .append(true)
+                    .context("building branch facts_params entry")?;
+            }
+        } else {
+            device_type.append_null();
+            control_mode.append_null();
+            control_target_flow_mw.append_null();
+            x_min_pu.append_null();
+            x_max_pu.append_null();
+            injected_voltage_mag_pu.append_null();
+            injected_voltage_angle_deg.append_null();
+            facts_params
+                .append(false)
+                .context("building branch facts_params null entry")?;
+        }
     }
 
-    let n_rows = branches.len();
-    let dict_int32_utf8 = arrow::datatypes::DataType::Dictionary(
-        Box::new(arrow::datatypes::DataType::Int32),
-        Box::new(arrow::datatypes::DataType::Utf8),
-    );
-    let map_str_f64 = arrow::datatypes::DataType::Map(
-        std::sync::Arc::new(arrow::datatypes::Field::new(
-            "entries",
-            arrow::datatypes::DataType::Struct(
-                vec![
-                    arrow::datatypes::Field::new("key", arrow::datatypes::DataType::Utf8, false),
-                    arrow::datatypes::Field::new("value", arrow::datatypes::DataType::Float64, false),
-                ]
-                .into(),
-            ),
-            false,
-        )),
-        false,
-    );
+    let facts_params_arr = facts_params.finish();
+    let facts_params_target_type = schema
+        .field_with_name("facts_params")
+        .expect("facts_params field must exist in branches schema")
+        .data_type()
+        .clone();
+    let facts_params_cast = arrow::compute::cast(&facts_params_arr, &facts_params_target_type)
+        .context("casting branches facts_params map")?;
 
     RecordBatch::try_new(
         schema,
@@ -733,15 +1425,14 @@ fn build_branches_batch(
             Arc::new(name_b.finish()),
             Arc::new(from_nominal_kv.finish()),
             Arc::new(to_nominal_kv.finish()),
-            // v0.8.6: FACTS control metadata — all null for non-FACTS branches
-            new_null_array(&dict_int32_utf8, n_rows),
-            new_null_array(&dict_int32_utf8, n_rows),
-            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
-            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
-            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
-            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
-            new_null_array(&arrow::datatypes::DataType::Float64, n_rows),
-            new_null_array(&map_str_f64, n_rows),
+            Arc::new(device_type.finish()),
+            Arc::new(control_mode.finish()),
+            Arc::new(control_target_flow_mw.finish()),
+            Arc::new(x_min_pu.finish()),
+            Arc::new(x_max_pu.finish()),
+            Arc::new(injected_voltage_mag_pu.finish()),
+            Arc::new(injected_voltage_angle_deg.finish()),
+            facts_params_cast,
         ],
     )
     .context("building branches batch")
@@ -849,7 +1540,8 @@ fn build_fixed_shunts_batch(
     buses: &[models::Bus],
     base_mva: f64,
 ) -> Result<RecordBatch> {
-    let schema = Arc::new(table_schema(TABLE_FIXED_SHUNTS).expect("fixed_shunts schema must exist"));
+    let schema =
+        Arc::new(table_schema(TABLE_FIXED_SHUNTS).expect("fixed_shunts schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut id = StringDictionaryBuilder::<Int32Type>::new();
@@ -914,10 +1606,12 @@ fn estimate_current_step(target_binit: f64, steps: &[f64]) -> i32 {
     best_step as i32
 }
 
-fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) -> Result<RecordBatch> {
-    let schema = Arc::new(
-        table_schema(TABLE_SWITCHED_SHUNTS).expect("switched_shunts schema must exist"),
-    );
+fn build_switched_shunts_batch(
+    shunts: &[models::SwitchedShunt],
+    base_mva: f64,
+) -> Result<RecordBatch> {
+    let schema =
+        Arc::new(table_schema(TABLE_SWITCHED_SHUNTS).expect("switched_shunts schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut status = BooleanBuilder::new();
@@ -939,7 +1633,8 @@ fn build_switched_shunts_batch(shunts: &[models::SwitchedShunt], base_mva: f64) 
     // (1-indexed among banks sharing a bus).  Matches CIM ShuntCompensator mRID path.
     let mut shunt_id = StringDictionaryBuilder::<Int32Type>::new();
     // Track per-bus shunt index for synthesizing shunt_id.
-    let mut bus_shunt_counter: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut bus_shunt_counter: std::collections::HashMap<u32, u32> =
+        std::collections::HashMap::new();
 
     for shunt in shunts {
         bus_id.append_value(shunt.i as i32);
@@ -991,9 +1686,8 @@ fn build_transformers_2w_batch(
     transformers: &[models::TwoWindingTransformer],
     base_mva: f64,
 ) -> Result<RecordBatch> {
-    let schema = Arc::new(
-        table_schema(TABLE_TRANSFORMERS_2W).expect("transformers_2w schema must exist"),
-    );
+    let schema =
+        Arc::new(table_schema(TABLE_TRANSFORMERS_2W).expect("transformers_2w schema must exist"));
 
     let mut from_bus_id = Int32Builder::new();
     let mut to_bus_id = Int32Builder::new();
@@ -1031,9 +1725,9 @@ fn build_transformers_2w_batch(
         g.append_value(t.mag1);
         b.append_value(t.mag2);
         tap_ratio.append_value(t.windv1);
-        nominal_tap_ratio.append_value(1.0); // TODO: derive from NOMV1/NOMV2
+        nominal_tap_ratio.append_value(derive_nominal_tap_ratio(t));
         phase_shift.append_value(t.ang1.to_radians());
-        vector_group.append_value("Yy0"); // TODO: derive from CW/CZ
+        append_vector_group(&mut vector_group, t);
         rate_a.append_value(t.rata1 / base_mva);
         rate_b.append_value(t.ratb1 / base_mva);
         rate_c.append_value(t.ratc1 / base_mva);
@@ -1071,6 +1765,129 @@ fn build_transformers_2w_batch(
         ],
     )
     .context("building transformers_2w batch")
+}
+
+fn build_transformers_3w_batch(
+    transformers: &[models::ThreeWindingTransformer],
+    base_mva: f64,
+) -> Result<RecordBatch> {
+    let schema =
+        Arc::new(table_schema(TABLE_TRANSFORMERS_3W).expect("transformers_3w schema must exist"));
+
+    let mut bus_h_id = Int32Builder::new();
+    let mut bus_m_id = Int32Builder::new();
+    let mut bus_l_id = Int32Builder::new();
+    let mut star_bus_id = Int32Builder::new();
+    let mut ckt = StringDictionaryBuilder::<Int32Type>::new();
+    let mut r_hm = Float64Builder::new();
+    let mut x_hm = Float64Builder::new();
+    let mut r_hl = Float64Builder::new();
+    let mut x_hl = Float64Builder::new();
+    let mut r_ml = Float64Builder::new();
+    let mut x_ml = Float64Builder::new();
+    let mut tap_h = Float64Builder::new();
+    let mut tap_m = Float64Builder::new();
+    let mut tap_l = Float64Builder::new();
+    let mut phase_shift = Float64Builder::new();
+    let mut vector_group = StringDictionaryBuilder::<Int32Type>::new();
+    let mut rate_a = Float64Builder::new();
+    let mut rate_b = Float64Builder::new();
+    let mut rate_c = Float64Builder::new();
+    let mut status = BooleanBuilder::new();
+    let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
+    let mut nominal_kv_h = Float64Builder::new();
+    let mut nominal_kv_m = Float64Builder::new();
+    let mut nominal_kv_l = Float64Builder::new();
+
+    for t in transformers {
+        bus_h_id.append_value(t.bus_h as i32);
+        bus_m_id.append_value(t.bus_m as i32);
+        bus_l_id.append_value(t.bus_l as i32);
+        star_bus_id.append_value(t.star_bus_id as i32);
+        ckt.append_value(t.ckt.as_ref());
+        r_hm.append_value(t.r_hm);
+        x_hm.append_value(t.x_hm);
+        r_hl.append_value(t.r_hl);
+        x_hl.append_value(t.x_hl);
+        r_ml.append_value(t.r_ml);
+        x_ml.append_value(t.x_ml);
+        tap_h.append_value(t.tap_h);
+        tap_m.append_value(t.tap_m);
+        tap_l.append_value(t.tap_l);
+        phase_shift.append_value(t.phase_shift_deg.to_radians());
+        vector_group.append_value("unknown");
+        rate_a.append_value(t.rate_a_mva / base_mva);
+        rate_b.append_value(t.rate_b_mva / base_mva);
+        rate_c.append_value(t.rate_c_mva / base_mva);
+        status.append_value(t.stat != 0);
+        name_b.append_null();
+        nominal_kv_h.append_option(if t.nominal_kv_h > 0.0 {
+            Some(t.nominal_kv_h)
+        } else {
+            None
+        });
+        nominal_kv_m.append_option(if t.nominal_kv_m > 0.0 {
+            Some(t.nominal_kv_m)
+        } else {
+            None
+        });
+        nominal_kv_l.append_option(if t.nominal_kv_l > 0.0 {
+            Some(t.nominal_kv_l)
+        } else {
+            None
+        });
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(bus_h_id.finish()),
+            Arc::new(bus_m_id.finish()),
+            Arc::new(bus_l_id.finish()),
+            Arc::new(star_bus_id.finish()),
+            Arc::new(ckt.finish()),
+            Arc::new(r_hm.finish()),
+            Arc::new(x_hm.finish()),
+            Arc::new(r_hl.finish()),
+            Arc::new(x_hl.finish()),
+            Arc::new(r_ml.finish()),
+            Arc::new(x_ml.finish()),
+            Arc::new(tap_h.finish()),
+            Arc::new(tap_m.finish()),
+            Arc::new(tap_l.finish()),
+            Arc::new(phase_shift.finish()),
+            Arc::new(vector_group.finish()),
+            Arc::new(rate_a.finish()),
+            Arc::new(rate_b.finish()),
+            Arc::new(rate_c.finish()),
+            Arc::new(status.finish()),
+            Arc::new(name_b.finish()),
+            Arc::new(nominal_kv_h.finish()),
+            Arc::new(nominal_kv_m.finish()),
+            Arc::new(nominal_kv_l.finish()),
+        ],
+    )
+    .context("building transformers_3w batch")
+}
+
+fn derive_nominal_tap_ratio(transformer: &models::TwoWindingTransformer) -> f64 {
+    if transformer.nomv1 > 0.0 && transformer.nomv2 > 0.0 {
+        transformer.nomv1 / transformer.nomv2
+    } else {
+        1.0
+    }
+}
+
+fn append_vector_group(
+    builder: &mut StringDictionaryBuilder<Int32Type>,
+    transformer: &models::TwoWindingTransformer,
+) {
+    // PSS/E RAW does not directly encode IEC vector-group semantics.
+    // CW/CZ describe voltage/impedance coding, not winding connection group.
+    // The schema requires a non-null value, so use an explicit sentinel rather
+    // than fabricating a specific IEC vector group.
+    let _ = transformer;
+    builder.append_value("unknown");
 }
 
 fn build_areas_batch(areas: &[models::Area]) -> Result<RecordBatch> {
@@ -1133,10 +1950,9 @@ fn build_owners_batch(owners: &[models::Owner]) -> Result<RecordBatch> {
     .context("building owners batch")
 }
 
-fn build_dynamics_models_batch(records: &[models::DyrGeneratorData]) -> Result<RecordBatch> {
-    let schema = Arc::new(
-        table_schema(TABLE_DYNAMICS_MODELS).expect("dynamics_models schema must exist"),
-    );
+fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<RecordBatch> {
+    let schema =
+        Arc::new(table_schema(TABLE_DYNAMICS_MODELS).expect("dynamics_models schema must exist"));
 
     let mut bus_id = Int32Builder::new();
     let mut gen_id = StringDictionaryBuilder::<Int32Type>::new();
@@ -1147,20 +1963,24 @@ fn build_dynamics_models_batch(records: &[models::DyrGeneratorData]) -> Result<R
         key: "key".to_string(),
         value: "value".to_string(),
     };
-    let mut params = MapBuilder::new(Some(map_field_names), StringBuilder::new(), Float64Builder::new());
+    let mut params = MapBuilder::new(
+        Some(map_field_names),
+        StringBuilder::new(),
+        Float64Builder::new(),
+    );
 
     for rec in records {
         bus_id.append_value(rec.bus_id as i32);
         gen_id.append_value(rec.id.as_ref());
         model_type.append_value(rec.model.as_ref());
 
-        params.keys().append_value("H");
-        params.values().append_value(rec.h);
-        params.keys().append_value("D");
-        params.values().append_value(rec.d);
-        params.keys().append_value("xd_prime");
-        params.values().append_value(rec.xd_prime);
-        params.append(true).context("building dynamics params map entry")?;
+        for (key, value) in &rec.params {
+            params.keys().append_value(key.as_ref());
+            params.values().append_value(*value);
+        }
+        params
+            .append(true)
+            .context("building dynamics params map entry")?;
     }
 
     let params_arr = params.finish();
@@ -1171,8 +1991,8 @@ fn build_dynamics_models_batch(records: &[models::DyrGeneratorData]) -> Result<R
         .expect("params field must exist in dynamics_models schema")
         .data_type()
         .clone();
-    let params_cast =
-        arrow::compute::cast(&params_arr, &params_target_type).context("casting dynamics params map")?;
+    let params_cast = arrow::compute::cast(&params_arr, &params_target_type)
+        .context("casting dynamics params map")?;
 
     RecordBatch::try_new(
         schema,
@@ -1184,4 +2004,165 @@ fn build_dynamics_models_batch(records: &[models::DyrGeneratorData]) -> Result<R
         ],
     )
     .context("building dynamics_models batch")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Bus, ThreeWindingTransformer, TwoWindingTransformer};
+
+    fn sample_3w() -> ThreeWindingTransformer {
+        ThreeWindingTransformer {
+            bus_h: 10,
+            bus_m: 20,
+            bus_l: 30,
+            star_bus_id: SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE + 1,
+            ckt: "1".into(),
+            stat: 1,
+            r_hm: 0.01,
+            x_hm: 0.1,
+            r_hl: 0.02,
+            x_hl: 0.2,
+            r_ml: 0.03,
+            x_ml: 0.3,
+            tap_h: 1.0,
+            tap_m: 1.0,
+            tap_l: 1.0,
+            phase_shift_deg: 0.0,
+            rate_a_mva: 100.0,
+            rate_b_mva: 110.0,
+            rate_c_mva: 120.0,
+            nominal_kv_h: 230.0,
+            nominal_kv_m: 115.0,
+            nominal_kv_l: 13.8,
+        }
+    }
+
+    fn sample_star_leg(from: u32, star: u32, suffix: &str) -> TwoWindingTransformer {
+        TwoWindingTransformer {
+            i: from,
+            j: star,
+            ckt: suffix.into(),
+            stat: 1,
+            windv1: 1.0,
+            nomv1: 230.0,
+            nomv2: 115.0,
+            ..Default::default()
+        }
+    }
+
+    fn sample_bus(id: u32) -> Bus {
+        Bus {
+            i: id,
+            name: format!("B{id}").into_boxed_str(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn expanded_mode_removes_native_3w_rows() {
+        let tx3 = sample_3w();
+        let mut network = Network {
+            buses: vec![
+                sample_bus(10),
+                sample_bus(20),
+                sample_bus(30),
+                sample_bus(tx3.star_bus_id),
+            ],
+            transformers: vec![
+                sample_star_leg(10, tx3.star_bus_id, "S1"),
+                sample_star_leg(20, tx3.star_bus_id, "S2"),
+                sample_star_leg(30, tx3.star_bus_id, "S3"),
+            ],
+            transformers_3w: vec![tx3],
+            ..Default::default()
+        };
+
+        normalize_transformer_representation(&mut network, TransformerRepresentationMode::Expanded)
+            .expect("expanded mode normalization should succeed");
+
+        assert!(network.transformers_3w.is_empty());
+        assert_eq!(network.transformers.len(), 3);
+        assert!(
+            network
+                .buses
+                .iter()
+                .all(|b| b.i != SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE + 1)
+        );
+    }
+
+    #[test]
+    fn native_mode_keeps_native_3w_and_real_2w_but_removes_star_legs() {
+        let tx3 = sample_3w();
+        let real_2w = TwoWindingTransformer {
+            i: 40,
+            j: 50,
+            ckt: "R1".into(),
+            stat: 1,
+            ..Default::default()
+        };
+        let mut network = Network {
+            buses: vec![
+                sample_bus(10),
+                sample_bus(20),
+                sample_bus(30),
+                sample_bus(40),
+                sample_bus(50),
+                sample_bus(tx3.star_bus_id),
+            ],
+            transformers: vec![
+                sample_star_leg(10, tx3.star_bus_id, "S1"),
+                sample_star_leg(20, tx3.star_bus_id, "S2"),
+                sample_star_leg(30, tx3.star_bus_id, "S3"),
+                real_2w,
+            ],
+            transformers_3w: vec![tx3],
+            ..Default::default()
+        };
+
+        normalize_transformer_representation(&mut network, TransformerRepresentationMode::Native3W)
+            .expect("native mode normalization should succeed");
+
+        assert_eq!(network.transformers_3w.len(), 1);
+        assert_eq!(network.transformers.len(), 1);
+        assert_eq!(network.transformers[0].i, 40);
+        assert_eq!(network.transformers[0].j, 50);
+        assert!(
+            network
+                .buses
+                .iter()
+                .all(|b| b.i != SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE + 1)
+        );
+    }
+
+    #[test]
+    fn native_mode_rejects_ambiguous_overlap() {
+        let tx3 = sample_3w();
+        let mut network = Network {
+            buses: vec![
+                sample_bus(10),
+                sample_bus(20),
+                sample_bus(30),
+                sample_bus(tx3.star_bus_id),
+            ],
+            transformers: vec![
+                sample_star_leg(10, tx3.star_bus_id, "S1"),
+                sample_star_leg(20, tx3.star_bus_id, "S2"),
+                sample_star_leg(30, tx3.star_bus_id, "S3"),
+                // Extra active leg touching the same star bus makes overlap ambiguous.
+                sample_star_leg(99, tx3.star_bus_id, "SX"),
+            ],
+            transformers_3w: vec![tx3],
+            ..Default::default()
+        };
+
+        let err = normalize_transformer_representation(
+            &mut network,
+            TransformerRepresentationMode::Native3W,
+        )
+        .expect_err("ambiguous overlap must be rejected");
+        let message = format!("{err:#}");
+        assert!(message.contains("ambiguous 3-winding overlap"));
+        assert!(message.contains("star_bus_id=10000001"));
+    }
 }

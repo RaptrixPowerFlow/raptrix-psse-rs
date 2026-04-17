@@ -3,7 +3,7 @@ set -euo pipefail
 
 if [[ $# -ne 4 ]]; then
   echo "Usage: $0 <target> <os-label> <arch-label> <version>" >&2
-  echo "Example: $0 x86_64-unknown-linux-gnu linux x86_64 0.2.0" >&2
+  echo "Example: $0 x86_64-unknown-linux-gnu linux x86_64 <version>" >&2
   exit 1
 fi
 

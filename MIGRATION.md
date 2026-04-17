@@ -7,12 +7,7 @@
   https://mozilla.org/MPL/2.0/.
 -->
 
-# Porting the C++ PSS/E Parser to Rust
-
-**raptrix-psse-rs**  
-Copyright (c) 2026 Raptrix PowerFlow
-
-# Porting the C++ PSS/E Parser to Rust & Schema Version Migrations
+# Porting Status, Release Notes, and Schema Version Migrations
 
 **raptrix-psse-rs**  
 Copyright (c) 2026 Raptrix PowerFlow
@@ -20,6 +15,33 @@ Copyright (c) 2026 Raptrix PowerFlow
 ---
 
 ## RPF Schema Version Migrations
+
+### v0.2.2 → v0.2.3: Canonical RPF v0.8.7 Sync
+
+**Summary of changes:**
+- Canonical RPF contract is now v0.8.7.
+- `rpf.transformer_representation_mode` is now sourced from shared `raptrix-cim-arrow` metadata constants instead of a repo-local copy.
+- Default transformer export mode is now `native_3w` to match the canonical upstream writer default.
+- Expanded-mode synthetic star buses now use IDs greater than 10 000 000 and are removed from the exported `buses` table.
+
+**Compatibility notes:**
+- Files written before v0.8.7 may omit `rpf.transformer_representation_mode`; canonical readers should treat the missing key as `native_3w`.
+- Dual materialization remains a hard export error: no file may contain active native `transformers_3w` rows and active synthetic star-leg `transformers_2w` rows for the same physical unit.
+- Regenerate checked-in `.rpf` artifacts so downstream core verification runs against the v0.8.7 contract.
+
+### v0.2.1 → v0.2.2: Transformer Representation Invariants
+
+**Summary of changes:**
+- Exporter now enforces a **single transformer representation mode** per run.
+- Default mode is `expanded`: 3-winding devices export only as star-expanded rows in `transformers_2w`.
+- Optional mode `native-3w`: 3-winding devices export only in `transformers_3w` and synthetic star legs are removed.
+- Export fails fast on ambiguous overlap that cannot be safely normalized.
+- Root metadata includes stable machine-readable key `rpf.transformer_representation_mode` with values `expanded` or `native_3w`.
+
+**Compatibility notes:**
+- Schema remains backward-compatible; no canonical table columns were removed.
+- New behavior is correctness-driven: no exported case may contain active duplicate materialization candidates for the same physical 3-winding transformer.
+- Existing consumers can continue reading both `transformers_2w` and `transformers_3w`; the representation mode metadata indicates which form is authoritative for 3-winding devices in that file.
 
 ### v0.8.3 → v0.8.4: Planning-vs-Solved Semantics
 
@@ -52,10 +74,42 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ---
 
-## C++ PSS/E Parser Porting Guide
+## 0.2.1 converter status
 
-This document is a step-by-step guide for incrementally porting the existing
-C++ PSS/E parser into `src/parser.rs` and `src/models.rs`.
+`raptrix-psse-rs` 0.2.1 is no longer in the early section-by-section port phase.
+The converter now supports production-scale static-network export plus a
+solver-usable subset of PSS/E dynamic data.
+
+### Implemented in 0.2.1
+
+- RAW sections 0, 1, 2, 3, 4, 5, 6, 7, 13, 15, and 17 export into canonical RPF tables.
+- Bus-level `p_sched`, `q_sched`, `g_shunt`, and `b_shunt` aggregates are materialized in per-unit for solver parity.
+- Two-winding transformer `nominal_tap_ratio` is derived from `NOMV1 / NOMV2` when available.
+- Transformer `vector_group` is emitted as `"unknown"` instead of a fabricated IEC code.
+- All numeric DYR model rows are preserved in `dynamics_models`.
+- Supported synchronous-machine families `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, and `GENCLS` populate generator `h`, `D`, and `xd_prime` fields.
+- Texas static and dynamic golden cases are regenerated as `.rpf` artifacts during `cargo test`.
+
+### Remaining solver-impacting gaps
+
+- Exciters, governors, PSS, renewable controllers, and plant controllers are preserved in `dynamics_models`, but their semantics are not yet projected into solver-specific initialization tables.
+- Transformer per-winding impedance decomposition (`winding1_r/x`, `winding2_r/x`) still exports zeros.
+- RAW ZIP load components (`IP`, `IQ`, `YP`, `YQ`) are not represented in RPF v0.8.6.
+- RAW sections 8–12, 14, 18–20, and v35 system switching devices are still skipped.
+
+### Release-validation workflow
+
+1. Run `cargo test` to regenerate and validate the checked-in `.rpf` artifacts under `tests/golden/`.
+2. Hand the updated `.rpf` files to the core solver for capability validation.
+3. Review `docs/psse-mapping.md` whenever a new section or DYR family is added so the solver-side reader contract stays aligned with the converter.
+
+---
+
+## Historical porting guide
+
+This repository started as a step-by-step port of the existing C++ PSS/E parser
+into `src/parser.rs` and `src/models.rs`. The notes below are retained as
+historical implementation guidance.
 
 ---
 

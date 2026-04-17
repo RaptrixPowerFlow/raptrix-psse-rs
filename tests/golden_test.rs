@@ -9,18 +9,20 @@
 
 use std::time::Instant;
 
-use arrow::array::{Array, BooleanArray, Float64Array, ListArray, StringArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, ListArray, StringArray};
 use raptrix_cim_arrow::{
-    TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
-    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_SWITCHED_SHUNTS,
-    TABLE_TRANSFORMERS_2W,
+    RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
+    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W,
+    TABLE_TRANSFORMERS_3W,
 };
+
+const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
 
 const RAW_PATH: &str = "tests/data/external/Texas7k_20210804.RAW";
 const DYR_PATH: &str = "tests/data/external/Texas7k_20210804.dyr";
 
 /// Output written alongside the test data so the artefacts are easy to inspect.
-const OUT_STATIC:  &str = "tests/golden/Texas7k_20210804_static.rpf";
+const OUT_STATIC: &str = "tests/golden/Texas7k_20210804_static.rpf";
 const OUT_DYNAMIC: &str = "tests/golden/Texas7k_20210804_dynamic.rpf";
 
 fn rows(summary: &raptrix_cim_arrow::RpfSummary, table_name: &str) -> usize {
@@ -35,8 +37,12 @@ fn rows(summary: &raptrix_cim_arrow::RpfSummary, table_name: &str) -> usize {
 fn print_summary(label: &str, summary: &raptrix_cim_arrow::RpfSummary, elapsed_ms: u128) {
     eprintln!("\n=== {label} ===");
     eprintln!("  elapsed: {elapsed_ms} ms");
-    eprintln!("  tables:  {}  total rows: {}  all canonical: {}",
-        summary.tables.len(), summary.total_rows, summary.has_all_canonical_tables);
+    eprintln!(
+        "  tables:  {}  total rows: {}  all canonical: {}",
+        summary.tables.len(),
+        summary.total_rows,
+        summary.has_all_canonical_tables
+    );
     for t in &summary.tables {
         eprintln!("  {:30} {:6} rows", t.table_name, t.rows);
     }
@@ -101,13 +107,72 @@ fn table_by_name<'a>(
         .unwrap_or_else(|| panic!("missing table '{table_name}'"))
 }
 
+fn assert_three_w_star_leg_consistency(
+    tables: &[(String, arrow::record_batch::RecordBatch)],
+    expected_nonzero_3w: bool,
+) {
+    let tx3w = table_by_name(tables, TABLE_TRANSFORMERS_3W);
+    let tx2w = table_by_name(tables, TABLE_TRANSFORMERS_2W);
+
+    let tx3w_rows = tx3w.num_rows();
+    if expected_nonzero_3w {
+        assert!(
+            tx3w_rows > 0,
+            "expected native transformers_3w rows for this dataset"
+        );
+    } else {
+        assert_eq!(
+            tx3w_rows, 0,
+            "expanded mode should not export native transformers_3w rows"
+        );
+    }
+
+    let from_bus = tx2w
+        .column_by_name("from_bus_id")
+        .expect("missing transformers_2w.from_bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("transformers_2w.from_bus_id must be Int32");
+    let to_bus = tx2w
+        .column_by_name("to_bus_id")
+        .expect("missing transformers_2w.to_bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("transformers_2w.to_bus_id must be Int32");
+
+    let mut star_leg_count = 0usize;
+    for i in 0..tx2w.num_rows() {
+        let from = from_bus.value(i);
+        let to = to_bus.value(i);
+        if from > 10_000_000 || to > 10_000_000 {
+            star_leg_count += 1;
+        }
+    }
+
+    if expected_nonzero_3w {
+        assert_eq!(
+            star_leg_count, 0,
+            "native_3w mode must not export synthetic star-leg transformers_2w rows"
+        );
+    } else {
+        assert_eq!(
+            star_leg_count,
+            tx3w_rows * 3,
+            "expanded mode must emit three star legs per 3-winding transformer"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Static (no DYR) — writes tests/golden/Texas7k_20210804_static.rpf
 // ---------------------------------------------------------------------------
 #[test]
 fn golden_texas7k_static() {
     if !std::path::Path::new(RAW_PATH).exists() {
-        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH);
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH
+        );
         return;
     }
     let t0 = Instant::now();
@@ -123,20 +188,47 @@ fn golden_texas7k_static() {
     print_summary("Texas7k — static (no DYR)", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 1000, "expected >1000 buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0,  "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0,      "loads should be non-empty");
-    assert!(rows(&summary, TABLE_FIXED_SHUNTS) > 0, "fixed_shunts should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "dynamics_models must be empty without DYR");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        rows(&summary, TABLE_FIXED_SHUNTS) > 0,
+        "fixed_shunts should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert_eq!(
+        rows(&summary, TABLE_DYNAMICS_MODELS),
+        0,
+        "dynamics_models must be empty without DYR"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
         root_metadata
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
     );
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_STATIC))
@@ -245,7 +337,10 @@ fn golden_texas7k_static() {
 #[test]
 fn golden_texas7k_dynamic() {
     if !std::path::Path::new(RAW_PATH).exists() {
-        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH);
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH
+        );
         return;
     }
     let t0 = Instant::now();
@@ -261,16 +356,37 @@ fn golden_texas7k_dynamic() {
     print_summary("Texas7k — dynamic (with DYR)", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 1000, "expected >1000 buses");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0,      "generators should be non-empty");
-    assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "dynamics_models should be non-empty with DYR");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
+        "dynamics_models should be non-empty with DYR"
+    );
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > rows(&summary, TABLE_GENERATORS),
+        "full DYR export should preserve more records than machine-only generator rows"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
         root_metadata
             .get("rpf_version")
             .map(|s| s.as_str())
             .unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
     );
 }
 
@@ -279,13 +395,16 @@ fn golden_texas7k_dynamic() {
 // ---------------------------------------------------------------------------
 const RAW_PATH_TX2K: &str = "tests/data/external/Texas2k_series25_case1_summerpeak.RAW";
 const DYR_PATH_TX2K: &str = "tests/data/external/Texas2k_series25_case1_summerpeak.dyr";
-const OUT_TX2K_STATIC:  &str = "tests/golden/Texas2k_series25_static.rpf";
+const OUT_TX2K_STATIC: &str = "tests/golden/Texas2k_series25_static.rpf";
 const OUT_TX2K_DYNAMIC: &str = "tests/golden/Texas2k_series25_dynamic.rpf";
 
 #[test]
 fn golden_texas2k_static() {
     if !std::path::Path::new(RAW_PATH_TX2K).exists() {
-        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX2K);
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH_TX2K
+        );
         return;
     }
     let t0 = Instant::now();
@@ -301,16 +420,35 @@ fn golden_texas2k_static() {
     print_summary("Texas2k — static (no DYR)", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "dynamics_models must be empty without DYR");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        rows(&summary, TABLE_DYNAMICS_MODELS),
+        0,
+        "dynamics_models must be empty without DYR"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 }
 
@@ -320,7 +458,10 @@ fn golden_texas2k_static() {
 #[test]
 fn golden_texas2k_dynamic() {
     if !std::path::Path::new(RAW_PATH_TX2K).exists() {
-        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX2K);
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH_TX2K
+        );
         return;
     }
     let t0 = Instant::now();
@@ -330,19 +471,36 @@ fn golden_texas2k_dynamic() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX2K_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX2K_DYNAMIC))
-        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+    let root_metadata =
+        raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX2K_DYNAMIC))
+            .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
     print_summary("Texas2k — dynamic (with DYR)", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "dynamics_models should be non-empty with DYR");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
+        "dynamics_models should be non-empty with DYR"
+    );
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > rows(&summary, TABLE_GENERATORS),
+        "full DYR export should preserve more records than machine-only generator rows"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 }
 
@@ -356,7 +514,10 @@ const OUT_EI_STATIC: &str = "tests/golden/Base_Eastern_Interconnect_515GW_static
 #[test]
 fn golden_eastern_interconnect_static() {
     if !std::path::Path::new(RAW_PATH_EI).exists() {
-        eprintln!("[skip] {} not found — place MMWG Eastern Interconnect file at this path to enable test", RAW_PATH_EI);
+        eprintln!(
+            "[skip] {} not found — place MMWG Eastern Interconnect file at this path to enable test",
+            RAW_PATH_EI
+        );
         return;
     }
     let t0 = Instant::now();
@@ -369,19 +530,41 @@ fn golden_eastern_interconnect_static() {
     let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_EI_STATIC))
         .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
-    print_summary("Base Eastern Interconnect 515GW — static", &summary, elapsed_ms);
+    print_summary(
+        "Base Eastern Interconnect 515GW — static",
+        &summary,
+        elapsed_ms,
+    );
 
-    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count for EI model");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count for EI model"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
     assert_eq!(rows(&summary, TABLE_DYNAMICS_MODELS), 0, "no DYR provided");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 }
 
@@ -405,15 +588,31 @@ fn golden_ieee14_static() {
 
     print_summary("IEEE 14-bus — static", &summary, elapsed_ms);
 
-    assert_eq!(rows(&summary, TABLE_BUSES), 14, "IEEE 14-bus: expected exactly 14 buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        rows(&summary, TABLE_BUSES),
+        14,
+        "IEEE 14-bus: expected exactly 14 buses"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 
     // Verify no data was silently dropped: bus IDs 1-14 must all appear.
@@ -428,7 +627,11 @@ fn golden_ieee14_static() {
         .expect("bus_id must be Int32");
     let mut ids: Vec<i32> = (0..bus_id_col.len()).map(|i| bus_id_col.value(i)).collect();
     ids.sort_unstable();
-    assert_eq!(ids, (1i32..=14).collect::<Vec<_>>(), "IEEE 14: expected bus IDs 1..=14");
+    assert_eq!(
+        ids,
+        (1i32..=14).collect::<Vec<_>>(),
+        "IEEE 14: expected bus IDs 1..=14"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -451,15 +654,31 @@ fn golden_ieee118_static() {
 
     print_summary("IEEE 118-bus — static", &summary, elapsed_ms);
 
-    assert_eq!(rows(&summary, TABLE_BUSES), 118, "IEEE 118-bus: expected exactly 118 buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        rows(&summary, TABLE_BUSES),
+        118,
+        "IEEE 118-bus: expected exactly 118 buses"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 
     // Verify no zero-reactance branches silently collapsed — all branch x values
@@ -470,7 +689,11 @@ fn golden_ieee118_static() {
     let branches = table_by_name(&tables, TABLE_BRANCHES);
     let x_col = col_f64(branches, "x");
     // Just verify the column is present and has the right row count.
-    assert_eq!(x_col.len(), rows(&summary, TABLE_BRANCHES), "branch x column length mismatch");
+    assert_eq!(
+        x_col.len(),
+        rows(&summary, TABLE_BRANCHES),
+        "branch x column length mismatch"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -482,7 +705,10 @@ const OUT_NYISO_OFF: &str = "tests/golden/NYISO_offpeak2019_v23_static.rpf";
 #[test]
 fn golden_nyiso_offpeak_v23_static() {
     if !std::path::Path::new(RAW_PATH_NYISO_OFF).exists() {
-        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_OFF);
+        eprintln!(
+            "[skip] {} not found — place licensed NYISO file at this path to enable test",
+            RAW_PATH_NYISO_OFF
+        );
         return;
     }
     let t0 = Instant::now();
@@ -498,20 +724,39 @@ fn golden_nyiso_offpeak_v23_static() {
     print_summary("NYISO off-peak 2019 v23 — static", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 
     // Verify bus and branch counts are consistent between the two NYISO snapshots
     // (same topology, different operating point — bus/branch counts must match).
-    eprintln!("  [NYISO off-peak] buses={} branches={}", rows(&summary, TABLE_BUSES), rows(&summary, TABLE_BRANCHES));
+    eprintln!(
+        "  [NYISO off-peak] buses={} branches={}",
+        rows(&summary, TABLE_BUSES),
+        rows(&summary, TABLE_BRANCHES)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -521,16 +766,18 @@ const RAW_PATH_NYISO_ON: &str = "tests/data/external/NYISO_onpeak2019_v23.raw";
 const OUT_NYISO_ON: &str = "tests/golden/NYISO_onpeak2019_v23_static.rpf";
 
 // NYISO 2030 snapshots (new golden test inputs)
-const RAW_PATH_NYISO_ON2030_PW: &str = "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw";
-const OUT_NYISO_ON2030_PW: &str = "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf";
-
-const RAW_PATH_NYISO_2030_MATPOWER: &str = "tests/data/external/nyiso_2030_v11_shunts_as_gens_psse33fromMatpower.raw";
-const OUT_NYISO_2030_MATPOWER: &str = "tests/golden/nyiso_2030_v11_shunts_as_gens_psse33fromMatpower_static.rpf";
+const RAW_PATH_NYISO_ON2030_PW: &str =
+    "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw";
+const OUT_NYISO_ON2030_PW: &str =
+    "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf";
 
 #[test]
 fn golden_nyiso_onpeak_v23_static() {
     if !std::path::Path::new(RAW_PATH_NYISO_ON).exists() {
-        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_ON);
+        eprintln!(
+            "[skip] {} not found — place licensed NYISO file at this path to enable test",
+            RAW_PATH_NYISO_ON
+        );
         return;
     }
     let t0 = Instant::now();
@@ -546,15 +793,30 @@ fn golden_nyiso_onpeak_v23_static() {
     print_summary("NYISO on-peak 2019 v23 — static", &summary, elapsed_ms);
 
     assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 
     // If the off-peak RPF was already written (by the sibling test running
@@ -583,7 +845,10 @@ fn golden_nyiso_onpeak_v23_static() {
 #[test]
 fn golden_nyiso_onpeak_2030_powerworld_static() {
     if !std::path::Path::new(RAW_PATH_NYISO_ON2030_PW).exists() {
-        eprintln!("[skip] {} not found — place licensed NYISO file at this path to enable test", RAW_PATH_NYISO_ON2030_PW);
+        eprintln!(
+            "[skip] {} not found — place licensed NYISO file at this path to enable test",
+            RAW_PATH_NYISO_ON2030_PW
+        );
         return;
     }
     let t0 = Instant::now();
@@ -593,52 +858,46 @@ fn golden_nyiso_onpeak_2030_powerworld_static() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_ON2030_PW))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_ON2030_PW))
-        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+    let root_metadata =
+        raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_ON2030_PW))
+            .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
-    print_summary("NYISO on-peak 2030 (PowerWorld) — static", &summary, elapsed_ms);
+    print_summary(
+        "NYISO on-peak 2030 (PowerWorld) — static",
+        &summary,
+        elapsed_ms,
+    );
 
     assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 }
 
-#[test]
-fn golden_nyiso_2030_matpower_static() {
-    if !std::path::Path::new(RAW_PATH_NYISO_2030_MATPOWER).exists() {
-        eprintln!("[skip] {} not found — place licensed file at this path to enable test", RAW_PATH_NYISO_2030_MATPOWER);
-        return;
-    }
-    let t0 = Instant::now();
-    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_NYISO_2030_MATPOWER, None, OUT_NYISO_2030_MATPOWER)
-        .unwrap_or_else(|e| panic!("NYISO 2030 (Matpower) conversion failed: {e:#}"));
-    let elapsed_ms = t0.elapsed().as_millis();
-
-    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_NYISO_2030_MATPOWER))
-        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_NYISO_2030_MATPOWER))
-        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
-
-    print_summary("NYISO 2030 (Matpower) — static", &summary, elapsed_ms);
-    assert!(rows(&summary, TABLE_BUSES) > 0, "expected buses");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    // Some third-party RAW exports may omit explicit branch/generator records
-    // — accept any topology as long as buses/loads exist and canonical tables present.
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
-    assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
-    );
-}
+// Removed: NYISO 2030 Matpower test input is not available in-repo and
+// corresponding references were deleted to avoid dead test failures.
 
 // ---------------------------------------------------------------------------
 // Texas7k 2030 scenario — forward-planning case (topology differs from 2021)
@@ -649,7 +908,10 @@ const OUT_TX7K_2030: &str = "tests/golden/Texas7k_2030_static.rpf";
 #[test]
 fn golden_texas7k_2030_static() {
     if !std::path::Path::new(RAW_PATH_TX7K_2030).exists() {
-        eprintln!("[skip] {} not found — place licensed ERCOT file at this path to enable test", RAW_PATH_TX7K_2030);
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH_TX7K_2030
+        );
         return;
     }
     let t0 = Instant::now();
@@ -664,16 +926,34 @@ fn golden_texas7k_2030_static() {
 
     print_summary("Texas7k 2030 scenario — static", &summary, elapsed_ms);
 
-    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count for 2030 planning case");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count for 2030 planning case"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
     assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
     assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
     );
 }
 
@@ -686,7 +966,10 @@ const OUT_MIDWEST24K: &str = "tests/golden/Midwest24k_static.rpf";
 #[test]
 fn golden_midwest24k_static() {
     if !std::path::Path::new(RAW_PATH_MIDWEST24K).exists() {
-        eprintln!("[skip] {} not found — place licensed file at this path to enable test", RAW_PATH_MIDWEST24K);
+        eprintln!(
+            "[skip] {} not found — place licensed file at this path to enable test",
+            RAW_PATH_MIDWEST24K
+        );
         return;
     }
     let t0 = Instant::now();
@@ -701,81 +984,183 @@ fn golden_midwest24k_static() {
 
     print_summary("Midwest 24k — static", &summary, elapsed_ms);
 
-    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
-    assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count"
     );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_3W) > 0,
+        "default native_3w mode should preserve transformers_3w rows"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_MIDWEST24K))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_three_w_star_leg_consistency(&tables, true);
 }
 
 // ---------------------------------------------------------------------------
 // ACTIVSg 25k synthetic grid
 // ---------------------------------------------------------------------------
-const RAW_PATH_ACTIVSg25K: &str = "tests/data/external/ACTIVSg25k.RAW";
-const OUT_ACTIVSg25K: &str = "tests/golden/ACTIVSg25k_static.rpf";
+const RAW_PATH_ACTIVSG25K: &str = "tests/data/external/ACTIVSg25k.RAW";
+const OUT_ACTIVSG25K: &str = "tests/golden/ACTIVSg25k_static.rpf";
 
 #[test]
 fn golden_activsg25k_static() {
     let t0 = Instant::now();
-    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSg25K, None, OUT_ACTIVSg25K)
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSG25K, None, OUT_ACTIVSG25K)
         .unwrap_or_else(|e| panic!("ACTIVSg25k conversion failed: {e:#}"));
     let elapsed_ms = t0.elapsed().as_millis();
 
-    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSg25K))
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSG25K))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSg25K))
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSG25K))
         .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
     print_summary("ACTIVSg 25k — static", &summary, elapsed_ms);
 
-    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
-    assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count"
     );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_3W) > 0,
+        "default native_3w mode should preserve transformers_3w rows"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVSG25K))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_three_w_star_leg_consistency(&tables, true);
 }
 
 // ---------------------------------------------------------------------------
 // ACTIVSg 70k synthetic grid — largest available test case
 // ---------------------------------------------------------------------------
-const RAW_PATH_ACTIVSg70K: &str = "tests/data/external/ACTIVSg70k.RAW";
-const OUT_ACTIVSg70K: &str = "tests/golden/ACTIVSg70k_static.rpf";
+const RAW_PATH_ACTIVSG70K: &str = "tests/data/external/ACTIVSg70k.RAW";
+const OUT_ACTIVSG70K: &str = "tests/golden/ACTIVSg70k_static.rpf";
 
 #[test]
 fn golden_activsg70k_static() {
     let t0 = Instant::now();
-    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSg70K, None, OUT_ACTIVSg70K)
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSG70K, None, OUT_ACTIVSG70K)
         .unwrap_or_else(|e| panic!("ACTIVSg70k conversion failed: {e:#}"));
     let elapsed_ms = t0.elapsed().as_millis();
 
-    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSg70K))
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVSG70K))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSg70K))
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVSG70K))
         .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
     print_summary("ACTIVSg 70k — static", &summary, elapsed_ms);
 
-    assert!(rows(&summary, TABLE_BUSES) > 1000, "expected large bus count");
-    assert!(rows(&summary, TABLE_BRANCHES) > 0, "branches should be non-empty");
-    assert!(rows(&summary, TABLE_GENERATORS) > 0, "generators should be non-empty");
-    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
-    assert!(rows(&summary, TABLE_TRANSFORMERS_2W) > 0, "transformers_2w should be non-empty");
-    assert!(summary.has_all_canonical_tables, "RPF must contain all canonical tables");
-    assert_eq!(
-        root_metadata.get("rpf_version").map(|s| s.as_str()).unwrap_or(""),
-        "0.8.6",
-        "rpf_version metadata must be 0.8.3"
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count"
     );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_3W) > 0,
+        "default native_3w mode should preserve transformers_3w rows"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVSG70K))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_three_w_star_leg_consistency(&tables, true);
 }

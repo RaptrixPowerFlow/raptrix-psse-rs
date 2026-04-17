@@ -21,8 +21,8 @@
 //!   are not split at internal commas or spaces.
 //! * **3-winding transformer star expansion**: creates a fictitious star bus
 //!   and three 2-winding legs, matching the C++ solver approach.
-//! * **DYR parser**: extracts GENROU, GENSAL, and GENCLS machine records for
-//!   transient stability initialisation.
+//! * **DYR parser**: preserves all numeric dynamic model records and extracts
+//!   synchronous-machine parameters used by the generator table.
 
 use std::{
     fs,
@@ -33,8 +33,9 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::models::{
-    Area, Branch, Bus, BusType, CaseId, DyrGeneratorData, FixedShunt, Generator, Load, Network,
-    Owner, SwitchedShunt, TwoWindingTransformer, Zone,
+    Area, Branch, Bus, BusType, CaseId, DyrGeneratorData, DyrModelData, FactsDeviceRaw, FixedShunt,
+    Generator, Load, Network, Owner, SwitchedShunt, ThreeWindingTransformer, TwoWindingTransformer,
+    Zone,
 };
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,7 @@ use crate::models::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseState {
     Header,
-    SystemWide,           // v35 SYSTEM-WIDE DATA section (skipped)
+    SystemWide, // v35 SYSTEM-WIDE DATA section (skipped)
     Bus,
     Load,
     FixedShunt,
@@ -549,13 +550,29 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
 
     let nvhi_raw = field_f64(f, va_idx + 1);
     let nvlo_raw = field_f64(f, va_idx + 2);
-    let nvhi = if nvhi_raw > 0.5 && nvhi_raw <= 2.0 { nvhi_raw } else { 1.1 };
-    let nvlo = if nvlo_raw > 0.0 && nvlo_raw <= 2.0 { nvlo_raw } else { 0.9 };
+    let nvhi = if nvhi_raw > 0.5 && nvhi_raw <= 2.0 {
+        nvhi_raw
+    } else {
+        1.1
+    };
+    let nvlo = if nvlo_raw > 0.0 && nvlo_raw <= 2.0 {
+        nvlo_raw
+    } else {
+        0.9
+    };
 
     let evhi_raw = field_f64(f, va_idx + 3);
     let evlo_raw = field_f64(f, va_idx + 4);
-    let evhi = if evhi_raw > 0.5 && evhi_raw <= 2.0 { evhi_raw } else { 1.1 };
-    let evlo = if evlo_raw > 0.0 && evlo_raw <= 2.0 { evlo_raw } else { 0.9 };
+    let evhi = if evhi_raw > 0.5 && evhi_raw <= 2.0 {
+        evhi_raw
+    } else {
+        1.1
+    };
+    let evlo = if evlo_raw > 0.0 && evlo_raw <= 2.0 {
+        evlo_raw
+    } else {
+        0.9
+    };
 
     Some(Bus {
         i,
@@ -757,6 +774,76 @@ fn parse_owner_record(f: &[String]) -> Owner {
     }
 }
 
+/// Parse one Section 18 FACTS record into a normalized branch-oriented payload.
+///
+/// Section 18 has multiple formats in the wild. This parser intentionally keeps
+/// the extraction conservative:
+/// * requires at least two positive integer bus numbers in the record,
+/// * captures a model/device token when present,
+/// * preserves all remaining numeric tokens as `p1..pN`.
+fn parse_facts_record(f: &[String]) -> Option<FactsDeviceRaw> {
+    if f.len() < 3 {
+        return None;
+    }
+
+    let mut bus_indices: Vec<usize> = Vec::new();
+    let mut buses: Vec<u32> = Vec::new();
+    for (idx, token) in f.iter().enumerate() {
+        if let Ok(v) = token.trim().parse::<i64>() {
+            if v > 0 {
+                bus_indices.push(idx);
+                buses.push(v as u32);
+                if buses.len() == 2 {
+                    break;
+                }
+            }
+        }
+    }
+    if buses.len() < 2 {
+        return None;
+    }
+
+    let mut device_type = "facts".to_string();
+    if let Some(model_tok) = f
+        .iter()
+        .find(|tok| tok.chars().any(|c| c.is_ascii_alphabetic()))
+    {
+        let normalized = model_tok
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .to_ascii_lowercase();
+        if !normalized.is_empty() {
+            device_type = normalized;
+        }
+    }
+
+    let mut params: Vec<(Box<str>, f64)> = Vec::new();
+    let mut p_idx = 1usize;
+    for (idx, token) in f.iter().enumerate() {
+        if bus_indices.contains(&idx) {
+            continue;
+        }
+        if let Ok(value) = token.trim().parse::<f64>() {
+            params.push((format!("p{p_idx}").into_boxed_str(), value));
+            p_idx += 1;
+        }
+    }
+
+    Some(FactsDeviceRaw {
+        bus_i: buses[0],
+        bus_j: buses[1],
+        device_type: device_type.into_boxed_str(),
+        control_mode: None,
+        target_flow_mw: None,
+        x_min_pu: None,
+        x_max_pu: None,
+        injected_voltage_mag_pu: None,
+        injected_voltage_angle_deg: None,
+        params,
+    })
+}
+
 /// Parse one SWITCHED SHUNT record (version-aware).
 ///
 /// Expands `N₁/B₁ … N₈/B₈` pairs into `steps`: a flat list where each step
@@ -815,14 +902,14 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
     let mut psse_version: i32 = f
         .get(2)
         .and_then(|s| s.trim().parse::<i32>().ok())
-        .filter(|&v| v >= 20 && v <= 40)
+        .filter(|&v| (20..=40).contains(&v))
         .unwrap_or(-1);
 
     // Fallback: scan all tokens
     if psse_version < 0 {
         for tok in &f {
             if let Ok(v) = tok.trim().parse::<i32>() {
-                if v >= 20 && v <= 40 {
+                if (20..=40).contains(&v) {
                     psse_version = v;
                     break;
                 }
@@ -843,7 +930,10 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
     let basfrq = f.get(5).and_then(|s| s.parse::<f64>().ok()).unwrap_or(60.0);
     let basfrq = if basfrq <= 0.0 { 60.0 } else { basfrq };
 
-    let sbase = f.get(1).and_then(|s| s.parse::<f64>().ok()).unwrap_or(100.0);
+    let sbase = f
+        .get(1)
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(100.0);
 
     let case_id = CaseId {
         sbase,
@@ -862,6 +952,7 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
 
 /// Build a star-equivalent [`TwoWindingTransformer`] leg for a 3-winding
 /// transformer.  `to_bus` is the fictitious star bus.
+#[allow(clippy::too_many_arguments)]
 fn star_leg_transformer(
     from_bus: u32,
     to_bus: u32,
@@ -878,6 +969,8 @@ fn star_leg_transformer(
         i: from_bus,
         j: to_bus,
         ckt: format!("S{ckt_suffix}").into_boxed_str(),
+        cw: 0,
+        cz: 0,
         stat,
         mag1: 0.0,
         mag2: 0.0,
@@ -929,8 +1022,9 @@ fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
 ///
 /// # 3-winding transformers
 /// 3-winding records (K ≠ 0) are converted to a star-equivalent: a fictitious
-/// bus (ID ≥ 1 000 000) plus three [`TwoWindingTransformer`] legs.  The
-/// fictitious buses are appended to `Network::buses`.
+/// bus (ID > 10 000 000) plus three [`TwoWindingTransformer`] legs. The
+/// fictitious buses are used only as an internal normalization aid and are
+/// removed before final RPF emission.
 pub fn parse_raw(path: &Path) -> Result<Network> {
     let file = fs::File::open(path)
         .with_context(|| format!("cannot open RAW file: {}", path.display()))?;
@@ -942,8 +1036,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
     let mut off = version_offsets(psse_version);
 
     let mut result = Network::default();
-    // Counter for fictitious star bus IDs generated by 3W expansion
-    let mut next_star_id: u32 = 1_000_000;
+    // Counter for fictitious star bus IDs generated by 3W expansion.
+    let mut next_star_id: u32 = 10_000_001;
 
     loop {
         let raw_line = match next_line(&mut lines_iter)? {
@@ -1068,6 +1162,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 
                 // Record 1: I, J, K, CKT, CW, CZ, CM, MAG1, MAG2, NMETR, NAME, STAT, ...
                 let ckt = field_str(&f1, 3);
+                let cw = field_u8(&f1, 4);
+                let cz = field_u8(&f1, 5);
                 let mag1 = field_f64(&f1, 7);
                 let mag2 = field_f64(&f1, 8);
                 let stat = field_u8_default(&f1, 11, 1);
@@ -1122,6 +1218,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
                         i: i_bus,
                         j: j_bus,
                         ckt: ckt.into_boxed_str(),
+                        cw,
+                        cz,
                         stat,
                         mag1,
                         mag2,
@@ -1150,11 +1248,16 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
                     // Record 4 for winding 2: WINDV2, NOMV2, ANG2, RATA2, …
                     let ang2 = field_f64(&f4, 2);
                     let rata2 = field_f64(&f4, 3);
+                    let ratb2 = field_f64(&f4, 4);
+                    let ratc2 = field_f64(&f4, 5);
 
                     // Record 5 for winding 3: WINDV3, NOMV3, ANG3, RATA3, …
                     let windv3 = field_f64(&f5, 0);
+                    let nomv3 = field_f64(&f5, 1);
                     let ang3 = field_f64(&f5, 2);
                     let rata3 = field_f64(&f5, 3);
+                    let ratb3 = field_f64(&f5, 4);
+                    let ratc3 = field_f64(&f5, 5);
 
                     // Star-delta impedance decomposition
                     let za_r = 0.5 * (r12 + r31 - r23);
@@ -1166,22 +1269,49 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 
                     // Minimum MVA rating across the three windings
                     let rate = rata1.min(rata2).min(rata3);
+                    let rate_b = ratb1.min(ratb2).min(ratb3);
+                    let rate_c = ratc1.min(ratc2).min(ratc3);
 
                     // Fictitious star bus
                     let star_id = next_star_id;
                     next_star_id += 1;
 
+                    result.transformers_3w.push(ThreeWindingTransformer {
+                        bus_h: i_bus,
+                        bus_m: j_bus,
+                        bus_l: k_bus,
+                        star_bus_id: star_id,
+                        ckt: ckt.clone().into_boxed_str(),
+                        stat,
+                        r_hm: r12,
+                        x_hm: x12,
+                        r_hl: r31,
+                        x_hl: x31,
+                        r_ml: r23,
+                        x_ml: x23,
+                        tap_h: windv1,
+                        tap_m: windv2,
+                        tap_l: windv3,
+                        phase_shift_deg: ang1,
+                        rate_a_mva: rate,
+                        rate_b_mva: rate_b,
+                        rate_c_mva: rate_c,
+                        nominal_kv_h: nomv1,
+                        nominal_kv_m: nomv2,
+                        nominal_kv_l: nomv3,
+                    });
+
                     // Determine area/zone/owner from bus i (must be in bus list already
                     // because buses are parsed before transformers in PSS/E ordering)
-                    let (star_area, star_zone, star_owner) =
-                        result.buses.iter().find(|b| b.i == i_bus).map_or(
-                            (1u32, 1u32, 1u32),
-                            |b| (b.area, b.zone, b.owner),
-                        );
-
-                    result
+                    let (star_area, star_zone, star_owner) = result
                         .buses
-                        .push(fictitious_star_bus(star_id, star_area, star_zone, star_owner));
+                        .iter()
+                        .find(|b| b.i == i_bus)
+                        .map_or((1u32, 1u32, 1u32), |b| (b.area, b.zone, b.owner));
+
+                    result.buses.push(fictitious_star_bus(
+                        star_id, star_area, star_zone, star_owner,
+                    ));
 
                     result.transformers.push(star_leg_transformer(
                         i_bus, star_id, 1, za_r, za_x, windv1, ang1, rate, sbase12, stat,
@@ -1226,6 +1356,16 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             }
 
             // ================================================================
+            // FACTS DATA (section 18)
+            // ================================================================
+            ParseState::Facts => {
+                let f = tokenize(data);
+                if let Some(facts) = parse_facts_record(&f) {
+                    result.facts_devices.push(facts);
+                }
+            }
+
+            // ================================================================
             // SWITCHED SHUNT DATA
             // ================================================================
             ParseState::SwitchedShunt => {
@@ -1246,7 +1386,6 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             | ParseState::MultiTerminalDc
             | ParseState::MultiSectionLine
             | ParseState::InterAreaTransfer
-            | ParseState::Facts
             | ParseState::GneDevice
             | ParseState::InductionMachine => { /* skip */ }
 
@@ -1257,7 +1396,7 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
     eprintln!(
         "[parser v{}] buses={} loads={} fixed_shunts={} generators={} \
          branches={} transformers_2w={} areas={} zones={} owners={} \
-         switched_shunts={}",
+         switched_shunts={} facts_devices={}",
         psse_version,
         result.buses.len(),
         result.loads.len(),
@@ -1269,9 +1408,41 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
         result.zones.len(),
         result.owners.len(),
         result.switched_shunts.len(),
+        result.facts_devices.len(),
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::parse_facts_record;
+
+    #[test]
+    fn parse_facts_record_extracts_bus_pair_and_params() {
+        let fields = vec![
+            "1001".to_string(),
+            "2002".to_string(),
+            "TCSC".to_string(),
+            "1.5".to_string(),
+            "-0.2".to_string(),
+            "0.3".to_string(),
+        ];
+        let rec = parse_facts_record(&fields).expect("should parse FACTS row");
+
+        assert_eq!(rec.bus_i, 1001);
+        assert_eq!(rec.bus_j, 2002);
+        assert_eq!(rec.device_type.as_ref(), "tcsc");
+        assert_eq!(rec.params.len(), 3);
+        assert_eq!(rec.params[0].0.as_ref(), "p1");
+    }
+
+    #[test]
+    fn parse_facts_record_rejects_without_two_bus_numbers() {
+        let fields = vec!["SVC".to_string(), "alpha".to_string(), "beta".to_string()];
+        assert!(parse_facts_record(&fields).is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1291,11 +1462,17 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 /// Each record is terminated by a `/` character.  Records may span multiple
 /// lines.  Comment lines that start with `@` are skipped.
 pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
+    let records = parse_dyr_records(path)?;
+    Ok(extract_dyr_generators(&records))
+}
+
+/// Parse all numeric DYR records from `path`.
+pub fn parse_dyr_records(path: &Path) -> Result<Vec<DyrModelData>> {
     let file = fs::File::open(path)
         .with_context(|| format!("cannot open DYR file: {}", path.display()))?;
     let reader = io::BufReader::new(file);
 
-    let mut records: Vec<DyrGeneratorData> = Vec::new();
+    let mut records: Vec<DyrModelData> = Vec::new();
     let mut pending = String::new();
 
     for line_result in reader.lines() {
@@ -1319,7 +1496,7 @@ pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
             if let Some(pos) = slash_pos {
                 // Slash terminates a record; process whatever was accumulated
                 if !pending.is_empty() {
-                    if let Some(rec) = try_parse_dyr_machine(&pending) {
+                    if let Some(rec) = try_parse_dyr_record(&pending) {
                         records.push(rec);
                     }
                     pending.clear();
@@ -1333,24 +1510,32 @@ pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
 
     // Handle any unterminated trailing record
     if !pending.is_empty() {
-        if let Some(rec) = try_parse_dyr_machine(&pending) {
+        if let Some(rec) = try_parse_dyr_record(&pending) {
             records.push(rec);
         }
     }
 
+    let machine_count = extract_dyr_generators(&records).len();
+
     eprintln!(
-        "[parser] {} synchronous machine records parsed from {}",
+        "[parser] {} DYR records parsed ({} supported machine models) from {}",
         records.len(),
+        machine_count,
         path.display()
     );
 
     Ok(records)
 }
 
-/// Attempt to parse one DYR machine record from a `/`-terminated accumulation.
+/// Extract the supported synchronous-machine subset from raw DYR records.
+pub fn extract_dyr_generators(records: &[DyrModelData]) -> Vec<DyrGeneratorData> {
+    records.iter().filter_map(try_extract_dyr_machine).collect()
+}
+
+/// Attempt to parse one DYR record from a `/`-terminated accumulation.
 ///
-/// Expected token layout: `BUS_ID  'MODEL_NAME'  'MACHINE_ID'  ... parameters ...`
-fn try_parse_dyr_machine(record: &str) -> Option<DyrGeneratorData> {
+/// Expected token layout: `BUS_ID  'MODEL_NAME'  MACHINE_ID  ... parameters ...`
+fn try_parse_dyr_record(record: &str) -> Option<DyrModelData> {
     // Tokenise by whitespace and commas, stripping quotes
     let parts: Vec<String> = {
         let mut toks: Vec<String> = Vec::new();
@@ -1382,37 +1567,60 @@ fn try_parse_dyr_machine(record: &str) -> Option<DyrGeneratorData> {
     let model = parts[1].to_ascii_uppercase();
     let machine_id = normalize_machine_id(&parts[2]);
 
-    let mut data = DyrGeneratorData {
+    let params = parts[3..]
+        .iter()
+        .enumerate()
+        .map(|(idx, token)| {
+            (
+                format!("p{}", idx + 1).into_boxed_str(),
+                parse_fortran_double(token),
+            )
+        })
+        .collect();
+
+    Some(DyrModelData {
         bus_id,
         id: machine_id.into_boxed_str(),
-        model: model.clone().into_boxed_str(),
+        model: model.into_boxed_str(),
+        params,
+    })
+}
+
+fn try_extract_dyr_machine(record: &DyrModelData) -> Option<DyrGeneratorData> {
+    let mut data = DyrGeneratorData {
+        bus_id: record.bus_id,
+        id: record.id.clone(),
+        model: record.model.clone(),
         h: 0.0,
         d: 0.0,
         xd_prime: 0.0,
     };
 
-    let set = |v: &mut f64, parts: &[String], idx: usize| {
-        if parts.len() > idx {
-            *v = parse_fortran_double(&parts[idx]);
+    let set = |v: &mut f64, params: &[(Box<str>, f64)], idx: usize| {
+        if let Some((_, value)) = idx
+            .checked_sub(3)
+            .and_then(|param_idx| params.get(param_idx))
+        {
+            *v = *value;
         }
     };
 
-    match model.as_str() {
+    match record.model.as_ref() {
         "GENROU" | "GENROE" => {
-            set(&mut data.h, &parts, 7);
-            set(&mut data.d, &parts, 8);
-            set(&mut data.xd_prime, &parts, 11);
+            set(&mut data.h, &record.params, 7);
+            set(&mut data.d, &record.params, 8);
+            set(&mut data.xd_prime, &record.params, 11);
             Some(data)
         }
         "GENSAL" | "GENSAE" => {
-            set(&mut data.h, &parts, 5);
-            set(&mut data.d, &parts, 6);
-            set(&mut data.xd_prime, &parts, 9);
+            set(&mut data.h, &record.params, 5);
+            set(&mut data.d, &record.params, 6);
+            set(&mut data.xd_prime, &record.params, 9);
             Some(data)
         }
         "GENCLS" => {
-            set(&mut data.h, &parts, 3);
-            set(&mut data.d, &parts, 4);
+            set(&mut data.h, &record.params, 3);
+            set(&mut data.d, &record.params, 4);
             Some(data)
         }
         _ => None, // Exciter, governor, etc. — not a machine model
