@@ -47,6 +47,13 @@ enum Commands {
         /// Output path for the Raptrix PowerFlow Interchange file (.rpf).
         #[arg(long)]
         output: PathBuf,
+
+        /// Transformer representation mode for 3-winding devices.
+        ///
+        /// - `native-3w`: export only native `transformers_3w` rows (default)
+        /// - `expanded`: export only star-expanded `transformers_2w` legs
+        #[arg(long, default_value = "native-3w")]
+        transformer_mode: String,
     },
 
     /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file summary.
@@ -82,7 +89,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Convert { raw, dyr, output } => {
+        Commands::Convert {
+            raw,
+            dyr,
+            output,
+            transformer_mode,
+        } => {
             let raw_str = raw
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("RAW path is not valid UTF-8"))?;
@@ -94,7 +106,24 @@ fn main() -> Result<()> {
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("output path is not valid UTF-8"))?;
 
-            raptrix_psse_rs::write_psse_to_rpf(raw_str, dyr_str, out_str)?;
+            let transformer_representation_mode =
+                raptrix_psse_rs::TransformerRepresentationMode::from_cli_value(&transformer_mode)
+                    .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "invalid --transformer-mode '{}'; expected one of: expanded, native-3w",
+                        transformer_mode
+                    )
+                })?;
+            let export_options = raptrix_psse_rs::ExportOptions {
+                transformer_representation_mode,
+            };
+
+            raptrix_psse_rs::write_psse_to_rpf_with_options(
+                raw_str,
+                dyr_str,
+                out_str,
+                &export_options,
+            )?;
 
             let summary = raptrix_cim_arrow::summarize_rpf(&output)?;
             eprintln!(

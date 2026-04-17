@@ -12,9 +12,9 @@
 **raptrix-psse-rs**  
 Copyright (c) 2026 Raptrix PowerFlow
 
-This directory holds input/output pairs used to drive regression tests for the
-PSS/E converter.  Adding a golden file is the recommended way to verify that a
-newly ported parser section produces byte-identical output.
+This directory holds generated `.rpf` outputs used to drive regression tests for
+the PSS/E converter. Running `cargo test` rewrites these artifacts for cases
+whose licensed inputs are present under `tests/data/external/`.
 
 ---
 
@@ -23,9 +23,11 @@ newly ported parser section produces byte-identical output.
 ```
 tests/golden/
 ├── README.md                 ← this file
-├── <casename>.raw            ← PSS/E RAW input file
-├── <casename>.dyr            ← PSS/E DYR input file (optional)
-└── <casename>.rpf            ← expected Raptrix PowerFlow Interchange output
+└── <casename>.rpf            ← generated Raptrix PowerFlow Interchange output
+
+tests/data/external/
+├── <casename>.RAW            ← licensed or external PSS/E RAW input
+└── <casename>.dyr            ← optional PSS/E DYR input
 ```
 
 ---
@@ -34,53 +36,57 @@ tests/golden/
 
 ### 1 — Add an input file
 
-Copy a `.raw` (and optionally `.dyr`) file into this directory.  The file must
-be freely distributable (e.g. the IEEE 14-bus, 39-bus, or 118-bus test cases
-published by the IEEE PES).
+Place the `.RAW` file and optional `.dyr` file under `tests/data/external/`.
+Licensed planning cases stay out of the golden directory; only the generated
+`.rpf` outputs are checked in under `tests/golden/`.
 
 ### 2 — Generate the reference output
 
-Run the converter after porting the relevant parser sections:
+Run the regression suite after changing the converter:
+
+```bash
+cargo test -- --nocapture
+```
+
+To regenerate a single case manually:
 
 ```bash
 cargo run --release -- convert \
-  --raw  tests/golden/<casename>.raw \
-  [--dyr tests/golden/<casename>.dyr] \
+  --raw tests/data/external/<casename>.RAW \
+  [--dyr tests/data/external/<casename>.dyr] \
   --output tests/golden/<casename>.rpf
-```
-
-Visually verify the output:
-
-```bash
-cargo run --release -- view --input tests/golden/<casename>.rpf
 ```
 
 ### 3 — Write the regression test
 
 Add a `#[test]` in `tests/` (or `src/`) that:
 
-1. Calls `raptrix_psse_rs::parser::parse_raw(Path::new("tests/golden/<casename>.raw"))`.
-2. Asserts the expected bus count, load count, and generator count.
-3. Converts to RPF in a temporary file.
-4. Byte-compares the temporary file against `tests/golden/<casename>.rpf`.
+1. Calls `write_psse_to_rpf` for the relevant RAW/DYR pair.
+2. Asserts table counts and key solver-facing invariants.
+3. Leaves the regenerated `.rpf` under `tests/golden/` for inspection.
+4. Uses `summarize_rpf`, `rpf_file_metadata`, or `read_rpf_tables` to validate the output contract.
 
 Example skeleton:
 
 ```rust
 #[test]
-fn golden_ieee14() {
-    use std::path::Path;
+fn golden_texas2k_dynamic() {
+  raptrix_psse_rs::write_psse_to_rpf(
+    "tests/data/external/Texas2k_series25_case1_summerpeak.RAW",
+    Some("tests/data/external/Texas2k_series25_case1_summerpeak.dyr"),
+    "tests/golden/Texas2k_series25_dynamic.rpf",
+  )
+  .expect("conversion failed");
 
-    let network = raptrix_psse_rs::parser::parse_raw(
-        Path::new("tests/golden/ieee14.raw"),
-    )
-    .expect("parse failed");
+  let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(
+    "tests/golden/Texas2k_series25_dynamic.rpf",
+  ))
+  .expect("summary failed");
 
-    assert_eq!(network.buses.len(), 14);
-    assert_eq!(network.loads.len(), 11);
-    assert_eq!(network.generators.len(), 5);
-
-    // TODO: compare RPF bytes once the writer is wired up.
+  assert!(summary.has_all_canonical_tables);
+  assert!(
+    summary.tables.iter().any(|t| t.table_name == "dynamics_models" && t.rows > 0)
+  );
 }
 ```
 
@@ -93,7 +99,7 @@ reproduce the comparison deterministically.
 
 ## Updating golden files
 
-If a deliberate change to the output format causes golden mismatches:
+If a deliberate converter change updates the generated `.rpf` files:
 
 1. Re-generate the golden file with the new converter.
 2. Review the diff carefully.

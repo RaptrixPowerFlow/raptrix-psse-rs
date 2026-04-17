@@ -37,14 +37,20 @@ pub struct Network {
     pub branches: Vec<Branch>,
     /// Two-winding transformer data records (section 6; K=0, plus star legs for 3W).
     pub transformers: Vec<TwoWindingTransformer>,
+    /// Native three-winding transformer records (section 6; K!=0).
+    pub transformers_3w: Vec<ThreeWindingTransformer>,
     /// Area interchange data records (section 7).
     pub areas: Vec<Area>,
     /// Zone data records (section 13).
     pub zones: Vec<Zone>,
     /// Owner data records (section 15).
     pub owners: Vec<Owner>,
+    /// FACTS device rows (section 18), preserved as parser-normalized records.
+    pub facts_devices: Vec<FactsDeviceRaw>,
     /// Switched shunt data records (section 17).
     pub switched_shunts: Vec<SwitchedShunt>,
+    /// All dynamic model records parsed from a paired `.dyr` file.
+    pub dyr_models: Vec<DyrModelData>,
     /// Dynamic model records parsed from a paired `.dyr` file.
     pub dyr_generators: Vec<DyrGeneratorData>,
 }
@@ -295,6 +301,10 @@ pub struct TwoWindingTransformer {
     pub j: u32,
     /// Circuit identifier, up to 2 characters (CKT).
     pub ckt: Box<str>,
+    /// Winding data input mode (CW).
+    pub cw: u8,
+    /// Impedance data input mode (CZ).
+    pub cz: u8,
     /// Transformer status: 1 = in service (STAT).
     pub stat: u8,
     /// Magnetising conductance (MAG1, p.u. on system base).
@@ -326,6 +336,58 @@ pub struct TwoWindingTransformer {
     pub windv2: f64,
     /// Nominal voltage of winding 2 in kV (NOMV2).
     pub nomv2: f64,
+}
+
+/// PSS/E three-winding transformer data record (K != 0 on line 1).
+///
+/// The converter preserves this native record in `transformers_3w` and also
+/// emits star-equivalent 2-winding legs for solver compatibility.
+#[derive(Debug, Default)]
+pub struct ThreeWindingTransformer {
+    /// Winding H bus number (I).
+    pub bus_h: u32,
+    /// Winding M bus number (J).
+    pub bus_m: u32,
+    /// Winding L bus number (K).
+    pub bus_l: u32,
+    /// Synthetic star bus id used for 2-winding expansion.
+    pub star_bus_id: u32,
+    /// Circuit identifier (CKT), up to 2 characters.
+    pub ckt: Box<str>,
+    /// Transformer status: 1 = in service (STAT).
+    pub stat: u8,
+    /// Pairwise series resistance R(H-M).
+    pub r_hm: f64,
+    /// Pairwise series reactance X(H-M).
+    pub x_hm: f64,
+    /// Pairwise series resistance R(H-L).
+    pub r_hl: f64,
+    /// Pairwise series reactance X(H-L).
+    pub x_hl: f64,
+    /// Pairwise series resistance R(M-L).
+    pub r_ml: f64,
+    /// Pairwise series reactance X(M-L).
+    pub x_ml: f64,
+    /// Off-nominal turns ratio of winding H (WINDV1).
+    pub tap_h: f64,
+    /// Off-nominal turns ratio of winding M (WINDV2).
+    pub tap_m: f64,
+    /// Off-nominal turns ratio of winding L (WINDV3).
+    pub tap_l: f64,
+    /// Phase shift angle of winding H in degrees (ANG1).
+    pub phase_shift_deg: f64,
+    /// Normal MVA rating (minimum across windings for scalar RPF limit field).
+    pub rate_a_mva: f64,
+    /// Emergency MVA rating (minimum across windings for scalar RPF limit field).
+    pub rate_b_mva: f64,
+    /// Short-term MVA rating (minimum across windings for scalar RPF limit field).
+    pub rate_c_mva: f64,
+    /// Nominal voltage of winding H in kV (NOMV1).
+    pub nominal_kv_h: f64,
+    /// Nominal voltage of winding M in kV (NOMV2).
+    pub nominal_kv_m: f64,
+    /// Nominal voltage of winding L in kV (NOMV3).
+    pub nominal_kv_l: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +436,39 @@ pub struct Owner {
 }
 
 // ---------------------------------------------------------------------------
+// Section 18 — FACTS device data
+// ---------------------------------------------------------------------------
+
+/// Parser-normalized FACTS row from PSS/E section 18.
+///
+/// Section 18 has multiple vendor/model formats. This structure preserves a
+/// safe common subset for branch-level export fields and keeps all recognized
+/// numeric tokens in `params` for future model-specific decoding.
+#[derive(Debug, Default, Clone)]
+pub struct FactsDeviceRaw {
+    /// Endpoint bus number A.
+    pub bus_i: u32,
+    /// Endpoint bus number B.
+    pub bus_j: u32,
+    /// Device model/type token (normalized lowercase text).
+    pub device_type: Box<str>,
+    /// Optional control mode token.
+    pub control_mode: Option<Box<str>>,
+    /// Optional target flow value in MW.
+    pub target_flow_mw: Option<f64>,
+    /// Optional lower reactance bound in pu.
+    pub x_min_pu: Option<f64>,
+    /// Optional upper reactance bound in pu.
+    pub x_max_pu: Option<f64>,
+    /// Optional injected voltage magnitude in pu.
+    pub injected_voltage_mag_pu: Option<f64>,
+    /// Optional injected voltage angle in degrees.
+    pub injected_voltage_angle_deg: Option<f64>,
+    /// Remaining numeric parameters in source order as `p1..pN`.
+    pub params: Vec<(Box<str>, f64)>,
+}
+
+// ---------------------------------------------------------------------------
 // Section 17 — Switched shunt data
 // ---------------------------------------------------------------------------
 
@@ -408,6 +503,19 @@ pub struct SwitchedShunt {
 // ---------------------------------------------------------------------------
 // Dynamic model data — from `.dyr` file
 // ---------------------------------------------------------------------------
+
+/// Dynamic model data for one raw DYR record.
+#[derive(Debug, Default, Clone)]
+pub struct DyrModelData {
+    /// Bus number the model is associated with.
+    pub bus_id: u32,
+    /// Machine or device identifier token.
+    pub id: Box<str>,
+    /// Model name, e.g. `"GENROU"`, `"ESST4B"`, `"GGOV1"`.
+    pub model: Box<str>,
+    /// Numeric parameters preserved in source order.
+    pub params: Vec<(Box<str>, f64)>,
+}
 
 /// Dynamic model data for one synchronous machine, parsed from a `.dyr` file.
 ///

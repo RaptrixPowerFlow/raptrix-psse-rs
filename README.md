@@ -19,12 +19,21 @@ Part of the Raptrix PowerFlow ecosystem.
 - [raptrix-psse-rs](https://github.com/RaptrixPowerFlow/raptrix-psse-rs) - Unlimited-size PSS/E to RPF converter.
 - [raptrix-studio](https://github.com/RaptrixPowerFlow/raptrix-studio) - Free unlimited RPF viewer/editor.
 
+**Canonical model:** The IEC 61970 CIM is the authoritative source for our data model and mappings. The public repository [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs) implements the CIM schema and should be treated as the canonical reference for schema, mappings, and conversion logic. This repository no longer contains an embedded `raptrix-cim-arrow` crate; depend on `raptrix-cim-rs` for CIM-related functionality.
+
 ## Quick Start
 
 ```bash
 raptrix-psse-rs convert --raw my_case.raw --output my_case.rpf
+raptrix-psse-rs convert --raw my_case.raw --output my_case_expanded.rpf --transformer-mode expanded
 raptrix-psse-rs view --input my_case.rpf
 ```
+
+## Download prebuilt binaries (recommended)
+
+We provide prebuilt release binaries on GitHub Releases for Windows, Linux, and macOS. For most users we recommend downloading the appropriate release artifact rather than building from source — binaries are built with optimization and link-time optimizations enabled for best runtime performance.
+
+See the Releases page: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases
 
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
 
@@ -60,7 +69,7 @@ PSS/E RAW, CIM/XML, and similar vendor formats were designed for human editors a
 
 ## Build From Source
 
-Rust 1.85+ is required.
+Rust 1.85+ is required. Building from source is supported but not necessary for most users — prefer the prebuilt release artifacts when possible.
 
 ```bash
 git clone https://github.com/RaptrixPowerFlow/raptrix-cim-rs.git
@@ -74,14 +83,18 @@ cargo build --release
 ### convert
 
 ```bash
-raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE>
+raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transformer-mode <MODE>]
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--raw <PATH>` | yes | PSS/E RAW file (.raw), versions 29-35. |
-| `--dyr <PATH>` | no | Optional PSS/E dynamic data file (.dyr). |
+| `--dyr <PATH>` | no | Optional PSS/E dynamic data file (.dyr). All numeric DYR model rows are preserved into `dynamics_models`; supported machine families also populate generator `h`, `D`, and `xd_prime`. |
 | `--output <PATH>` | yes | Output RPF file path. |
+| `--transformer-mode <MODE>` | no | 3-winding representation policy: `native-3w` (default, native `transformers_3w` rows only) or `expanded` (star legs in `transformers_2w`). |
+
+Each export writes machine-readable root metadata key `rpf.transformer_representation_mode`
+with value `expanded` or `native_3w` for deterministic downstream regression checks. Files produced against the v0.8.7 canonical contract default to `native_3w` unless `--transformer-mode expanded` is supplied.
 
 ### view
 
@@ -110,6 +123,8 @@ The .rpf file is an Apache Arrow IPC payload with 15 canonical tables:
 - contingencies
 - interfaces
 - dynamics_models
+
+With a paired `.dyr` file, `dynamics_models` now carries the full numeric model deck in source order using parameter keys `p1..pN`. Synchronous machine families `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, and `GENCLS` are also promoted into the `generators` table for solver initialization fields.
 
 ## Testing
 
