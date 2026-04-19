@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.7 converter.
+//! Raptrix PowerFlow Interchange v0.8.8 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -45,8 +45,9 @@ use chrono::{SecondsFormat, Utc};
 use raptrix_cim_arrow::{
     METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_SOLVED_STATE_PRESENCE,
     METADATA_KEY_VALIDATION_MODE, RootWriteOptions, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES,
-    TABLE_CONTINGENCIES, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS,
-    TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
+    TABLE_CONTINGENCIES, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
+    TABLE_GENERATORS, TABLE_IBR_DEVICES, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
+    TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS,
     TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema,
     write_root_rpf_with_metadata,
 };
@@ -84,10 +85,14 @@ impl TransformerRepresentationMode {
 }
 
 /// Export configuration for [`write_psse_to_rpf_with_options`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ExportOptions {
     /// Transformer representation mode used for this export run.
     pub transformer_representation_mode: TransformerRepresentationMode,
+    /// Optional study purpose override for metadata.
+    pub study_purpose: Option<String>,
+    /// Optional scenario tags override for metadata.
+    pub scenario_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -138,6 +143,9 @@ pub fn write_psse_to_rpf_with_options(
         network.dyr_generators = parser::extract_dyr_generators(&network.dyr_models);
     }
 
+    derive_switched_shunt_banks(&mut network);
+    derive_ibr_devices(&mut network);
+
     normalize_transformer_representation(&mut network, options.transformer_representation_mode)?;
 
     // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
@@ -162,7 +170,7 @@ pub fn write_psse_to_rpf_with_options(
 
     table_batches.insert(
         TABLE_METADATA,
-        build_metadata_batch(&network, &case_fingerprint, case_mode)?,
+        build_metadata_batch(&network, &case_fingerprint, case_mode, options)?,
     );
     table_batches.insert(
         TABLE_BUSES,
@@ -189,6 +197,22 @@ pub fn write_psse_to_rpf_with_options(
     table_batches.insert(
         TABLE_SWITCHED_SHUNTS,
         build_switched_shunts_batch(&network.switched_shunts, base_mva)?,
+    );
+    table_batches.insert(
+        TABLE_SWITCHED_SHUNT_BANKS,
+        build_switched_shunt_banks_batch(&network.switched_shunt_banks)?,
+    );
+    table_batches.insert(
+        TABLE_MULTI_SECTION_LINES,
+        build_multi_section_lines_batch(&network.multi_section_lines)?,
+    );
+    table_batches.insert(
+        TABLE_DC_LINES_2W,
+        build_dc_lines_2w_batch(&network.dc_lines_2w)?,
+    );
+    table_batches.insert(
+        TABLE_IBR_DEVICES,
+        build_ibr_devices_batch(&network.ibr_devices)?,
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_2W,
@@ -939,6 +963,202 @@ fn detect_case_mode(network: &Network) -> &'static str {
     }
 }
 
+fn derive_switched_shunt_banks(network: &mut Network) {
+    network.switched_shunt_banks.clear();
+    for (shunt_row_idx, shunt) in network.switched_shunts.iter().enumerate() {
+        let shunt_id = (shunt_row_idx + 1) as i32;
+        for (bank_idx, (n_steps, b_mvar)) in shunt.bank_pairs.iter().enumerate() {
+            let bank_id = (bank_idx + 1) as i32;
+            for step in 1..=(*n_steps as i32) {
+                network
+                    .switched_shunt_banks
+                    .push(models::SwitchedShuntBank {
+                        shunt_id,
+                        bank_id,
+                        b_mvar: *b_mvar,
+                        status: shunt.stat != 0,
+                        step,
+                    });
+            }
+        }
+    }
+}
+
+/// Classify an IBR device type and control mode based on DYR model name.
+///
+/// This classifier matches PSS/E dynamic model families to Raptrix device categories:
+/// - **solar_pv**: REGCA/REECA/REPCA, solar inverter controls
+/// - **wind_type3**: WT3*, DFIG wind turbine families
+/// - **wind_type4**: WT4*, full-converter wind, VSC-based
+/// - **bess**: REGCB/REECB/REPCB, battery/storage inverters
+/// - **generic_ibr**: REGC/REEC/REPC (device-agnostic), other renewable controls
+///
+/// Returns (device_type, control_mode) where control_mode is typically "grid_following"
+/// unless explicitly marked "grid_forming" (GFM suffix).
+///
+/// DYR-first priority prevents false positives from generic REGC overlapping with typed families.
+fn classify_ibr_model(model: &str) -> Option<(&'static str, &'static str)> {
+    let m = model.to_ascii_lowercase();
+
+    // --- BESS / Storage families (check FIRST to avoid generic REGC collision)
+    // REGCB, REECB, REPCB are battery/storage-specific control families.
+    if ["regcb", "reecb", "repcb", "beca", "becb", "bess", "bat", "esst", "esst1", "esst2", "esst3", "esst4", "esdc", "batt"]
+        .iter()
+        .any(|p| m.starts_with(p))
+    {
+        return Some(("bess", "grid_following"));
+    }
+
+    // --- Solar PV families
+    // REGCA, REECA, REPCA are solar/PV plant control families.
+    if ["regca", "reeca", "repca", "pv", "pvgen", "pvmod", "solar", "pvinv"]
+        .iter()
+        .any(|p| m.starts_with(p))
+    {
+        return Some(("solar_pv", "grid_following"));
+    }
+
+    // --- Wind Type-4 (Full-Converter / Synchronous-Reference-Frame inverter)
+    // WT4, WTGA, WTGQ, WTGT families and VSC-based high-speed controls.
+    if ["wt4", "wtg4", "wt4g", "wtga", "wtgb", "wtgq", "wtgt", "wtga4", "wtgq4"]
+        .iter()
+        .any(|p| m.starts_with(p))
+    {
+        return Some(("wind_type4", "grid_following"));
+    }
+
+    // --- Wind Type-3 (DFIG / Doubly-Fed Induction Generator)
+    // WT3, WTARA, WTARV families and generator-based wind models.
+    if ["wt3", "wtg3", "wt3g", "wtara", "wtarv", "wtga3", "wtgq3", "dfig"]
+        .iter()
+        .any(|p| m.starts_with(p))
+    {
+        return Some(("wind_type3", "grid_following"));
+    }
+
+    // --- Generic Renewable / Device-Agnostic Controls
+    // REGC, REEC, REPC (without type suffix) apply to unspecified renewable source.
+    // Lower priority to avoid shadowing typed families.
+    if ["regc", "reec", "repc", "rep", "reg", "cim"]
+        .iter()
+        .any(|p| m.starts_with(p))
+    {
+        return Some(("generic_ibr", "grid_following"));
+    }
+
+    // --- Grid-Forming (GFM) Explicit Indicators
+    // Any model with GFM suffix is flagged as grid-forming regardless of family.
+    if m.contains("gfm") || m.contains("vsg") || m.contains("vsm") {
+        return Some(("generic_ibr", "grid_forming"));
+    }
+
+    // No match
+    None
+}
+
+fn classify_ibr_from_wmod(wmod: u8) -> Option<(&'static str, &'static str)> {
+    match wmod {
+        0 => None,
+        1 => Some(("wind_type4", "grid_following")),
+        2 | 3 => Some(("generic_ibr", "wmod")),
+        _ => Some(("generic_ibr", "wmod")),
+    }
+}
+
+fn derive_ibr_devices(network: &mut Network) {
+    network.ibr_devices.clear();
+    let mut next_id: i32 = 1;
+
+    let mut dyr_by_gen: HashMap<(u32, String), Vec<&models::DyrModelData>> = HashMap::new();
+    for rec in &network.dyr_models {
+        dyr_by_gen
+            .entry((rec.bus_id, rec.id.to_string()))
+            .or_default()
+            .push(rec);
+    }
+
+    for generator in &network.generators {
+        if generator.stat == 0 {
+            continue;
+        }
+
+        let key = (generator.i, generator.id.to_string());
+        let mut selected_type: Option<&'static str> = None;
+        let mut selected_mode: Option<&'static str> = None;
+        let mut selected_params: Vec<(Box<str>, f64)> = Vec::new();
+
+        if let Some(records) = dyr_by_gen.get(&key) {
+            for rec in records {
+                if let Some((device_type, control_mode)) = classify_ibr_model(rec.model.as_ref()) {
+                    selected_type = Some(device_type);
+                    selected_mode = Some(control_mode);
+                    selected_params = rec.params.clone();
+                    break;
+                }
+            }
+        }
+
+        if selected_type.is_none() {
+            if let Some((device_type, control_mode)) = classify_ibr_from_wmod(generator.wmod) {
+                selected_type = Some(device_type);
+                selected_mode = Some(control_mode);
+            }
+        }
+
+        if let (Some(device_type), Some(control_mode)) = (selected_type, selected_mode) {
+            network.ibr_devices.push(models::IbrDevice {
+                device_id: next_id,
+                bus_id: generator.i,
+                device_type: device_type.into(),
+                rated_mva: if generator.mbase > 0.0 {
+                    generator.mbase
+                } else {
+                    generator.pt.max(0.0)
+                },
+                p_max_mw: generator.pt,
+                q_min_mvar: generator.qb,
+                q_max_mvar: generator.qt,
+                control_mode: control_mode.into(),
+                status: generator.stat != 0,
+                params: selected_params,
+                name: None,
+            });
+            next_id += 1;
+        }
+    }
+}
+
+fn infer_study_purpose(title: &str) -> Option<String> {
+    let t = title.to_ascii_lowercase();
+    if t.contains("planning") || t.contains("2030") || t.contains("future") {
+        return Some("planning".to_string());
+    }
+    if t.contains("onpeak") || t.contains("offpeak") || t.contains("operations") {
+        return Some("operations".to_string());
+    }
+    None
+}
+
+fn infer_scenario_tags(title: &str) -> Vec<String> {
+    let t = title.to_ascii_lowercase();
+    let mut tags = Vec::new();
+    for (needle, tag) in [
+        ("onpeak", "onpeak"),
+        ("offpeak", "offpeak"),
+        ("summerpeak", "summer_peak"),
+        ("winter", "winter"),
+        ("dynamic", "dynamic"),
+        ("static", "static"),
+        ("gfm", "gfm"),
+        ("ibr", "ibr"),
+    ] {
+        if t.contains(needle) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
+}
+
 // ---------------------------------------------------------------------------
 // Table builders
 // ---------------------------------------------------------------------------
@@ -947,6 +1167,7 @@ fn build_metadata_batch(
     network: &Network,
     case_fingerprint_value: &str,
     case_mode: &str,
+    options: &ExportOptions,
 ) -> Result<RecordBatch> {
     let now_utc = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
 
@@ -1012,6 +1233,64 @@ fn build_metadata_batch(
     let mut solved_shunt_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
     solved_shunt_state_presence_arr.append_null();
 
+    // v0.8.8 modern-grid metadata.
+    let has_ibr_value = !network.ibr_devices.is_empty();
+    let has_smart_valve_value = network.facts_devices.iter().any(|d| {
+        let t = d.device_type.as_ref().to_ascii_lowercase();
+        t.contains("smart") || t.contains("valve")
+    });
+    let has_multi_terminal_dc_value = network.has_multi_terminal_dc;
+    let modern_grid_profile_value = has_ibr_value
+        || has_smart_valve_value
+        || has_multi_terminal_dc_value
+        || !network.dc_lines_2w.is_empty();
+
+    let total_pmax_mw: f64 = network
+        .generators
+        .iter()
+        .filter(|g| g.stat != 0)
+        .map(|g| g.pt.max(0.0))
+        .sum();
+    let ibr_pmax_mw: f64 = network
+        .ibr_devices
+        .iter()
+        .filter(|d| d.status)
+        .map(|d| d.p_max_mw.max(0.0))
+        .sum();
+    let mut ibr_penetration_pct_arr = Float64Builder::new();
+    if total_pmax_mw > 1.0e-9 {
+        ibr_penetration_pct_arr.append_value((ibr_pmax_mw / total_pmax_mw) * 100.0);
+    } else {
+        ibr_penetration_pct_arr.append_null();
+    }
+
+    let study_purpose_value = options
+        .study_purpose
+        .clone()
+        .or_else(|| infer_study_purpose(network.case_id.title.as_ref()));
+    let mut study_purpose_arr = StringBuilder::new();
+    study_purpose_arr.append_option(study_purpose_value.as_deref());
+
+    let scenario_tags_value = if options.scenario_tags.is_empty() {
+        infer_scenario_tags(network.case_id.title.as_ref())
+    } else {
+        options.scenario_tags.clone()
+    };
+    let scenario_item_field = Arc::new(arrow::datatypes::Field::new(
+        "item",
+        arrow::datatypes::DataType::Utf8,
+        false,
+    ));
+    let mut scenario_tags_arr = ListBuilder::new(StringBuilder::new()).with_field(scenario_item_field);
+    if scenario_tags_value.is_empty() {
+        scenario_tags_arr.append(false);
+    } else {
+        for tag in &scenario_tags_value {
+            scenario_tags_arr.values().append_value(tag);
+        }
+        scenario_tags_arr.append(true);
+    }
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -1038,6 +1317,14 @@ fn build_metadata_batch(
             Arc::new(slack_bus_id_solved_arr.finish()),
             Arc::new(angle_reference_deg_arr.finish()),
             Arc::new(solved_shunt_state_presence_arr.finish()),
+            // v0.8.8 columns
+            Arc::new(BooleanArray::from(vec![modern_grid_profile_value])),
+            Arc::new(ibr_penetration_pct_arr.finish()),
+            Arc::new(BooleanArray::from(vec![has_ibr_value])),
+            Arc::new(BooleanArray::from(vec![has_smart_valve_value])),
+            Arc::new(BooleanArray::from(vec![has_multi_terminal_dc_value])),
+            Arc::new(study_purpose_arr.finish()),
+            Arc::new(scenario_tags_arr.finish()),
         ],
     )
     .context("building metadata batch")
@@ -1309,6 +1596,8 @@ fn build_branches_batch(
     let mut x_max_pu = Float64Builder::new();
     let mut injected_voltage_mag_pu = Float64Builder::new();
     let mut injected_voltage_angle_deg = Float64Builder::new();
+    let mut parent_line_id = Int32Builder::new();
+    let mut section_index = Int32Builder::new();
     let map_field_names = MapFieldNames {
         entry: "entries".to_string(),
         key: "key".to_string(),
@@ -1347,6 +1636,8 @@ fn build_branches_batch(
         name_b.append_null(); // branches have no name in RAW
         from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
         to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
+        parent_line_id.append_null();
+        section_index.append_null();
 
         let pair_key = if branch.i <= branch.j {
             (branch.i, branch.j)
@@ -1433,6 +1724,8 @@ fn build_branches_batch(
             Arc::new(injected_voltage_mag_pu.finish()),
             Arc::new(injected_voltage_angle_deg.finish()),
             facts_params_cast,
+            Arc::new(parent_line_id.finish()),
+            Arc::new(section_index.finish()),
         ],
     )
     .context("building branches batch")
@@ -1644,7 +1937,9 @@ fn build_switched_shunts_batch(
 
         let mut step_values_pu = Vec::with_capacity(shunt.steps.len());
         for &step_mvar in &shunt.steps {
-            step_values_pu.push(step_mvar / base_mva);
+            if step_mvar > 0.0 {
+                step_values_pu.push(step_mvar / base_mva);
+            }
         }
         // Append each step value to the inner list
         for &step_pu in &step_values_pu {
@@ -1680,6 +1975,240 @@ fn build_switched_shunts_batch(
         ],
     )
     .context("building switched_shunts batch")
+}
+
+fn build_switched_shunt_banks_batch(
+    rows: &[models::SwitchedShuntBank],
+) -> Result<RecordBatch> {
+    let schema = Arc::new(
+        table_schema(TABLE_SWITCHED_SHUNT_BANKS)
+            .expect("switched_shunt_banks schema must exist"),
+    );
+
+    let mut shunt_id = Int32Builder::new();
+    let mut bank_id = Int32Builder::new();
+    let mut b_mvar = Float64Builder::new();
+    let mut status = BooleanBuilder::new();
+    let mut step = Int32Builder::new();
+
+    for row in rows {
+        shunt_id.append_value(row.shunt_id);
+        bank_id.append_value(row.bank_id);
+        b_mvar.append_value(row.b_mvar);
+        status.append_value(row.status);
+        step.append_value(row.step);
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(shunt_id.finish()),
+            Arc::new(bank_id.finish()),
+            Arc::new(b_mvar.finish()),
+            Arc::new(status.finish()),
+            Arc::new(step.finish()),
+        ],
+    )
+    .context("building switched_shunt_banks batch")
+}
+
+fn build_multi_section_lines_batch(rows: &[models::MultiSectionLine]) -> Result<RecordBatch> {
+    let schema = Arc::new(
+        table_schema(TABLE_MULTI_SECTION_LINES).expect("multi_section_lines schema must exist"),
+    );
+
+    let mut line_id = Int32Builder::new();
+    let mut from_bus_id = Int32Builder::new();
+    let mut to_bus_id = Int32Builder::new();
+    let mut ckt = StringBuilder::new();
+    let section_item_field = Arc::new(arrow::datatypes::Field::new(
+        "item",
+        arrow::datatypes::DataType::Int32,
+        false,
+    ));
+    let mut section_branch_ids = ListBuilder::new(Int32Builder::new()).with_field(section_item_field);
+    let mut total_r_pu = Float64Builder::new();
+    let mut total_x_pu = Float64Builder::new();
+    let mut total_b_pu = Float64Builder::new();
+    let mut rate_a_mva = Float64Builder::new();
+    let mut rate_b_mva = Float64Builder::new();
+    let mut status = BooleanBuilder::new();
+    let mut name_b = StringBuilder::new();
+
+    for row in rows {
+        line_id.append_value(row.line_id);
+        from_bus_id.append_value(row.from_bus_id as i32);
+        to_bus_id.append_value(row.to_bus_id as i32);
+        ckt.append_value(row.ckt.as_ref());
+        for section_id in &row.section_branch_ids {
+            section_branch_ids.values().append_value(*section_id);
+        }
+        section_branch_ids.append(true);
+        total_r_pu.append_value(row.total_r_pu);
+        total_x_pu.append_value(row.total_x_pu);
+        total_b_pu.append_value(row.total_b_pu);
+        rate_a_mva.append_value(row.rate_a_mva);
+        rate_b_mva.append_option(row.rate_b_mva);
+        status.append_value(row.status);
+        name_b.append_option(row.name.as_deref());
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(line_id.finish()),
+            Arc::new(from_bus_id.finish()),
+            Arc::new(to_bus_id.finish()),
+            Arc::new(ckt.finish()),
+            Arc::new(section_branch_ids.finish()),
+            Arc::new(total_r_pu.finish()),
+            Arc::new(total_x_pu.finish()),
+            Arc::new(total_b_pu.finish()),
+            Arc::new(rate_a_mva.finish()),
+            Arc::new(rate_b_mva.finish()),
+            Arc::new(status.finish()),
+            Arc::new(name_b.finish()),
+        ],
+    )
+    .context("building multi_section_lines batch")
+}
+
+fn build_dc_lines_2w_batch(rows: &[models::DcLine2W]) -> Result<RecordBatch> {
+    let schema = Arc::new(table_schema(TABLE_DC_LINES_2W).expect("dc_lines_2w schema must exist"));
+
+    let mut dc_line_id = Int32Builder::new();
+    let mut from_bus_id = Int32Builder::new();
+    let mut to_bus_id = Int32Builder::new();
+    let mut ckt = StringBuilder::new();
+    let mut r_ohm = Float64Builder::new();
+    let mut l_henry = Float64Builder::new();
+    let mut control_mode = StringBuilder::new();
+    let mut p_setpoint_mw = Float64Builder::new();
+    let mut i_setpoint_ka = Float64Builder::new();
+    let mut v_setpoint_kv = Float64Builder::new();
+    let mut q_from_mvar = Float64Builder::new();
+    let mut q_to_mvar = Float64Builder::new();
+    let mut status = BooleanBuilder::new();
+    let mut name_b = StringBuilder::new();
+    let mut converter_type = StringBuilder::new();
+
+    for row in rows {
+        dc_line_id.append_value(row.dc_line_id);
+        from_bus_id.append_value(row.from_bus_id as i32);
+        to_bus_id.append_value(row.to_bus_id as i32);
+        ckt.append_value(row.ckt.as_ref());
+        r_ohm.append_value(row.r_ohm);
+        l_henry.append_option(row.l_henry);
+        control_mode.append_value(row.control_mode.as_ref());
+        p_setpoint_mw.append_option(row.p_setpoint_mw);
+        i_setpoint_ka.append_option(row.i_setpoint_ka);
+        v_setpoint_kv.append_option(row.v_setpoint_kv);
+        q_from_mvar.append_option(row.q_from_mvar);
+        q_to_mvar.append_option(row.q_to_mvar);
+        status.append_value(row.status);
+        name_b.append_option(row.name.as_deref());
+        converter_type.append_value(row.converter_type.as_ref());
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(dc_line_id.finish()),
+            Arc::new(from_bus_id.finish()),
+            Arc::new(to_bus_id.finish()),
+            Arc::new(ckt.finish()),
+            Arc::new(r_ohm.finish()),
+            Arc::new(l_henry.finish()),
+            Arc::new(control_mode.finish()),
+            Arc::new(p_setpoint_mw.finish()),
+            Arc::new(i_setpoint_ka.finish()),
+            Arc::new(v_setpoint_kv.finish()),
+            Arc::new(q_from_mvar.finish()),
+            Arc::new(q_to_mvar.finish()),
+            Arc::new(status.finish()),
+            Arc::new(name_b.finish()),
+            Arc::new(converter_type.finish()),
+        ],
+    )
+    .context("building dc_lines_2w batch")
+}
+
+fn build_ibr_devices_batch(rows: &[models::IbrDevice]) -> Result<RecordBatch> {
+    let schema = Arc::new(table_schema(TABLE_IBR_DEVICES).expect("ibr_devices schema must exist"));
+
+    let mut device_id = Int32Builder::new();
+    let mut bus_id = Int32Builder::new();
+    let mut device_type = StringBuilder::new();
+    let mut rated_mva = Float64Builder::new();
+    let mut p_max_mw = Float64Builder::new();
+    let mut q_min_mvar = Float64Builder::new();
+    let mut q_max_mvar = Float64Builder::new();
+    let mut control_mode = StringBuilder::new();
+    let mut status = BooleanBuilder::new();
+    let map_field_names = MapFieldNames {
+        entry: "entries".to_string(),
+        key: "key".to_string(),
+        value: "value".to_string(),
+    };
+    let mut params = MapBuilder::new(
+        Some(map_field_names),
+        StringBuilder::new(),
+        Float64Builder::new(),
+    );
+    let mut name_b = StringBuilder::new();
+
+    for row in rows {
+        device_id.append_value(row.device_id);
+        bus_id.append_value(row.bus_id as i32);
+        device_type.append_value(row.device_type.as_ref());
+        rated_mva.append_value(row.rated_mva);
+        p_max_mw.append_value(row.p_max_mw);
+        q_min_mvar.append_value(row.q_min_mvar);
+        q_max_mvar.append_value(row.q_max_mvar);
+        control_mode.append_value(row.control_mode.as_ref());
+        status.append_value(row.status);
+        if row.params.is_empty() {
+            params
+                .append(false)
+                .context("building ibr_devices.params null entry")?;
+        } else {
+            for (k, v) in &row.params {
+                params.keys().append_value(k.as_ref());
+                params.values().append_value(*v);
+            }
+            params
+                .append(true)
+                .context("building ibr_devices.params entry")?;
+        }
+        name_b.append_option(row.name.as_deref());
+    }
+
+    let params_arr = params.finish();
+    let params_target_type = schema
+        .field_with_name("params")
+        .expect("params field must exist in ibr_devices schema")
+        .data_type()
+        .clone();
+    let params_cast =
+        arrow::compute::cast(&params_arr, &params_target_type).context("casting ibr_devices params")?;
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(device_id.finish()),
+            Arc::new(bus_id.finish()),
+            Arc::new(device_type.finish()),
+            Arc::new(rated_mva.finish()),
+            Arc::new(p_max_mw.finish()),
+            Arc::new(q_min_mvar.finish()),
+            Arc::new(q_max_mvar.finish()),
+            Arc::new(control_mode.finish()),
+            Arc::new(status.finish()),
+            params_cast,
+            Arc::new(name_b.finish()),
+        ],
+    )
+    .context("building ibr_devices batch")
 }
 
 fn build_transformers_2w_batch(

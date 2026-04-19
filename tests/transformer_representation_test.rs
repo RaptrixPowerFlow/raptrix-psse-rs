@@ -150,6 +150,7 @@ fn expanded_only_output_contains_no_native_3w_rows() {
 
     let opts = raptrix_psse_rs::ExportOptions {
         transformer_representation_mode: raptrix_psse_rs::TransformerRepresentationMode::Expanded,
+        ..Default::default()
     };
     raptrix_psse_rs::write_psse_to_rpf_with_options(
         raw_path.to_str().expect("raw path must be utf-8"),
@@ -197,6 +198,7 @@ fn native_3w_only_output_contains_no_star_legs() {
 
     let opts = raptrix_psse_rs::ExportOptions {
         transformer_representation_mode: raptrix_psse_rs::TransformerRepresentationMode::Native3W,
+        ..Default::default()
     };
     raptrix_psse_rs::write_psse_to_rpf_with_options(
         raw_path.to_str().expect("raw path must be utf-8"),

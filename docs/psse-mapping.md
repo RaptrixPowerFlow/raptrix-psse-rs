@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.7) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.8) Apache
 Arrow schema.
 
 > **Fidelity policy**: numeric fields are written exactly as they appear in the
@@ -30,6 +30,19 @@ Arrow schema.
 |---|---|---|
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
+
+### v0.8.8 additions
+
+- Required tables now include `multi_section_lines`, `dc_lines_2w`, `switched_shunt_banks`, and `ibr_devices`.
+- `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
+- `metadata` includes modern-grid fields:
+  - `modern_grid_profile`
+  - `ibr_penetration_pct`
+  - `has_ibr`
+  - `has_smart_valve`
+  - `has_multi_terminal_dc`
+  - `study_purpose`
+  - `scenario_tags`
 
 ---
 
@@ -79,7 +92,7 @@ several `buses` columns:
 | REV | `rev` | `psse_version` | RAW file revision integer (e.g. 33, 35). |
 | BASFRQ | `basfrq` | `frequency_hz` | Nominal system frequency (Hz). |
 | `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. |
-| — | — | `raptrix_version` | Always `"0.8.7"` written by this converter. |
+| — | — | `raptrix_version` | Always crate package version written by this converter. |
 | — | — | `is_planning_case` | Always `true` for PSS/E RAW imports. |
 | — | — | `case_mode` | `"flat_start_planning"` when all RAW bus voltages are approximately flat (`VM≈1.0`, `VA≈0`); otherwise `"warm_start_planning"`. |
 | — | — | `timestamp_utc` | UTC wall-clock time of conversion (RFC3339, seconds precision, `Z`). |
@@ -103,7 +116,7 @@ several `buses` columns:
 | VA | — | `va` | `v_ang_set` | Bus.VA × π/180 → radians. |
 | NVHI | — | `nvhi` | `v_max` | Normal voltage upper limit (pu). |
 | NVLO | — | `nvlo` | `v_min` | Normal voltage lower limit (pu). |
-| EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no RPF column in v0.8.7. |
+| EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no canonical column in v0.8.8. |
 | EVLO | — | `evlo` | *(not stored)* | " |
 
 \* GL/BL appear at columns 8–9 in some legacy RAW variants; absent in standard v35 bus records
@@ -132,7 +145,7 @@ where they belong in fixed shunt section 3.
 | STATUS | `status` | `status` | Bool: 1 → true, 0 → false. |
 | PL | `pl` | `p_pu` | Constant-power active load; PL / SBASE. |
 | QL | `ql` | `q_pu` | Constant-power reactive load; QL / SBASE. |
-| IP | `ip` | *(not stored)* | Constant-current component discarded; no RPF column in v0.8.7. |
+| IP | `ip` | *(not stored)* | Constant-current component discarded; no canonical column in v0.8.8. |
 | IQ | `iq` | *(not stored)* | " |
 | YP | `yp` | *(not stored)* | Constant-admittance component discarded. |
 | YQ | `yq` | *(not stored)* | " |
@@ -143,7 +156,7 @@ where they belong in fixed shunt section 3.
 | INTRPT | `intrpt` | *(not stored)* | Interruptible load flag. |
 | — | — | `name` | Always null (PSS/E loads have no display name). |
 
-> **ZIP load note**: RPF v0.8.7 `loads` carries only the constant-power (PQ) portion.
+> **ZIP load note**: RPF v0.8.8 `loads` carries only the constant-power (PQ) portion.
 > IP/IQ constant-current and YP/YQ constant-admittance components are dropped.
 > Future RPF versions will add explicit ZIP columns.
 

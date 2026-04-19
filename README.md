@@ -9,7 +9,7 @@
 
 # raptrix-psse-rs
 
-High-performance PSS/E (.raw + .dyr) to Raptrix PowerFlow Interchange (.rpf) conversion for modern grid workflows.
+High-performance PSS/E (.raw + .dyr) to Raptrix PowerFlow Interchange (.rpf) conversion.
 
 Part of the Raptrix PowerFlow ecosystem.
 
@@ -19,82 +19,40 @@ Part of the Raptrix PowerFlow ecosystem.
 - [raptrix-psse-rs](https://github.com/RaptrixPowerFlow/raptrix-psse-rs) - Unlimited-size PSS/E to RPF converter.
 - [raptrix-studio](https://github.com/RaptrixPowerFlow/raptrix-studio) - Free unlimited RPF viewer/editor.
 
-**Canonical model:** The IEC 61970 CIM is the authoritative source for our data model and mappings. The public repository [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs) implements the CIM schema and should be treated as the canonical reference for schema, mappings, and conversion logic. This repository no longer contains an embedded `raptrix-cim-arrow` crate; depend on `raptrix-cim-rs` for CIM-related functionality.
-
 ## Quick Start
 
 ```bash
 raptrix-psse-rs convert --raw my_case.raw --output my_case.rpf
+raptrix-psse-rs convert --raw my_case.raw --dyr my_case.dyr --output my_case_dynamic.rpf
 raptrix-psse-rs convert --raw my_case.raw --output my_case_expanded.rpf --transformer-mode expanded
 raptrix-psse-rs view --input my_case.rpf
 ```
 
-## Download prebuilt binaries (recommended)
+## Modern Grid Support Philosophy
 
-We provide prebuilt release binaries on GitHub Releases for Windows, Linux, and macOS. For most users we recommend downloading the appropriate release artifact rather than building from source — binaries are built with optimization and link-time optimizations enabled for best runtime performance.
+The converter is built for modern 2026+ studies while preserving strong legacy PSS/E compatibility.
 
-See the Releases page: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases
-
-[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
-
-MPL 2.0 — free to use, modify, and distribute.
-
-For production-scale grids, see the commercial Raptrix Core offering. Flexible commercial licensing — contact us for seats, enterprise, or cloud options.
-
----
-
-## Why RPF? The case for a modern interchange format
-
-PSS/E RAW, CIM/XML, and similar vendor formats were designed for human editors and
-1970s–1990s toolchains. They carry significant structural baggage:
-
-| Legacy format pain point | How RPF solves it |
-|---|---|
-| **Line-by-line ASCII parsing** — slow, fragile, encoding-ambiguous | **Apache Arrow IPC binary** — columnar, memory-mappable, zero-copy into the solver |
-| **Loosely specified fields** — optional columns, dialect differences between PSS/E 29–35, silent truncation | **Schema-versioned and strongly typed** — every field has a defined type, nullability, and unit; schema mismatches are caught at read time |
-| **No planning vs. solved distinction** — VM/VA in a RAW file could be a solved snapshot or a wild guess | **Explicit case semantics** — `case_mode` field encodes `flat_start_planning`, `warm_start_planning`, or `solved`; no ambiguity for the downstream solver |
-| **Monolithic single-file model** — topology, operating point, dynamics, and contingencies all mixed in opaque section blocks | **15 canonical tables** — buses, branches, generators, transformers, contingencies, dynamics models, and more, each independently addressable |
-| **Vendor lock-in** — RAW files require a PSS/E license to create or simulate | **MPL 2.0 open standard** — read, write, and inspect with any Apache Arrow library in Rust, Python, R, Go, or Java; no license required |
-| **No extensibility** — adding FACTS or hosting-capacity fields requires vendor cooperation | **Nullable extension columns** — FACTS, SCED, POI/hosting-capacity data lives in first-class nullable columns; older readers ignore unknown fields gracefully |
-
-### In practice
-
-- **Faster ingestion**: the entire RPF payload is one contiguous Arrow IPC buffer. A 70 000-bus case loads into the solver in a single memory-map call — no tokenizing, no string-to-float conversion at runtime.
-- **Safer pipelines**: schema validation catches unit errors, missing slack buses, and topology anomalies before a single solver iteration runs. The optional `raptrix-psse-rs validate` command runs MMWG §7.3 conformance checks on any RAW file before conversion.
-- **Smarter workflows**: contingency tables, interface limits, dynamics model parameters, and area interchange schedules all travel in the same file. No more assembling five separate inputs before a security analysis run.
-
-> RPF is the interchange format that PSS/E RAW would be if it were designed today.
-
----
-
-## Build From Source
-
-Rust 1.85+ is required. Building from source is supported but not necessary for most users — prefer the prebuilt release artifacts when possible.
-
-```bash
-git clone https://github.com/RaptrixPowerFlow/raptrix-cim-rs.git
-git clone https://github.com/RaptrixPowerFlow/raptrix-psse-rs.git
-cd raptrix-psse-rs
-cargo build --release
-```
+- Prefer explicit modern-grid representations over lossy legacy flattening.
+- Use DYR model families as the primary source for IBR classification and controls.
+- Fall back to RAW WMOD where DYR is unavailable.
+- Always emit canonical v0.8.8 required tables, even when zero-row, to keep downstream pipelines deterministic.
 
 ## CLI Reference
 
 ### convert
 
 ```bash
-raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transformer-mode <MODE>]
+raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transformer-mode <MODE>] [--study-purpose <TEXT>] [--scenario-tag <TAG> ...]
 ```
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--raw <PATH>` | yes | PSS/E RAW file (.raw), versions 29-35. |
-| `--dyr <PATH>` | no | Optional PSS/E dynamic data file (.dyr). All numeric DYR model rows are preserved into `dynamics_models`; supported machine families also populate generator `h`, `D`, and `xd_prime`. |
-| `--output <PATH>` | yes | Output RPF file path. |
-| `--transformer-mode <MODE>` | no | 3-winding representation policy: `native-3w` (default, native `transformers_3w` rows only) or `expanded` (star legs in `transformers_2w`). |
-
-Each export writes machine-readable root metadata key `rpf.transformer_representation_mode`
-with value `expanded` or `native_3w` for deterministic downstream regression checks. Files produced against the v0.8.7 canonical contract default to `native_3w` unless `--transformer-mode expanded` is supplied.
+| `--raw <PATH>` | yes | PSS/E RAW file (.raw), versions 23-35. |
+| `--dyr <PATH>` | no | Optional dynamic data file. Canonical format is `.dyr`; `.dyn` is accepted as fallback. |
+| `--output <PATH>` | yes | Output RPF path. |
+| `--transformer-mode <MODE>` | no | `native-3w` (default) or `expanded`. |
+| `--study-purpose <TEXT>` | no | Metadata override for `metadata.study_purpose`. |
+| `--scenario-tag <TAG>` | no | Repeatable metadata override for `metadata.scenario_tags`. |
 
 ### view
 
@@ -104,9 +62,9 @@ raptrix-psse-rs view --input <FILE>
 
 Prints a summary of every table in the .rpf file with row counts.
 
-## RPF Contents
+## RPF v0.8.8 Coverage
 
-The .rpf file is an Apache Arrow IPC payload with 15 canonical tables:
+The converter emits canonical tables including:
 
 - metadata
 - buses
@@ -115,16 +73,62 @@ The .rpf file is an Apache Arrow IPC payload with 15 canonical tables:
 - loads
 - fixed_shunts
 - switched_shunts
+- switched_shunt_banks
 - transformers_2w
 - transformers_3w
 - areas
 - zones
 - owners
+- multi_section_lines
+- dc_lines_2w
+- ibr_devices
 - contingencies
 - interfaces
 - dynamics_models
 
-With a paired `.dyr` file, `dynamics_models` now carries the full numeric model deck in source order using parameter keys `p1..pN`. Synchronous machine families `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, and `GENCLS` are also promoted into the `generators` table for solver initialization fields.
+Metadata includes v0.8.8 modern-grid fields:
+
+- modern_grid_profile
+- ibr_penetration_pct
+- has_ibr
+- has_smart_valve
+- has_multi_terminal_dc
+- study_purpose
+- scenario_tags
+
+## What's New in v0.3.0
+
+- **Enterprise-Grade Parser Robustness**: Hardened DC line and multi-section line parsing with malformed record detection and detailed logging.
+- **Richer IBR Taxonomy**: Device classification now distinguishes `solar_pv`, `wind_type3`, `wind_type4`, `bess`, and `generic_ibr` with comprehensive DYR model family matching (DYR-first, WMOD fallback).
+- **Comprehensive Test Coverage**: New synthetic RAW snippet test suite covering parser edge cases and regressions.
+- **Production-Ready Release Pipeline**: GitHub Actions-driven binary builds for Windows, Linux, and macOS with automated release notes.
+
+See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
+
+## Releases & Downloads
+
+Precompiled binaries are available on the [Releases page](https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases):
+
+- **Windows (x86_64)**: `.exe` binary in `zip` archive.
+- **Linux (x86_64)**: Static binary in `tar.gz` archive.
+- **macOS (arm64)**: Native Apple Silicon binary in `tar.gz` archive.
+
+To use a release binary, extract the archive and run:
+
+```bash
+./raptrix-psse-rs convert --raw my_case.raw --dyr my_case.dyr --output my_case.rpf
+```
+
+## Build From Source
+
+Rust 1.85+ is required.
+
+```bash
+git clone https://github.com/RaptrixPowerFlow/raptrix-cim-rs.git
+git clone https://github.com/RaptrixPowerFlow/raptrix-psse-rs.git
+cd raptrix-psse-rs
+cargo build --release
+```
 
 ## Testing
 
@@ -136,4 +140,6 @@ cargo test --release -- --nocapture
 
 ## License
 
-Licensed under the Mozilla Public License, Version 2.0. See [LICENSE](LICENSE).
+[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](LICENSE)
+
+MPL 2.0 - free to use, modify, and distribute.

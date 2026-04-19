@@ -8,7 +8,8 @@
 //! CLI entry-point for `raptrix-psse-rs`.
 //!
 //! ## Subcommands
-//! * `convert`  — parse a PSS/E `.raw` file (and optional `.dyr`) and write a
+//! * `convert`  — parse a PSS/E `.raw` file (and optional canonical `.dyr`,
+//!   with `.dyn` accepted as fallback) and write a
 //!   Raptrix PowerFlow Interchange `.rpf` file.
 //! * `view`     — pretty-print an existing `.rpf` file summary.
 //! * `validate` — run MMWG §7.3 conformance checks on a PSS/E `.raw` file
@@ -40,7 +41,9 @@ enum Commands {
         #[arg(long)]
         raw: PathBuf,
 
-        /// Optional path to the PSS/E dynamic data file (.dyr).
+        /// Optional path to the PSS/E dynamic data file.
+        ///
+        /// Canonical extension is `.dyr`; `.dyn` is accepted as a compatibility fallback.
         #[arg(long)]
         dyr: Option<PathBuf>,
 
@@ -54,6 +57,14 @@ enum Commands {
         /// - `expanded`: export only star-expanded `transformers_2w` legs
         #[arg(long, default_value = "native-3w")]
         transformer_mode: String,
+
+        /// Optional study purpose metadata override (e.g. planning, operations).
+        #[arg(long)]
+        study_purpose: Option<String>,
+
+        /// Optional scenario tags metadata override (repeatable).
+        #[arg(long = "scenario-tag")]
+        scenario_tags: Vec<String>,
     },
 
     /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file summary.
@@ -94,6 +105,8 @@ fn main() -> Result<()> {
             dyr,
             output,
             transformer_mode,
+            study_purpose,
+            scenario_tags,
         } => {
             let raw_str = raw
                 .to_str()
@@ -116,6 +129,8 @@ fn main() -> Result<()> {
                 })?;
             let export_options = raptrix_psse_rs::ExportOptions {
                 transformer_representation_mode,
+                study_purpose,
+                scenario_tags,
             };
 
             raptrix_psse_rs::write_psse_to_rpf_with_options(
