@@ -223,6 +223,7 @@ fn check_system(r: &mut ValidationReport, n: &Network) {
 
 fn check_buses(r: &mut ValidationReport, n: &Network) {
     let mut seen_ids: HashSet<u32> = HashSet::with_capacity(n.buses.len());
+    let owner_ids: HashSet<u32> = n.owners.iter().map(|o| o.i).collect();
 
     for bus in &n.buses {
         // Duplicate bus number
@@ -284,6 +285,18 @@ fn check_buses(r: &mut ValidationReport, n: &Network) {
                 ),
             );
         }
+
+        if bus.owner != 0 && !owner_ids.contains(&bus.owner) {
+            push(
+                r,
+                Severity::Warning,
+                "MMWG-7.3.2/undefined-owner",
+                format!(
+                    "Bus {} '{}': OWNER={} not present in owner table",
+                    bus.i, bus.name, bus.owner
+                ),
+            );
+        }
     }
 }
 
@@ -293,6 +306,7 @@ fn check_buses(r: &mut ValidationReport, n: &Network) {
 
 fn check_branches(r: &mut ValidationReport, n: &Network) {
     let bus_ids: HashSet<u32> = n.buses.iter().map(|b| b.i).collect();
+    let owner_ids: HashSet<u32> = n.owners.iter().map(|o| o.i).collect();
     let mut zero_x_count = 0usize;
     let mut zero_x_examples: Vec<String> = Vec::new();
 
@@ -354,6 +368,18 @@ fn check_branches(r: &mut ValidationReport, n: &Network) {
                 format!(
                     "Branch {}-{} ckt '{}': negative thermal rating (RATEA={}, RATEB={}, RATEC={})",
                     br.i, br.j, br.ckt, br.ratea, br.rateb, br.ratec
+                ),
+            );
+        }
+
+        if br.o1 != 0 && !owner_ids.contains(&br.o1) {
+            push(
+                r,
+                Severity::Warning,
+                "MMWG-7.3.3/undefined-owner",
+                format!(
+                    "Branch {}-{} ckt '{}': O1={} not present in owner table",
+                    br.i, br.j, br.ckt, br.o1
                 ),
             );
         }
@@ -482,6 +508,7 @@ fn check_transformers(r: &mut ValidationReport, n: &Network) {
 
 fn check_generators(r: &mut ValidationReport, n: &Network) {
     let bus_ids: HashSet<u32> = n.buses.iter().map(|b| b.i).collect();
+    let owner_ids: HashSet<u32> = n.owners.iter().map(|o| o.i).collect();
     let mut seen: HashSet<(u32, &str)> = HashSet::new();
 
     for machine in &n.generators {
@@ -584,6 +611,30 @@ fn check_generators(r: &mut ValidationReport, n: &Network) {
                     ),
                 );
             }
+        }
+
+        if machine.o1 != 0 && !owner_ids.contains(&machine.o1) {
+            push(
+                r,
+                Severity::Warning,
+                "MMWG-7.3.5/undefined-owner",
+                format!(
+                    "Generator bus {} id '{}': O1={} not present in owner table",
+                    machine.i, machine.id, machine.o1
+                ),
+            );
+        }
+
+        if machine.wmod != 0 && machine.stat == 1 && machine.pt <= 0.0 {
+            push(
+                r,
+                Severity::Warning,
+                "MMWG-7.3.5/ibr-without-pmax",
+                format!(
+                    "Generator bus {} id '{}': WMOD={} but PT={} MW; IBR rows should have nonzero p_max",
+                    machine.i, machine.id, machine.wmod, machine.pt
+                ),
+            );
         }
     }
 }

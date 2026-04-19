@@ -39,7 +39,7 @@ fn has_table(summary: &raptrix_cim_arrow::RpfSummary, table_name: &str) -> bool 
     summary.tables.iter().any(|t| t.table_name == table_name)
 }
 
-fn assert_v088_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
+fn assert_v089_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
     for table in [
         TABLE_MULTI_SECTION_LINES,
         TABLE_DC_LINES_2W,
@@ -48,7 +48,7 @@ fn assert_v088_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
     ] {
         assert!(
             has_table(summary, table),
-            "missing v0.8.8 required table: {table}"
+            "missing v0.8.9 required table: {table}"
         );
     }
 }
@@ -240,7 +240,7 @@ fn golden_texas7k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -316,15 +316,71 @@ fn golden_texas7k_static() {
 
     let generators = table_by_name(&tables, TABLE_GENERATORS);
     let gen_status = col_bool(generators, "status");
-    let gen_p_pu_col = col_f64(generators, "p_sched_pu");
-    let gen_p_pu = sum_f64_where(gen_p_pu_col, gen_status);
+    let gen_p_mw_col = col_f64(generators, "p_sched_mw");
+    let gen_p_mw = sum_f64_where(gen_p_mw_col, gen_status);
+
+    // v0.8.9 generator hierarchy migration: legacy flat RAW units map to unit level.
+    let hierarchy_level = generators
+        .column_by_name("hierarchy_level")
+        .expect("missing generators.hierarchy_level")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("generators.hierarchy_level must be Utf8");
+    for i in 0..hierarchy_level.len() {
+        assert_eq!(
+            hierarchy_level.value(i),
+            "unit",
+            "legacy generator rows must migrate as hierarchy_level=unit"
+        );
+    }
+
+    let owner_id_col = generators
+        .column_by_name("owner_id")
+        .expect("missing generators.owner_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("generators.owner_id must be Int32");
+    let mut has_any_generator_owner = false;
+    for i in 0..owner_id_col.len() {
+        if !owner_id_col.is_null(i) {
+            has_any_generator_owner = true;
+            break;
+        }
+    }
+    assert!(
+        has_any_generator_owner,
+        "expected at least one generator.owner_id in exported table"
+    );
+
+    let buses_owner = table_by_name(&tables, TABLE_BUSES)
+        .column_by_name("owner_id")
+        .expect("missing buses.owner_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("buses.owner_id must be Int32");
+    assert!(
+        buses_owner.len() > 0,
+        "buses.owner_id column should be populated as nullable Int32"
+    );
+
+    let branches_owner = table_by_name(&tables, TABLE_BRANCHES)
+        .column_by_name("owner_id")
+        .expect("missing branches.owner_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("branches.owner_id must be Int32");
+    assert!(
+        branches_owner.len() > 0,
+        "branches.owner_id column should be populated as nullable Int32"
+    );
 
     let loads = table_by_name(&tables, TABLE_LOADS);
     let load_status = col_bool(loads, "status");
     let load_p_pu_col = col_f64(loads, "p_pu");
     let load_p_pu = sum_f64_where(load_p_pu_col, load_status);
 
-    let net_p_from_components = gen_p_pu - load_p_pu;
+    let base_mva = col_f64(metadata, "base_mva").value(0);
+    let net_p_from_components = (gen_p_mw / base_mva) - load_p_pu;
     let net_p_from_buses = sum_f64(bus_p_sched);
 
     let p_err = (net_p_from_buses - net_p_from_components).abs();
@@ -420,7 +476,7 @@ fn golden_texas7k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -491,7 +547,7 @@ fn golden_texas2k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -544,7 +600,7 @@ fn golden_texas2k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -573,7 +629,7 @@ const DYR_PATH_TX2K_GFM_DYN: &str = "tests/data/external/Texas2k_series24_case6_
 const OUT_TX2K_GFM_DYNAMIC: &str = "tests/golden/Texas2k_series24_gfm_dynamic.rpf";
 
 #[test]
-fn golden_activsg10k_dynamic_v088_tables_and_metadata() {
+fn golden_activsg10k_dynamic_v089_tables_and_metadata() {
     let Some(dyr_path) = first_existing_path(&[DYR_PATH_ACTIVS10K_DYN, DYR_PATH_ACTIVS10K_DYR])
     else {
         eprintln!(
@@ -596,7 +652,7 @@ fn golden_activsg10k_dynamic_v088_tables_and_metadata() {
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
     assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "expected DYR payload rows");
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
@@ -636,7 +692,7 @@ fn golden_texas2k_gfm_dynamic_ibr_detection() {
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
     assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "expected DYR payload rows");
-    assert_v088_required_tables(&summary);
+    assert_v089_required_tables(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));

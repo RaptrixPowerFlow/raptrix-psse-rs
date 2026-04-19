@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` â€” High-performance PSS/E (`.raw` + `.dyr`) â†’
-//! Raptrix PowerFlow Interchange v0.8.8 converter.
+//! Raptrix PowerFlow Interchange v0.8.9 converter.
 //!
 //! # Crate layout
 //! * [`models`] â€” PSS/E data structures.
@@ -187,7 +187,7 @@ pub fn write_psse_to_rpf_with_options(
     );
     table_batches.insert(
         TABLE_GENERATORS,
-        build_generators_batch(&network.generators, &dyr_lookup, base_mva)?,
+        build_generators_batch(&network.generators, &dyr_lookup, &network.ibr_devices)?,
     );
     table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads, base_mva)?);
     table_batches.insert(
@@ -1109,6 +1109,7 @@ fn derive_ibr_devices(network: &mut Network) {
             network.ibr_devices.push(models::IbrDevice {
                 device_id: next_id,
                 bus_id: generator.i,
+                generator_id: generator.id.clone(),
                 device_type: device_type.into(),
                 rated_mva: if generator.mbase > 0.0 {
                     generator.mbase
@@ -1233,7 +1234,7 @@ fn build_metadata_batch(
     let mut solved_shunt_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
     solved_shunt_state_presence_arr.append_null();
 
-    // v0.8.8 modern-grid metadata.
+    // v0.8.9 modern-grid metadata.
     let has_ibr_value = !network.ibr_devices.is_empty();
     let has_smart_valve_value = network.facts_devices.iter().any(|d| {
         let t = d.device_type.as_ref().to_ascii_lowercase();
@@ -1317,7 +1318,7 @@ fn build_metadata_batch(
             Arc::new(slack_bus_id_solved_arr.finish()),
             Arc::new(angle_reference_deg_arr.finish()),
             Arc::new(solved_shunt_state_presence_arr.finish()),
-            // v0.8.8 columns
+            // v0.8.9 columns
             Arc::new(BooleanArray::from(vec![modern_grid_profile_value])),
             Arc::new(ibr_penetration_pct_arr.finish()),
             Arc::new(BooleanArray::from(vec![has_ibr_value])),
@@ -1584,6 +1585,7 @@ fn build_branches_batch(
     let mut rate_b = Float64Builder::new();
     let mut rate_c = Float64Builder::new();
     let mut status = BooleanBuilder::new();
+    let mut owner_id = Int32Builder::new();
     // name is nullable dict_utf8_u32
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
     let mut from_nominal_kv = Float64Builder::new();
@@ -1633,6 +1635,11 @@ fn build_branches_batch(
         rate_b.append_value(branch.rateb / base_mva);
         rate_c.append_value(branch.ratec / base_mva);
         status.append_value(branch.st != 0);
+        if branch.o1 > 0 {
+            owner_id.append_value(branch.o1 as i32);
+        } else {
+            owner_id.append_null();
+        }
         name_b.append_null(); // branches have no name in RAW
         from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
         to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
@@ -1713,6 +1720,7 @@ fn build_branches_batch(
             Arc::new(rate_b.finish()),
             Arc::new(rate_c.finish()),
             Arc::new(status.finish()),
+            Arc::new(owner_id.finish()),
             Arc::new(name_b.finish()),
             Arc::new(from_nominal_kv.finish()),
             Arc::new(to_nominal_kv.finish()),
@@ -1734,65 +1742,163 @@ fn build_branches_batch(
 fn build_generators_batch(
     generators: &[models::Generator],
     dyr_lookup: &HashMap<(u32, String), &models::DyrGeneratorData>,
-    base_mva: f64,
+    ibr_devices: &[models::IbrDevice],
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_GENERATORS).expect("generators schema must exist"));
 
-    let mut bus_id = Int32Builder::new();
-    let mut id = StringDictionaryBuilder::<Int32Type>::new();
-    let mut p_sched_pu = Float64Builder::new();
-    let mut p_min_pu = Float64Builder::new();
-    let mut p_max_pu = Float64Builder::new();
-    let mut q_min_pu = Float64Builder::new();
-    let mut q_max_pu = Float64Builder::new();
-    let mut status = BooleanBuilder::new();
-    let mut mbase_mva = Float64Builder::new();
-    let mut h = Float64Builder::new();
-    let mut xd_prime = Float64Builder::new();
-    let mut d = Float64Builder::new();
-    let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
-
-    for generator in generators {
-        bus_id.append_value(generator.i as i32);
-        id.append_value(generator.id.as_ref());
-        p_sched_pu.append_value(generator.pg / base_mva);
-        p_min_pu.append_value(generator.pb / base_mva);
-        p_max_pu.append_value(generator.pt / base_mva);
-        q_min_pu.append_value(generator.qb / base_mva);
-        q_max_pu.append_value(generator.qt / base_mva);
-        status.append_value(generator.stat != 0);
-        mbase_mva.append_value(generator.mbase);
-        if let Some(dyn_data) = dyr_lookup.get(&(generator.i, generator.id.to_string())) {
-            h.append_value(dyn_data.h);
-            xd_prime.append_value(dyn_data.xd_prime);
-            d.append_value(dyn_data.d);
-        } else {
-            h.append_value(0.0);
-            xd_prime.append_value(generator.zx); // fallback: ZX as xd'
-            d.append_value(0.0);
-        }
-        name_b.append_null();
+    let mut ibr_by_gen: HashMap<(u32, String), String> = HashMap::new();
+    for device in ibr_devices {
+        ibr_by_gen.insert(
+            (device.bus_id, device.generator_id.to_string()),
+            canonical_ibr_subtype(device.device_type.as_ref()).to_string(),
+        );
     }
+
+    let map_field_names = MapFieldNames {
+        entry: "entries".to_string(),
+        key: "key".to_string(),
+        value: "value".to_string(),
+    };
+
+    let mut generator_id = Int32Builder::new();
+    let mut bus_id = Int32Builder::new();
+    let mut name_b = StringBuilder::new();
+    let mut unit_type = StringBuilder::new();
+    let mut hierarchy_level = StringBuilder::new();
+    let mut parent_generator_id = Int32Builder::new();
+    let mut aggregation_count = Int32Builder::new();
+    let mut status = BooleanBuilder::new();
+    let mut is_ibr = BooleanBuilder::new();
+    let mut ibr_subtype = StringBuilder::new();
+    let mut p_sched_mw = Float64Builder::new();
+    let mut p_min_mw = Float64Builder::new();
+    let mut p_max_mw = Float64Builder::new();
+    let mut q_min_mvar = Float64Builder::new();
+    let mut q_max_mvar = Float64Builder::new();
+    let mut mbase_mva = Float64Builder::new();
+    let mut uol_mw = Float64Builder::new();
+    let mut lol_mw = Float64Builder::new();
+    let mut ramp_rate_up_mw_min = Float64Builder::new();
+    let mut ramp_rate_down_mw_min = Float64Builder::new();
+    let mut owner_id = Int32Builder::new();
+    let mut market_resource_id = StringBuilder::new();
+    let mut params = MapBuilder::new(
+        Some(map_field_names),
+        StringBuilder::new(),
+        Float64Builder::new(),
+    );
+
+    for (idx, generator) in generators.iter().enumerate() {
+        let key = (generator.i, generator.id.to_string());
+        let subtype = ibr_by_gen.get(&key).cloned();
+
+        generator_id.append_value((idx + 1) as i32);
+        bus_id.append_value(generator.i as i32);
+        name_b.append_null();
+        unit_type.append_value("unit");
+        hierarchy_level.append_value("unit");
+        parent_generator_id.append_null();
+        aggregation_count.append_null();
+        status.append_value(generator.stat != 0);
+        is_ibr.append_value(subtype.is_some());
+        if let Some(value) = subtype {
+            ibr_subtype.append_value(value.as_str());
+        } else {
+            ibr_subtype.append_null();
+        }
+        p_sched_mw.append_value(generator.pg);
+        p_min_mw.append_value(generator.pb);
+        p_max_mw.append_value(generator.pt);
+        q_min_mvar.append_value(generator.qb);
+        q_max_mvar.append_value(generator.qt);
+        mbase_mva.append_value(generator.mbase);
+        uol_mw.append_null();
+        lol_mw.append_null();
+        ramp_rate_up_mw_min.append_null();
+        ramp_rate_down_mw_min.append_null();
+        if generator.o1 > 0 {
+            owner_id.append_value(generator.o1 as i32);
+        } else {
+            owner_id.append_null();
+        }
+        market_resource_id.append_null();
+
+        let mut has_param = false;
+        if let Some(dyn_data) = dyr_lookup.get(&(generator.i, generator.id.to_string())) {
+            if dyn_data.h > 0.0 {
+                params.keys().append_value("H");
+                params.values().append_value(dyn_data.h);
+                has_param = true;
+            }
+            if dyn_data.xd_prime > 0.0 {
+                params.keys().append_value("xd_prime");
+                params.values().append_value(dyn_data.xd_prime);
+                has_param = true;
+            }
+            if dyn_data.d != 0.0 {
+                params.keys().append_value("D");
+                params.values().append_value(dyn_data.d);
+                has_param = true;
+            }
+        }
+        if has_param {
+            params
+                .append(true)
+                .context("building generators.params map entry")?;
+        } else {
+            params
+                .append(false)
+                .context("building generators.params null entry")?;
+        }
+    }
+
+    let params_arr = params.finish();
+    let params_target_type = schema
+        .field_with_name("params")
+        .expect("params field must exist in generators schema")
+        .data_type()
+        .clone();
+    let params_cast =
+        arrow::compute::cast(&params_arr, &params_target_type).context("casting generators params")?;
 
     RecordBatch::try_new(
         schema,
         vec![
+            Arc::new(generator_id.finish()),
             Arc::new(bus_id.finish()),
-            Arc::new(id.finish()),
-            Arc::new(p_sched_pu.finish()),
-            Arc::new(p_min_pu.finish()),
-            Arc::new(p_max_pu.finish()),
-            Arc::new(q_min_pu.finish()),
-            Arc::new(q_max_pu.finish()),
-            Arc::new(status.finish()),
-            Arc::new(mbase_mva.finish()),
-            Arc::new(h.finish()),
-            Arc::new(xd_prime.finish()),
-            Arc::new(d.finish()),
             Arc::new(name_b.finish()),
+            Arc::new(unit_type.finish()),
+            Arc::new(hierarchy_level.finish()),
+            Arc::new(parent_generator_id.finish()),
+            Arc::new(aggregation_count.finish()),
+            Arc::new(status.finish()),
+            Arc::new(is_ibr.finish()),
+            Arc::new(ibr_subtype.finish()),
+            Arc::new(p_sched_mw.finish()),
+            Arc::new(p_min_mw.finish()),
+            Arc::new(p_max_mw.finish()),
+            Arc::new(q_min_mvar.finish()),
+            Arc::new(q_max_mvar.finish()),
+            Arc::new(mbase_mva.finish()),
+            Arc::new(uol_mw.finish()),
+            Arc::new(lol_mw.finish()),
+            Arc::new(ramp_rate_up_mw_min.finish()),
+            Arc::new(ramp_rate_down_mw_min.finish()),
+            Arc::new(owner_id.finish()),
+            Arc::new(market_resource_id.finish()),
+            params_cast,
         ],
     )
     .context("building generators batch")
+}
+
+fn canonical_ibr_subtype(device_type: &str) -> &'static str {
+    match device_type {
+        "bess" => "battery",
+        "solar_pv" => "solar",
+        "wind_type3" | "wind_type4" => "wind",
+        _ => "generic_ibr",
+    }
 }
 
 fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatch> {
@@ -2465,16 +2571,48 @@ fn build_owners_batch(owners: &[models::Owner]) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_OWNERS).expect("owners schema must exist"));
 
     let mut owner_id = Int32Builder::new();
-    let mut name = StringDictionaryBuilder::<Int32Type>::new();
+    let mut name = StringBuilder::new();
+    let mut short_name = StringBuilder::new();
+    let mut owner_type = StringBuilder::new();
+    let map_field_names = MapFieldNames {
+        entry: "entries".to_string(),
+        key: "key".to_string(),
+        value: "value".to_string(),
+    };
+    let mut params = MapBuilder::new(
+        Some(map_field_names),
+        StringBuilder::new(),
+        Float64Builder::new(),
+    );
 
     for owner in owners {
         owner_id.append_value(owner.i as i32);
         name.append_value(owner.ownam.as_ref());
+        short_name.append_null();
+        owner_type.append_null();
+        params
+            .append(false)
+            .context("building owners.params null entry")?;
     }
+
+    let params_arr = params.finish();
+    let params_target_type = schema
+        .field_with_name("params")
+        .expect("params field must exist in owners schema")
+        .data_type()
+        .clone();
+    let params_cast =
+        arrow::compute::cast(&params_arr, &params_target_type).context("casting owners params")?;
 
     RecordBatch::try_new(
         schema,
-        vec![Arc::new(owner_id.finish()), Arc::new(name.finish())],
+        vec![
+            Arc::new(owner_id.finish()),
+            Arc::new(name.finish()),
+            Arc::new(short_name.finish()),
+            Arc::new(owner_type.finish()),
+            params_cast,
+        ],
     )
     .context("building owners batch")
 }

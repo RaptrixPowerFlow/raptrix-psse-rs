@@ -35,7 +35,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit canonical v0.8.8 required tables, even when zero-row, to keep downstream pipelines deterministic.
+- Always emit canonical v0.8.9 required tables, even when zero-row, to keep downstream pipelines deterministic.
 
 ## CLI Reference
 
@@ -62,7 +62,7 @@ raptrix-psse-rs view --input <FILE>
 
 Prints a summary of every table in the .rpf file with row counts.
 
-## RPF v0.8.8 Coverage
+## RPF v0.8.9 Coverage
 
 The converter emits canonical tables including:
 
@@ -86,7 +86,7 @@ The converter emits canonical tables including:
 - interfaces
 - dynamics_models
 
-Metadata includes v0.8.8 modern-grid fields:
+Metadata includes v0.8.9 modern-grid fields:
 
 - modern_grid_profile
 - ibr_penetration_pct
@@ -96,10 +96,10 @@ Metadata includes v0.8.8 modern-grid fields:
 - study_purpose
 - scenario_tags
 
-## What's New in v0.3.0
+## What's New in v0.3.1
 
 - **Enterprise-Grade Parser Robustness**: Hardened DC line and multi-section line parsing with malformed record detection and detailed logging.
-- **Richer IBR Taxonomy**: Device classification now distinguishes `solar_pv`, `wind_type3`, `wind_type4`, `bess`, and `generic_ibr` with comprehensive DYR model family matching (DYR-first, WMOD fallback).
+- **Richer IBR Taxonomy**: Generator rows emit canonical `ibr_subtype` values: `solar`, `wind`, `battery`, and `generic_ibr`, with DYR-first classification and WMOD fallback.
 - **Comprehensive Test Coverage**: New synthetic RAW snippet test suite covering parser edge cases and regressions.
 - **Production-Ready Release Pipeline**: GitHub Actions-driven binary builds for Windows, Linux, and macOS with automated release notes.
 

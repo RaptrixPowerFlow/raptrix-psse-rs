@@ -16,6 +16,33 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.1: Canonical RPF v0.8.9 Sync (Breaking)
+
+Summary of changes:
+- Canonical RPF contract is now v0.8.9.
+- `generators` is now emitted in the unified hierarchical shape:
+    - `generator_id`, `unit_type`, `hierarchy_level`, `parent_generator_id`, `aggregation_count`
+    - MW/MVAR-native dispatch fields (`p_sched_mw`, `p_min_mw`, `p_max_mw`, `q_min_mvar`, `q_max_mvar`)
+    - `is_ibr`, `ibr_subtype`, `owner_id`, and `params`
+- Legacy flat generator rows are migrated at export time to unit-level hierarchy:
+    - `hierarchy_level = "unit"`
+    - `parent_generator_id = null`
+    - `aggregation_count = null`
+- Ownership linkage now exports explicitly on all required tables:
+    - `generators.owner_id`
+    - `buses.owner_id`
+    - `branches.owner_id`
+- `owners` table now emits v0.8.9 shape:
+    - `owner_id`, `name`, `short_name`, `type`, `params`
+
+Behavior notes:
+- IBR classification remains DYR-first with RAW WMOD fallback.
+- Canonical generator `ibr_subtype` values are `solar`, `wind`, `battery`, and `generic_ibr`.
+
+Compatibility notes:
+- This is a hard break for generator wire shape. v0.8.8-era generator columns are not emitted.
+- This repository targets forward-only v0.8.9 output and does not preserve backward writer compatibility.
+
 ### v0.2.3 -> v0.2.4: Canonical RPF v0.8.8 Sync
 
 Summary of changes:

@@ -1008,6 +1008,9 @@ fn parse_dc_line_record(f: &[String], dc_line_id: i32, converter_type: &str) -> 
 
 fn parse_multi_section_line_record(f: &[String], line_id: i32) -> Option<MultiSectionLine> {
     let (_a_idx, b_idx, from_bus_id, to_bus_id) = first_plausible_bus_pair_with_indices(f)?;
+    if from_bus_id == to_bus_id {
+        return None;
+    }
     let ckt = nearest_non_numeric_label(f, b_idx).unwrap_or_else(|| field_str(f, 2));
     let ckt = if ckt.is_empty() {
         format!("MSL{}", line_id)
