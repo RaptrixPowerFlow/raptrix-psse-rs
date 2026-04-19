@@ -16,6 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.1] - 2026-04-19
+
+### Schema Alignment
+
+- Completed full canonical RPF v0.8.9 support.
+- Added explicit `owner_id` linkage on required exported tables.
+- Migrated generator export to unified hierarchical generator shape.
+
+### Tests
+
+- Fixed `parser_robustness_test` RAW snippets to use valid minimal section flow for Two-Terminal DC and Multi-Section Line parser paths.
+- Preserved robustness coverage for key field extraction and malformed/same-endpoint/negative-bus rejection behavior.
+
+---
+
 ## [0.3.0] - 2026-04-19
 
 ### Major Features
@@ -161,14 +176,14 @@ To create and publish a release:
 
 # 2. Commit changes
 git add Cargo.toml CHANGELOG.md
-git commit -m "chore: bump to v0.3.0"
+git commit -m "chore: bump to v0.3.1"
 
 # 3. Create an annotated tag
-git tag -a v0.3.0 -m "Release v0.3.0: parser robustness + richer IBR classification"
+git tag -a v0.3.1 -m "Release v0.3.1: full v0.8.9 schema alignment"
 
 # 4. Push commits and tags
 git push origin main
-git push origin v0.3.0
+git push origin v0.3.1
 ```
 
 The GitHub Actions `release` workflow will automatically:
@@ -179,6 +194,7 @@ The GitHub Actions `release` workflow will automatically:
 
 ---
 
+[0.3.1]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.1
 [0.3.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.0
 [0.2.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.2.2
 [0.2.1]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.2.1

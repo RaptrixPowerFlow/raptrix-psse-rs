@@ -53,7 +53,7 @@ pub struct Network {
     pub facts_devices: Vec<FactsDeviceRaw>,
     /// Switched shunt data records (section 17).
     pub switched_shunts: Vec<SwitchedShunt>,
-    /// Switched shunt per-bank decomposition rows (v0.8.8 table source).
+    /// Switched shunt per-bank decomposition rows (v0.8.9 table source).
     pub switched_shunt_banks: Vec<SwitchedShuntBank>,
     /// IBR devices derived from RAW + DYR records.
     pub ibr_devices: Vec<IbrDevice>,
@@ -580,7 +580,7 @@ pub struct SwitchedShunt {
     pub bank_pairs: Vec<(u32, f64)>,
 }
 
-/// Switched-shunt bank row for the v0.8.8 `switched_shunt_banks` table.
+/// Switched-shunt bank row for the v0.8.9 `switched_shunt_banks` table.
 #[derive(Debug, Default, Clone)]
 pub struct SwitchedShuntBank {
     /// Integer shunt row id (1-indexed, write-order aligned).
@@ -595,13 +595,15 @@ pub struct SwitchedShuntBank {
     pub step: i32,
 }
 
-/// IBR device row for the v0.8.8 `ibr_devices` table.
+/// IBR device row for the v0.8.9 `ibr_devices` table.
 #[derive(Debug, Default, Clone)]
 pub struct IbrDevice {
     /// Stable IBR identifier synthesized by converter.
     pub device_id: i32,
     /// Connected bus id.
     pub bus_id: u32,
+    /// Source generator id on the same bus (internal join key).
+    pub generator_id: Box<str>,
     /// Device type token (`wind`, `solar`, `bess`, `generic_inverter`).
     pub device_type: Box<str>,
     /// Rated MVA.
