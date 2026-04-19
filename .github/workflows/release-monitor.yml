@@ -1,0 +1,34 @@
+name: Release Monitor
+
+on:
+  workflow_run:
+    workflows:
+      - Release
+    types:
+      - completed
+
+permissions:
+  issues: write
+
+jobs:
+  notify:
+    name: Create release notification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Issue with release status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const run = context.payload.workflow_run;
+            const conclusion = run.conclusion || 'unknown';
+            const htmlUrl = run.html_url || '';
+            const workflow = run.name || context.workflow;
+            const title = `Release workflow '${workflow}' ${conclusion.toUpperCase()} - ${run.head_commit ? run.head_commit.id : run.head_sha}`;
+            const body = `The **${workflow}** workflow finished with conclusion: **${conclusion}**.\n\nRun details: ${htmlUrl}\n\nArtifacts and logs are available on the run page.`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body
+            });
