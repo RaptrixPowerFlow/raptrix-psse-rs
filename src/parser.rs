@@ -33,9 +33,9 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::models::{
-    Area, Branch, Bus, BusType, CaseId, DyrGeneratorData, DyrModelData, FactsDeviceRaw, FixedShunt,
-    Generator, Load, Network, Owner, SwitchedShunt, ThreeWindingTransformer, TwoWindingTransformer,
-    Zone,
+    Area, Branch, Bus, BusType, CaseId, DcLine2W, DyrGeneratorData, DyrModelData, FactsDeviceRaw,
+    FixedShunt, Generator, Load, MultiSectionLine, Network, Owner, SwitchedShunt,
+    ThreeWindingTransformer, TwoWindingTransformer, Zone,
 };
 
 // ---------------------------------------------------------------------------
@@ -442,6 +442,31 @@ fn field_u8_default(fields: &[String], idx: usize, default: u8) -> u8 {
 fn token_looks_float(token: &str) -> bool {
     let t = token.trim();
     t.contains('.') || t.contains('e') || t.contains('E') || t.contains('d') || t.contains('D')
+}
+
+fn token_looks_alpha(token: &str) -> bool {
+    token.trim().chars().any(|c| c.is_ascii_alphabetic())
+}
+
+fn token_to_positive_u32(token: &str) -> Option<u32> {
+    let t = token.trim();
+    if t.is_empty() {
+        return None;
+    }
+    t.parse::<i64>().ok().and_then(|v| (v > 0).then_some(v as u32))
+}
+
+fn token_to_f64(token: &str) -> Option<f64> {
+    let t = token.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let v = parse_fortran_double(t);
+    if v.is_finite() {
+        Some(v)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +880,7 @@ fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<Swi
         return None;
     }
     let mut steps = Vec::new();
+    let mut bank_pairs: Vec<(u32, f64)> = Vec::new();
     let ps = off.sw_pairs_start;
     let mut idx = ps;
     while idx + 1 < f.len() {
@@ -866,6 +892,7 @@ fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<Swi
         for _ in 0..n {
             steps.push(b);
         }
+        bank_pairs.push((n as u32, b));
         idx += 2;
     }
     Some(SwitchedShunt {
@@ -880,6 +907,129 @@ fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<Swi
         rmidnt: field_str(f, off.sw_rmidnt_idx).into_boxed_str(),
         binit: field_f64(f, off.sw_binit_idx),
         steps,
+        bank_pairs,
+    })
+}
+
+fn first_plausible_bus_pair_with_indices(f: &[String]) -> Option<(usize, usize, u32, u32)> {
+    // Prefer adjacent positive integers to reduce false positives from IDs + controls.
+    for i in 0..f.len().saturating_sub(1) {
+        let a = token_to_positive_u32(&f[i])?;
+        let b = token_to_positive_u32(&f[i + 1])?;
+        if a != b {
+            return Some((i, i + 1, a, b));
+        }
+    }
+
+    // Fallback: first two positive integer tokens anywhere in row.
+    let mut seen: Vec<(usize, u32)> = Vec::new();
+    for (idx, tok) in f.iter().enumerate() {
+        if let Some(v) = token_to_positive_u32(tok) {
+            seen.push((idx, v));
+            if seen.len() == 2 {
+                break;
+            }
+        }
+    }
+    if seen.len() == 2 {
+        Some((seen[0].0, seen[1].0, seen[0].1, seen[1].1))
+    } else {
+        None
+    }
+}
+
+fn nearest_non_numeric_label(f: &[String], bus_b_idx: usize) -> Option<String> {
+    f.iter()
+        .enumerate()
+        .skip(bus_b_idx + 1)
+        .find(|(_, t)| token_looks_alpha(t) && t.len() <= 12)
+        .map(|(_, t)| t.trim().trim_matches('"').trim_matches('\'').to_string())
+}
+
+fn collect_numeric_after(f: &[String], start_idx: usize) -> Vec<f64> {
+    let mut out = Vec::new();
+    for tok in f.iter().skip(start_idx) {
+        if let Some(v) = token_to_f64(tok) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+fn parse_dc_line_record(f: &[String], dc_line_id: i32, converter_type: &str) -> Option<DcLine2W> {
+    let (a_idx, b_idx, from_bus_id, to_bus_id) = first_plausible_bus_pair_with_indices(f)?;
+
+    let ckt = nearest_non_numeric_label(f, b_idx).unwrap_or_else(|| field_str(f, 2));
+    let ckt = if ckt.is_empty() {
+        format!("DC{}", dc_line_id)
+    } else {
+        ckt
+    };
+
+    let numeric_tail = collect_numeric_after(f, b_idx + 1);
+    let r_ohm = numeric_tail.first().copied().unwrap_or(0.0);
+    let l_henry = numeric_tail
+        .get(1)
+        .copied()
+        .and_then(|v| (v.abs() > 0.0).then_some(v));
+
+    let control_mode_token = f
+        .iter()
+        .find(|t| t.chars().any(|c| c.is_ascii_alphabetic()))
+        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_ascii_lowercase())
+        .unwrap_or_else(|| "power".to_string());
+
+    let p_setpoint_mw = numeric_tail.get(2).copied();
+    let i_setpoint_ka = numeric_tail.get(3).copied();
+    let v_setpoint_kv = numeric_tail.get(4).copied();
+
+    if a_idx == b_idx || from_bus_id == to_bus_id {
+        return None;
+    }
+
+    Some(DcLine2W {
+        dc_line_id,
+        from_bus_id,
+        to_bus_id,
+        ckt: ckt.into_boxed_str(),
+        r_ohm,
+        l_henry,
+        control_mode: control_mode_token.into_boxed_str(),
+        p_setpoint_mw,
+        i_setpoint_ka,
+        v_setpoint_kv,
+        q_from_mvar: None,
+        q_to_mvar: None,
+        status: true,
+        name: None,
+        converter_type: converter_type.to_string().into_boxed_str(),
+    })
+}
+
+fn parse_multi_section_line_record(f: &[String], line_id: i32) -> Option<MultiSectionLine> {
+    let (_a_idx, b_idx, from_bus_id, to_bus_id) = first_plausible_bus_pair_with_indices(f)?;
+    let ckt = nearest_non_numeric_label(f, b_idx).unwrap_or_else(|| field_str(f, 2));
+    let ckt = if ckt.is_empty() {
+        format!("MSL{}", line_id)
+    } else {
+        ckt
+    };
+
+    let nums = collect_numeric_after(f, b_idx + 1);
+
+    Some(MultiSectionLine {
+        line_id,
+        from_bus_id,
+        to_bus_id,
+        ckt: ckt.into_boxed_str(),
+        section_branch_ids: Vec::new(),
+        total_r_pu: nums.first().copied().unwrap_or(0.0),
+        total_x_pu: nums.get(1).copied().unwrap_or(0.0),
+        total_b_pu: nums.get(2).copied().unwrap_or(0.0),
+        rate_a_mva: nums.get(3).copied().unwrap_or(0.0),
+        rate_b_mva: nums.get(4).copied(),
+        status: true,
+        name: None,
     })
 }
 
@@ -1038,6 +1188,10 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
     let mut result = Network::default();
     // Counter for fictitious star bus IDs generated by 3W expansion.
     let mut next_star_id: u32 = 10_000_001;
+    let mut next_dc_line_id: i32 = 1;
+    let mut next_multi_section_line_id: i32 = 1;
+    let mut dc_rows_rejected: usize = 0;
+    let mut multi_section_rows_rejected: usize = 0;
 
     loop {
         let raw_line = match next_line(&mut lines_iter)? {
@@ -1336,6 +1490,56 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             }
 
             // ================================================================
+            // TWO-TERMINAL DC DATA
+            // ================================================================
+            ParseState::TwoTerminalDc => {
+                let f = tokenize(data);
+                if let Some(row) = parse_dc_line_record(&f, next_dc_line_id, "lcc") {
+                    result.dc_lines_2w.push(row);
+                    next_dc_line_id += 1;
+                } else {
+                    dc_rows_rejected += 1;
+                }
+            }
+
+            // ================================================================
+            // VSC DC DATA
+            // ================================================================
+            ParseState::VscDc => {
+                let f = tokenize(data);
+                if let Some(row) = parse_dc_line_record(&f, next_dc_line_id, "vsc") {
+                    result.dc_lines_2w.push(row);
+                    next_dc_line_id += 1;
+                } else {
+                    dc_rows_rejected += 1;
+                }
+            }
+
+            // ================================================================
+            // MULTI-TERMINAL DC DATA (presence signal only in this converter)
+            // ================================================================
+            ParseState::MultiTerminalDc => {
+                let f = tokenize(data);
+                if !f.is_empty() && field_u32(&f, 0) > 0 {
+                    result.has_multi_terminal_dc = true;
+                }
+            }
+
+            // ================================================================
+            // MULTI-SECTION LINE DATA
+            // ================================================================
+            ParseState::MultiSectionLine => {
+                let f = tokenize(data);
+                if let Some(row) = parse_multi_section_line_record(&f, next_multi_section_line_id)
+                {
+                    result.multi_section_lines.push(row);
+                    next_multi_section_line_id += 1;
+                } else {
+                    multi_section_rows_rejected += 1;
+                }
+            }
+
+            // ================================================================
             // ZONE DATA
             // ================================================================
             ParseState::Zone => {
@@ -1380,11 +1584,7 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             // ================================================================
             ParseState::SystemWide
             | ParseState::SystemSwitchingDevice
-            | ParseState::TwoTerminalDc
-            | ParseState::VscDc
             | ParseState::ImpedanceCorrection
-            | ParseState::MultiTerminalDc
-            | ParseState::MultiSectionLine
             | ParseState::InterAreaTransfer
             | ParseState::GneDevice
             | ParseState::InductionMachine => { /* skip */ }
@@ -1396,7 +1596,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
     eprintln!(
         "[parser v{}] buses={} loads={} fixed_shunts={} generators={} \
          branches={} transformers_2w={} areas={} zones={} owners={} \
-         switched_shunts={} facts_devices={}",
+         switched_shunts={} facts_devices={} dc_lines_2w={} multi_section_lines={} has_mtdc={} \
+         dc_rows_rejected={} msl_rows_rejected={}",
         psse_version,
         result.buses.len(),
         result.loads.len(),
@@ -1409,7 +1610,23 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
         result.owners.len(),
         result.switched_shunts.len(),
         result.facts_devices.len(),
+        result.dc_lines_2w.len(),
+        result.multi_section_lines.len(),
+        result.has_multi_terminal_dc,
+        dc_rows_rejected,
+        multi_section_rows_rejected,
     );
+
+    if dc_rows_rejected > 0 {
+        eprintln!(
+            "[parser] skipped {dc_rows_rejected} malformed/unsupported DC section row(s)"
+        );
+    }
+    if multi_section_rows_rejected > 0 {
+        eprintln!(
+            "[parser] skipped {multi_section_rows_rejected} malformed/unsupported multi-section line row(s)"
+        );
+    }
 
     Ok(result)
 }

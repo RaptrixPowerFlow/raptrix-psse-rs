@@ -41,6 +41,10 @@ pub struct Network {
     pub transformers_3w: Vec<ThreeWindingTransformer>,
     /// Area interchange data records (section 7).
     pub areas: Vec<Area>,
+    /// Multi-section line records (section 11).
+    pub multi_section_lines: Vec<MultiSectionLine>,
+    /// Two-terminal and VSC DC line records (sections 8 and 8b).
+    pub dc_lines_2w: Vec<DcLine2W>,
     /// Zone data records (section 13).
     pub zones: Vec<Zone>,
     /// Owner data records (section 15).
@@ -49,6 +53,12 @@ pub struct Network {
     pub facts_devices: Vec<FactsDeviceRaw>,
     /// Switched shunt data records (section 17).
     pub switched_shunts: Vec<SwitchedShunt>,
+    /// Switched shunt per-bank decomposition rows (v0.8.8 table source).
+    pub switched_shunt_banks: Vec<SwitchedShuntBank>,
+    /// IBR devices derived from RAW + DYR records.
+    pub ibr_devices: Vec<IbrDevice>,
+    /// True when section 9 (multi-terminal DC) contains non-empty records.
+    pub has_multi_terminal_dc: bool,
     /// All dynamic model records parsed from a paired `.dyr` file.
     pub dyr_models: Vec<DyrModelData>,
     /// Dynamic model records parsed from a paired `.dyr` file.
@@ -410,6 +420,74 @@ pub struct Area {
 }
 
 // ---------------------------------------------------------------------------
+// Section 8/8b/11 — modern transmission records
+// ---------------------------------------------------------------------------
+
+/// Parser-normalized 2-terminal DC line record.
+#[derive(Debug, Default, Clone)]
+pub struct DcLine2W {
+    /// Stable converter-side identifier synthesized by parser.
+    pub dc_line_id: i32,
+    /// Endpoint bus number A.
+    pub from_bus_id: u32,
+    /// Endpoint bus number B.
+    pub to_bus_id: u32,
+    /// Circuit token.
+    pub ckt: Box<str>,
+    /// Series resistance in ohms.
+    pub r_ohm: f64,
+    /// Optional equivalent smoothing inductance in henry.
+    pub l_henry: Option<f64>,
+    /// Control mode token.
+    pub control_mode: Box<str>,
+    /// Optional active-power setpoint in MW.
+    pub p_setpoint_mw: Option<f64>,
+    /// Optional current setpoint in kA.
+    pub i_setpoint_ka: Option<f64>,
+    /// Optional voltage setpoint in kV.
+    pub v_setpoint_kv: Option<f64>,
+    /// Optional reactive injection at from terminal in MVAr.
+    pub q_from_mvar: Option<f64>,
+    /// Optional reactive injection at to terminal in MVAr.
+    pub q_to_mvar: Option<f64>,
+    /// Device status.
+    pub status: bool,
+    /// Optional free-form name.
+    pub name: Option<Box<str>>,
+    /// Converter type token (`lcc`, `vsc`, etc.).
+    pub converter_type: Box<str>,
+}
+
+/// Parser-normalized multi-section line group.
+#[derive(Debug, Default, Clone)]
+pub struct MultiSectionLine {
+    /// Stable logical line id synthesized by parser.
+    pub line_id: i32,
+    /// Endpoint bus number A.
+    pub from_bus_id: u32,
+    /// Endpoint bus number B.
+    pub to_bus_id: u32,
+    /// Circuit token.
+    pub ckt: Box<str>,
+    /// Optional branch ids for linked section rows (empty when unavailable).
+    pub section_branch_ids: Vec<i32>,
+    /// Total equivalent series resistance in pu.
+    pub total_r_pu: f64,
+    /// Total equivalent series reactance in pu.
+    pub total_x_pu: f64,
+    /// Total equivalent charging susceptance in pu.
+    pub total_b_pu: f64,
+    /// Continuous rating A in MVA.
+    pub rate_a_mva: f64,
+    /// Optional emergency rating B in MVA.
+    pub rate_b_mva: Option<f64>,
+    /// Logical line status.
+    pub status: bool,
+    /// Optional free-form name.
+    pub name: Option<Box<str>>,
+}
+
+// ---------------------------------------------------------------------------
 // Section 13 — Zone data
 // ---------------------------------------------------------------------------
 
@@ -498,6 +576,50 @@ pub struct SwitchedShunt {
     /// Flat list of per-step susceptance values in MVAr: N_k copies of B_k
     /// for each Nk/Bk pair in the RAW record.
     pub steps: Vec<f64>,
+    /// Compact N/B pairs retained for per-bank decomposition.
+    pub bank_pairs: Vec<(u32, f64)>,
+}
+
+/// Switched-shunt bank row for the v0.8.8 `switched_shunt_banks` table.
+#[derive(Debug, Default, Clone)]
+pub struct SwitchedShuntBank {
+    /// Integer shunt row id (1-indexed, write-order aligned).
+    pub shunt_id: i32,
+    /// Integer bank id (1-indexed within shunt).
+    pub bank_id: i32,
+    /// Step susceptance in MVAr.
+    pub b_mvar: f64,
+    /// Bank status.
+    pub status: bool,
+    /// Step index within the bank.
+    pub step: i32,
+}
+
+/// IBR device row for the v0.8.8 `ibr_devices` table.
+#[derive(Debug, Default, Clone)]
+pub struct IbrDevice {
+    /// Stable IBR identifier synthesized by converter.
+    pub device_id: i32,
+    /// Connected bus id.
+    pub bus_id: u32,
+    /// Device type token (`wind`, `solar`, `bess`, `generic_inverter`).
+    pub device_type: Box<str>,
+    /// Rated MVA.
+    pub rated_mva: f64,
+    /// Maximum active power in MW.
+    pub p_max_mw: f64,
+    /// Minimum reactive power in MVAr.
+    pub q_min_mvar: f64,
+    /// Maximum reactive power in MVAr.
+    pub q_max_mvar: f64,
+    /// Control mode token.
+    pub control_mode: Box<str>,
+    /// In-service status.
+    pub status: bool,
+    /// Flattened numeric parameter map entries (`key`, `value`).
+    pub params: Vec<(Box<str>, f64)>,
+    /// Optional display name.
+    pub name: Option<Box<str>>,
 }
 
 // ---------------------------------------------------------------------------

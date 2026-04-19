@@ -16,6 +16,40 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.2.3 -> v0.2.4: Canonical RPF v0.8.8 Sync
+
+Summary of changes:
+- Canonical RPF contract is now v0.8.8.
+- Four new required tables are now emitted on every export:
+    - `multi_section_lines`
+    - `dc_lines_2w`
+    - `switched_shunt_banks`
+    - `ibr_devices`
+- `branches` now includes nullable linkage fields:
+    - `parent_line_id`
+    - `section_index`
+- `metadata` now includes modern-grid fields:
+    - `modern_grid_profile`
+    - `ibr_penetration_pct`
+    - `has_ibr`
+    - `has_smart_valve`
+    - `has_multi_terminal_dc`
+    - `study_purpose`
+    - `scenario_tags`
+
+Behavior notes:
+- IBR extraction is DYR-first with RAW WMOD fallback.
+- IBR classes now distinguish `solar_pv`, `wind_type3`, `wind_type4`, `bess`, and `generic_ibr`.
+- DC/multi-section parsing uses robust token scanning and reports malformed/unsupported rows in parser logs.
+- `switched_shunts.b_steps` now exports capacitive steps; full per-bank steps are exported in `switched_shunt_banks`.
+- CLI supports metadata overrides for modern studies:
+    - `--study-purpose <TEXT>`
+    - `--scenario-tag <TAG>` (repeatable)
+
+Compatibility notes:
+- v0.8.8 readers require the new tables/columns; converters on older contracts must be upgraded or outputs regenerated.
+- This repository targets forward-only v0.8.8 output and does not preserve backward writer compatibility.
+
 ### v0.2.2 → v0.2.3: Canonical RPF v0.8.7 Sync
 
 **Summary of changes:**
