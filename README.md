@@ -9,11 +9,11 @@
 
 # raptrix-psse-rs
 
-PSS/E (`.raw` + `.dyr`) to Raptrix PowerFlow Interchange (`.rpf`) conversion — engineered for large cases and deterministic Arrow IPC output.
+PSS/E (`.raw` + `.dyr`) to Raptrix PowerFlow Interchange (`.rpf`) conversion — built for **large cases**, **deterministic** Arrow IPC output, and **modern grid** constructs (IBRs, rich metadata) while staying faithful to legacy PSS/E.
 
 Part of the Raptrix PowerFlow ecosystem.
 
-For production-scale grids and the commercial Newton-Raphson solver stack, contact **Raptrix PowerFlow** via the [GitHub organization](https://github.com/RaptrixPowerFlow).
+For production-scale deployments and the broader solver stack, contact **Raptrix PowerFlow** via the [GitHub organization](https://github.com/RaptrixPowerFlow).
 
 ## Ecosystem Repos
 
@@ -90,7 +90,7 @@ The converter emits the **18** required root tables from the locked v0.9.0 contr
 
 IBR modeling is **only** on `generators` (`is_ibr`, `ibr_subtype`); the legacy `ibr_devices` table is not emitted.
 
-Metadata includes modern-grid fields plus v0.9.0 nullable Sentinel-readiness columns (left **null** for normal PSS/E planning exports—PSS/E does not carry hour-ahead or SE semantics):
+Metadata includes modern-grid fields plus v0.9.0 **additional nullable columns** (left **null** for typical PSS/E planning exports when the source deck has no values for them):
 
 - modern_grid_profile
 - ibr_penetration_pct
@@ -105,7 +105,7 @@ Metadata includes modern-grid fields plus v0.9.0 nullable Sentinel-readiness col
 - pv_to_pq_switch_count
 - real_time_discovery
 
-The optional **`scenario_context`** root table (Sentinel) is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` until `raptrix-cim-arrow` exposes optional-root wiring for that table.
+The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 ## What's New in v0.3.2
 
@@ -113,7 +113,7 @@ The optional **`scenario_context`** root table (Sentinel) is **not** written by 
 - **CI on every PR**: `fmt`, `clippy`, and full `cargo test` on Ubuntu; public-safety, markdownlint, and version/CHANGELOG consistency checks (aligned with `raptrix-cim-rs` practice).
 - **Safer releases**: the **Release** workflow runs **`cargo test --workspace`** before building Windows / Linux / macOS binaries.
 
-See **v0.3.1** in [CHANGELOG.md](CHANGELOG.md) for the detailed RPF v0.9.0 schema alignment notes (tables, metadata, `case_mode`, `scenario_context` API).
+See **v0.3.1** in [CHANGELOG.md](CHANGELOG.md) for RPF v0.9.0 schema alignment notes (tables, metadata, `case_mode`, optional `scenario_context` API).
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -200,17 +200,15 @@ End-to-end timings are **parse RAW (+ optional DYR) + build Arrow tables + write
 
 These are **local engineering reference numbers**, not vendor benchmarks. Use them to spot regressions between commits; re-run `cargo test --release --test golden_test -- --nocapture` or `./scripts/verify-external-golden.sh` on your host to refresh.
 
-## Solver and RPF completeness (known gaps)
+## Known fidelity limits (today’s export)
 
-PSS/E → RPF conversion is faithful for parsed sections, but some source data is **not ingested** or is **simplified** today. Downstream solvers should treat the following as limitations unless you augment the RPF elsewhere:
+The converter aims for **predictable, contract-aligned** `.rpf` output. Like any interchange layer, **not every PSS/E field becomes a first-class column**—some are folded into aggregates, omitted when the RPF schema has no home, or left for consumers to interpret from raw dynamics rows. Authoritative per-field rules live in [`docs/psse-mapping.md`](docs/psse-mapping.md); highlights include:
 
-- **`write_psse_to_rpf` roadmap notes**: the rustdoc “C++ port TODO” block is a parity checklist (vector groups, richer DYR families, etc.); **core** `p_sched` / `q_sched` / shunt aggregation is implemented via `build_bus_aggregates` and is described in [`docs/psse-mapping.md`](docs/psse-mapping.md) — treat the checklist as *not exhaustive* of current code.
-- **Three-winding star impedance**: `transformers_3w` uses placeholder **winding1 R/X** until per-winding decomposition is implemented (`lib.rs` TODO near the 3W export).
-- **RAW sections skipped by the parser**: induction machines (`InductionMachine`); PSS/E v35 **SYSTEM-WIDE DATA** and **SYSTEM SWITCHING DEVICE** blocks are skipped (see `parser.rs`). Unsupported or malformed DC and multi-section rows are counted and logged, not silently accepted.
-- **Fields documented as not stored**: e.g. bus **EVHI/EVLO** and other entries marked *(not stored)* in [`docs/psse-mapping.md`](docs/psse-mapping.md) have no v0.9.0 column — they are dropped on import.
-- **Dynamics**: DYR coverage focuses on supported machine / IBR model families; records outside that set are not mapped into `dynamics_models` (see mapping doc and parser logs).
+- **Aggregates vs. raw fields**: e.g. line-end shunts feed bus `g_shunt` / `b_shunt`; loads export the PQ portion documented in the mapping doc.
+- **Parser coverage**: some RAW sections and rows are skipped or rejected with counts logged; see the mapping doc and `parser.rs` for current behavior.
+- **Dynamics**: DYR numeric rows are preserved where parsed; attachment and interpretation follow the mapping doc—validate against your toolchain.
 
-When in doubt, cross-check [`docs/psse-mapping.md`](docs/psse-mapping.md) and the golden tests for your case class.
+Golden tests (with local external inputs) help catch regressions; they are not a statement of future scope.
 
 ## License
 

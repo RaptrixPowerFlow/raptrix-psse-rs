@@ -16,6 +16,8 @@ This document provides the field-by-field rules for translating PSS/E RAW (v23�
 and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.0**) Apache
 Arrow schema.
 
+**Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
+
 > **Fidelity policy**: numeric fields are written exactly as they appear in the
 > source RAW file unless an explicit normalisation rule is documented below.
 > No value clamping, substitution, or scaling is applied at parse time except
@@ -36,10 +38,10 @@ Arrow schema.
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
-- `metadata` includes modern-grid fields plus nullable Sentinel-readiness columns (typically **null** for PSS/E-only exports):
+- `metadata` includes modern-grid fields plus additional nullable v0.9.0 columns (typically **null** for PSS/E-only exports):
   - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
-- Optional **`scenario_context`** table is a Sentinel export feature; this converter does not emit it by default.
+- Optional **`scenario_context`** table: not emitted by this converter by default; see interchange contract for when writers may populate it.
 
 ---
 
@@ -154,8 +156,7 @@ where they belong in fixed shunt section 3.
 | — | — | `name` | Always null (PSS/E loads have no display name). |
 
 > **ZIP load note**: RPF v0.8.8 `loads` carries only the constant-power (PQ) portion.
-> IP/IQ constant-current and YP/YQ constant-admittance components are dropped.
-> Future RPF versions will add explicit ZIP columns.
+> IP/IQ constant-current and YP/YQ constant-admittance components are dropped for this export path (see load field table above).
 
 ---
 
@@ -286,7 +287,7 @@ At export time the converter enforces one representation policy per file:
 | NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Rated kV; null if NOMV2 = 0. |
 | — | — | — | `nominal_tap_ratio` | Derived as `NOMV1 / NOMV2` when both rated voltages are present; falls back to `1.0` otherwise. |
 | — | — | — | `vector_group` | Always `"unknown"`. PSS/E RAW does not directly encode IEC vector-group semantics; `CW` / `CZ` describe voltage and impedance coding, not winding connection group. |
-| — | — | — | `winding1_r` / `winding1_x` | Always 0.0 (TODO: per-winding impedance decomposition). |
+| — | — | — | `winding1_r` / `winding1_x` | Placeholder 0.0 in this exporter; series branch R/X carry the modeled impedance. |
 | — | — | — | `winding2_r` / `winding2_x` | Always 0.0. |
 | — | — | — | `name` | Always null. |
 
@@ -369,8 +370,7 @@ input deck.
 | Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. |
 
 **Interaction with `generators` table**: a supported synchronous-machine subset
-is still lifted into the `generators` table so the solver has direct access to
-machine `h`, `xd_prime`, and `D` values.
+is lifted into the `generators` table so common machine parameters (`h`, `xd_prime`, `D`) are available on generator rows where DYR data allows.
 
 | Supported machine family | `generators.h` source | `generators.D` source | `generators.xd_prime` source |
 |---|---|---|---|
@@ -383,29 +383,29 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 ---
 
-## Sections not yet implemented
+## RAW sections — coverage snapshot
 
-| PSS/E section | RPF table | Status |
+| PSS/E section | RPF table | Status (this crate) |
 |---|---|---|
-| Section 8 — Two-terminal DC | — | Skipped at parse time (records read but not converted). |
-| Section 9 — VSC DC | — | Skipped. |
-| Section 10 — Impedance correction | — | Skipped. |
-| Section 11 — Multi-terminal DC | — | Skipped. |
-| Section 12 — Multi-section line | — | Skipped. |
-| Section 14 — Inter-area transfer | — | Skipped. |
-| Section 18 — FACTS devices | `branches` FACTS columns | Partially implemented: parser preserves section-18 rows and populates branch FACTS fields for safe unique bus-pair matches. Model-specific decoding remains in progress. |
-| Section 19 — GNE devices | — | Skipped. |
-| Section 20 — Induction machines | — | Skipped. |
-| v35 System Switching Devices | — | State-machine advances past them; records not converted. |
+| Section 8 — Two-terminal DC | — | Not converted to native DC tables in the path documented here. |
+| Section 9 — VSC DC | — | Not converted here. |
+| Section 10 — Impedance correction | — | Not converted here. |
+| Section 11 — Multi-terminal DC | — | Not converted here. |
+| Section 12 — Multi-section line | — | Not converted here. |
+| Section 14 — Inter-area transfer | — | Not converted here. |
+| Section 18 — FACTS devices | `branches` FACTS columns | Subset: parser may attach FACTS metadata to matching branches when the deck allows a safe mapping. |
+| Section 19 — GNE devices | — | Not converted here. |
+| Section 20 — Induction machines | — | Not converted here. |
+| v35 System Switching Devices | — | Parser advances past these records without emitting them. |
 
-**DYR limitations still present**:
+**DYR → RPF behavior (factual)**
 
-| DYR capability | Status |
+| Topic | Behavior |
 |---|---|
-| Numeric model-row preservation into `dynamics_models` | Implemented for all parsed records. |
-| Promotion of synchronous-machine parameters into `generators` | Implemented for `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, `GENCLS`. |
-| Solver-specific interpretation of exciters, governors, PSS, renewable controls | Deferred to downstream solver logic. Converter preserves the records but does not collapse them into higher-level solved-state fields. |
-| Non-numeric user-defined model payloads | Not represented in RPF v0.8.7 because `dynamics_models.params` is `Map<Utf8, Float64>`. |
+| Numeric model rows in `dynamics_models` | Written for parsed DYR records. |
+| Synchronous-machine parameters on `generators` | Populated for `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, `GENCLS` where parameters map cleanly. |
+| Other DYR families (e.g. exciters, governors, PSS, renewables) | Retained as `dynamics_models` rows; consumers read `model_type` / `params` as needed. |
+| Non-numeric / user-defined payloads | Not represented in `dynamics_models.params` (`Map<Utf8, Float64>` only). |
 
 ---
 

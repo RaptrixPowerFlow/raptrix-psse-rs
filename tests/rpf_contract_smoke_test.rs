@@ -6,8 +6,8 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! Smoke tests for the **locked RPF interchange contract** (current `raptrix-cim-arrow` /
-//! schema-contract expectations): generator hierarchy / IBR / ownership, Sentinel metadata
-//! nullability on legacy PSS/E exports, `scenario_context` write guard, and `case_mode` override.
+//! schema-contract expectations): generator hierarchy / IBR / ownership, nullable extended
+//! metadata on typical PSS/E exports, `scenario_context` write guard, and `case_mode` override.
 //! Names here are intentionally **not** tied to a single schema patch version.
 
 use std::{
@@ -33,7 +33,7 @@ fn unique_temp_path(stem: &str, ext: &str) -> PathBuf {
 }
 
 #[test]
-fn generators_hierarchy_ownership_and_sentinel_metadata_smoke() {
+fn generators_hierarchy_ownership_and_metadata_smoke() {
     let raw_path = unique_temp_path("rpf_contract_smoke", "raw");
     let dyr_path = unique_temp_path("rpf_contract_smoke", "dyr");
     let out_path = unique_temp_path("rpf_contract_smoke", "rpf");
@@ -173,7 +173,7 @@ CONTRACT SMOKE
         .expect("hour_ahead_uncertainty_band must be Float64");
     assert!(
         band.is_null(0),
-        "legacy PSS/E export keeps Sentinel fields null"
+        "legacy PSS/E export keeps extended metadata columns null"
     );
 
     let _ = fs::remove_file(raw_path);
@@ -182,7 +182,7 @@ CONTRACT SMOKE
 }
 
 #[test]
-fn scenario_context_rows_error_until_arrow_writer_support() {
+fn scenario_context_rows_rejected_when_unsupported() {
     let raw_path = unique_temp_path("sc_ctx", "raw");
     let out_path = unique_temp_path("sc_ctx", "rpf");
 

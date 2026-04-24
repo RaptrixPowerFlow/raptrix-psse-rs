@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional **`external-golden.yml`** workflow (manual dispatch) runs the verify script with `RELAX_MISSING=1` on hosted runners without licensed inputs.
 - **README**: performance snapshot table, expanded testing / WSL / verification docs, and a short “solver completeness” gap list.
 
+### Fixed
+
+- **Markdownlint**: MD032 (blank lines around lists) in `.githooks/README.md`, `CHANGELOG.md`, and `MIGRATION.md`; MD004 (dash list style) in `MIGRATION.md` “Performance tips”.
+- **CI `golden_test`**: IEEE 14/118 and ACTIVSg25k/70k cases now **skip** when the corresponding `tests/data/external` RAW is missing (same pattern as ERCOT/NYISO/EI), so default GitHub runners pass without licensed fixtures.
+- **Documentation scope**: README / CHANGELOG / MIGRATION / `docs/psse-mapping.md` and public rustdoc use neutral, release-focused wording for optional v0.9.0 metadata and `scenario_context`; MIGRATION appendix trimmed to schema deltas plus pointers to mapping + golden docs (interchange column names and behavior unchanged).
+
 ### Schema (unchanged from 0.3.1 line)
 
 - Output remains RPF **v0.9.0** via `raptrix-cim-arrow` from `main` (see 0.3.1 changelog for field/table details).
@@ -42,10 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Schema Alignment
 
 - Completed full canonical RPF **v0.9.0** support (via `raptrix-cim-arrow` on `main`): **18** required root tables; removed `ibr_devices`; IBRs unified on `generators`.
-- Extended **`metadata`** with five nullable v0.9.0 Sentinel-readiness fields (null for legacy PSS/E exports).
-- Extended stub **`contingencies`** batch with six nullable v0.9.0 Sentinel columns (null for planning exports).
-- Added **`case_mode`** override path (`ExportOptions` / CLI `--case-mode`) including `hour_ahead_advisory`.
-- Reserved **`scenario_context`** API (`ExportOptions::scenario_context_rows`); non-empty rows error until optional-root IPC writer support lands in `raptrix-cim-arrow`.
+- Extended **`metadata`** with five additional nullable columns in v0.9.0 (typically **null** for PSS/E-only exports; see schema-contract).
+- Extended stub **`contingencies`** batch with six additional nullable columns for the same contract (null for minimal planning exports from this converter).
+- Added **`case_mode`** override path (`ExportOptions` / CLI `--case-mode`), including enum values defined in the interchange contract (e.g. `hour_ahead_advisory`).
+- **`scenario_context`**: `ExportOptions::scenario_context_rows` is reserved; non-empty input errors when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build.
 - Added explicit `owner_id` linkage on required exported tables.
 - Migrated generator export to unified hierarchical generator shape.
 
@@ -61,8 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Major Features
 
 - **Stricter Parser Robustness**: Hardened parsing for DC lines and multi-section lines with malformed record detection and informative logging.
-- **Richer IBR Classification**: Enhanced device taxonomy distinguishes `solar_pv`, `wind_type3`, `wind_type4`, `bess`, and `generic_ibr` with comprehensive DYR model family matching.
-- **Enterprise-Grade Parser Tests**: New synthetic RAW snippet test suite covering edge cases and regression prevention for DC/multi-section/malformed records.
+- **Richer IBR classification**: Device taxonomy distinguishes `solar_pv`, `wind_type3`, `wind_type4`, `bess`, and `generic_ibr` with broader DYR model-family matching.
+- **Parser regression coverage**: Synthetic RAW snippets for DC lines, multi-section lines, and malformed-row handling.
 
 ### Improvements
 
@@ -117,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improvements
 
-- Switched shunt export now splits steps by bank for solver clarity.
+- Switched shunt export now splits steps by bank for clearer bank-level representation.
 - Parser logs all section-level statistics and rejection counts.
 - Deterministic zero-row table emission ensures downstream reproducibility.
 
@@ -128,7 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Schema Migration
 
-See [MIGRATION.md](MIGRATION.md#v020-v023-canonical-rpf-v088-sync) for full details.
+See [MIGRATION.md](MIGRATION.md) (RPF v0.8.8 sync section) for full details.
 
 ---
 
@@ -212,6 +218,7 @@ git push origin v0.3.2
 ```
 
 The GitHub Actions `release` workflow will automatically:
+
 - Trigger on tag push (`v*.*.*` pattern).
 - Run `cargo test --workspace`, then build release binaries for Windows (x86_64), Linux (x86_64), and macOS (arm64).
 - Create a GitHub Release with auto-generated release notes.

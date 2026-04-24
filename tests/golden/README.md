@@ -7,101 +7,76 @@
   https://mozilla.org/MPL/2.0/.
 -->
 
-# Golden-file tests for raptrix-psse-rs
+# Golden regression outputs (`tests/golden/`)
 
 **raptrix-psse-rs**  
 Copyright (c) 2026 Raptrix PowerFlow
 
-This directory holds generated `.rpf` outputs used to drive regression tests for
-the PSS/E converter. Running `cargo test` rewrites these artifacts for cases
-whose licensed inputs are present under `tests/data/external/`.
+Integration tests write `.rpf` artifacts here **when** the matching inputs exist
+locally under `tests/data/external/` (that tree is **gitignored**—do not commit
+vendor or licensed RAW/DYR files to the public repo).
+
+Generated `tests/golden/*.rpf` files are also **gitignored** by default; they
+exist for local inspection and regression, not as checked-in fixtures.
 
 ---
 
-## Directory structure
+## Layout
 
-```
+```text
 tests/golden/
-├── README.md                 ← this file
-└── <casename>.rpf            ← generated Raptrix PowerFlow Interchange output
+├── README.md          ← this file
+└── <casename>_*.rpf   ← produced by `golden_test` / manual convert (local only)
 
-tests/data/external/
-├── <casename>.RAW            ← licensed or external PSS/E RAW input
-└── <casename>.dyr            ← optional PSS/E DYR input
+tests/data/external/  ← you provide inputs here (not in git)
+├── <casename>.RAW
+└── <casename>.dyr     ← optional
 ```
 
 ---
 
-## Workflow
+## Running regressions locally
 
-### 1 — Add an input file
-
-Place the `.RAW` file and optional `.dyr` file under `tests/data/external/`.
-Licensed planning cases stay out of the golden directory; only the generated
-`.rpf` outputs are checked in under `tests/golden/`.
-
-### 2 — Generate the reference output
-
-Run the regression suite after changing the converter:
+1. Place inputs under `tests/data/external/` using the paths referenced in `tests/golden_test.rs`.
+2. Run:
 
 ```bash
-cargo test -- --nocapture
+cargo test --release --test golden_test -- --nocapture
 ```
 
-To regenerate a single case manually:
+3. Inspect outputs under `tests/golden/` if needed.
+
+To convert a single case with the CLI:
 
 ```bash
 cargo run --release -- convert \
   --raw tests/data/external/<casename>.RAW \
   [--dyr tests/data/external/<casename>.dyr] \
-  --output tests/golden/<casename>.rpf
+  --output tests/golden/<casename>_static.rpf
 ```
-
-### 3 — Write the regression test
-
-Add a `#[test]` in `tests/` (or `src/`) that:
-
-1. Calls `write_psse_to_rpf` for the relevant RAW/DYR pair.
-2. Asserts table counts and key solver-facing invariants.
-3. Leaves the regenerated `.rpf` under `tests/golden/` for inspection.
-4. Uses `summarize_rpf`, `rpf_file_metadata`, or `read_rpf_tables` to validate the output contract.
-
-Example skeleton:
-
-```rust
-#[test]
-fn golden_texas2k_dynamic() {
-  raptrix_psse_rs::write_psse_to_rpf(
-    "tests/data/external/Texas2k_series25_case1_summerpeak.RAW",
-    Some("tests/data/external/Texas2k_series25_case1_summerpeak.dyr"),
-    "tests/golden/Texas2k_series25_dynamic.rpf",
-  )
-  .expect("conversion failed");
-
-  let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(
-    "tests/golden/Texas2k_series25_dynamic.rpf",
-  ))
-  .expect("summary failed");
-
-  assert!(summary.has_all_canonical_tables);
-  assert!(
-    summary.tables.iter().any(|t| t.table_name == "dynamics_models" && t.rows > 0)
-  );
-}
-```
-
-### 4 — Commit both files
-
-Commit the `.raw` input and the `.rpf` golden output together so that CI can
-reproduce the comparison deterministically.
 
 ---
 
-## Updating golden files
+## Adding a new regression
 
-If a deliberate converter change updates the generated `.rpf` files:
+1. Add a test in `tests/golden_test.rs` that **skips** when the expected external
+   file is missing (so CI without licensed data stays green).
+2. Assert interchange invariants that matter for your workflow (table presence,
+   row counts, metadata keys)—keep assertions **factual**, not roadmap-shaped.
+3. Document any new filename conventions here in one line so maintainers know
+   where to drop local inputs.
 
-1. Re-generate the golden file with the new converter.
-2. Review the diff carefully.
-3. Commit the updated golden file with a clear commit message explaining the
-   format change.
+Example shape (paths illustrative only):
+
+```rust
+#[test]
+fn golden_example_static() {
+    const RAW: &str = "tests/data/external/Example.RAW";
+    if !std::path::Path::new(RAW).exists() {
+        eprintln!("[skip] {RAW} not found");
+        return;
+    }
+    raptrix_psse_rs::write_psse_to_rpf(RAW, None, "tests/golden/Example_static.rpf")
+        .expect("convert");
+}
+```
