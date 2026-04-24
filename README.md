@@ -37,7 +37,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical v0.9.0 required root tables (zero-row where applicable) so downstream pipelines stay deterministic.
+- Always emit the **18** canonical v0.9.1 required root tables (zero-row where applicable) so downstream pipelines stay deterministic.
 
 ## CLI Reference
 
@@ -65,9 +65,9 @@ raptrix-psse-rs view --input <FILE>
 
 Prints a summary of every table in the .rpf file with row counts.
 
-## RPF v0.9.0 coverage
+## RPF v0.9.1 coverage
 
-The converter emits the **18** required root tables from the locked v0.9.0 contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked v0.9.1 contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -90,7 +90,7 @@ The converter emits the **18** required root tables from the locked v0.9.0 contr
 
 IBR modeling is **only** on `generators` (`is_ibr`, `ibr_subtype`); the legacy `ibr_devices` table is not emitted.
 
-Metadata includes modern-grid fields plus v0.9.0 **additional nullable columns** (left **null** for typical PSS/E planning exports when the source deck has no values for them):
+Metadata includes modern-grid fields plus v0.9.0/0.9.1 **additional nullable columns** (left **null** for typical PSS/E planning exports when the source deck has no values for them):
 
 - modern_grid_profile
 - ibr_penetration_pct
@@ -107,13 +107,13 @@ Metadata includes modern-grid fields plus v0.9.0 **additional nullable columns**
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
-## What's New in v0.3.3
+## What's New in v0.3.4
 
-- **Bug-fix release** (patch **0.3.3**): correct PSS/E bus **`IDE`** mapping (PV vs PQ), v35 bus layout after **`BASKV`**, export **fidelity** (no `v_mag_set` / NV limit rewriting), and full generator **RAW** numerics in **`generators.params`** for solver parity. RPF remains **v0.9.0** — regenerate golden `.rpf` if you rely on bit-identical bus typing or setpoints from older converter builds.
+- **Schema-alignment release** (patch **0.3.4**): align to RPF **v0.9.1** and populate `loads` ZIP fidelity columns (`p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`) from RAW `IP/IQ/YP/YQ`, plus emit root metadata `rpf.loads.zip_fidelity_presence`.
 - **CI on every PR**: `fmt`, `clippy`, and full `cargo test` on Ubuntu; public-safety, markdownlint, and version/CHANGELOG consistency checks (aligned with `raptrix-cim-rs` practice).
 - **Safer releases**: the **Release** workflow runs **`cargo test --workspace`** before building Windows / Linux / macOS binaries.
 
-See **v0.3.1**–**v0.3.2** in [CHANGELOG.md](CHANGELOG.md) for RPF v0.9.0 schema alignment and CI/release notes.
+See [CHANGELOG.md](CHANGELOG.md) for full per-release schema alignment and CI/release notes.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -150,7 +150,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to v0.9.0 `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to v0.9.1 `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
 
 ### Windows, OneDrive, and WSL
 

@@ -17,6 +17,18 @@ max_bytes=$((10 * 1024 * 1024))
 
 pattern='BEGIN RSA PRIVATE KEY|BEGIN PRIVATE KEY|BEGIN DSA PRIVATE KEY|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AKIA[0-9A-Z]{16}|password=|api_key|API_KEY|token=|-----BEGIN OPENSSH PRIVATE KEY-----'
 
+# Files that intentionally contain detection patterns used by repo safety tooling.
+is_content_scan_allowlisted() {
+  case "$1" in
+    scripts/public-safety-check.sh|.githooks/pre-commit)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 if [[ "$MODE" == "staged" ]]; then
   mapfile -d '' files < <(git diff --cached --name-only --diff-filter=ACMR -z)
 else
@@ -67,13 +79,13 @@ for file in "${files[@]}"; do
   fi
 
   if [[ "$MODE" == "staged" ]]; then
-    if [[ "$file" != "scripts/public-safety-check.sh" ]] && git show ":$file" 2>/dev/null | grep -I -n -E --quiet "$pattern"; then
+    if ! is_content_scan_allowlisted "$file" && git show ":$file" 2>/dev/null | grep -I -n -E --quiet "$pattern"; then
       echo "[public-safety] potential secret in staged file: $file"
       git show ":$file" 2>/dev/null | grep -I -n -E "$pattern" | sed -n '1,5p'
       bad=1
     fi
   else
-    if [[ "$file" != "scripts/public-safety-check.sh" ]] && [[ -f "$file" ]] && grep -I -n -E --quiet "$pattern" "$file"; then
+    if ! is_content_scan_allowlisted "$file" && [[ -f "$file" ]] && grep -I -n -E --quiet "$pattern" "$file"; then
       echo "[public-safety] potential secret in tracked file: $file"
       grep -I -n -E "$pattern" "$file" | sed -n '1,5p'
       bad=1

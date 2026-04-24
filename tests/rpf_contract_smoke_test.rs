@@ -18,9 +18,11 @@ use std::{
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, MapArray, StringArray};
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_MODE, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_METADATA,
-    TABLE_OWNERS,
+    METADATA_KEY_CASE_MODE, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS,
+    TABLE_METADATA, TABLE_OWNERS,
 };
+
+const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
 
 fn unique_temp_path(stem: &str, ext: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
@@ -193,9 +195,157 @@ CONTRACT SMOKE
         "legacy PSS/E export keeps extended metadata columns null"
     );
 
+    let loads = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_LOADS)
+        .map(|(_, batch)| batch)
+        .expect("missing loads table");
+    let p_i = loads
+        .column_by_name("p_i_pu")
+        .expect("missing loads.p_i_pu")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("loads.p_i_pu must be Float64");
+    let q_i = loads
+        .column_by_name("q_i_pu")
+        .expect("missing loads.q_i_pu")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("loads.q_i_pu must be Float64");
+    let p_y = loads
+        .column_by_name("p_y_pu")
+        .expect("missing loads.p_y_pu")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("loads.p_y_pu must be Float64");
+    let q_y = loads
+        .column_by_name("q_y_pu")
+        .expect("missing loads.q_y_pu")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("loads.q_y_pu must be Float64");
+    assert_eq!(p_i.value(0), 0.0);
+    assert_eq!(q_i.value(0), 0.0);
+    assert_eq!(p_y.value(0), 0.0);
+    assert_eq!(q_y.value(0), 0.0);
+
+    let root_meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("rpf metadata");
+    assert_eq!(
+        root_meta
+            .get(METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE)
+            .map(String::as_str),
+        Some("complete"),
+        "loads ZIP fidelity should be complete when all ZIP terms are present in source rows"
+    );
+
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(dyr_path);
     let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn loads_zip_fidelity_presence_classification_smoke() {
+    let raw_not_available = unique_temp_path("zip_presence_na", "raw");
+    let out_not_available = unique_temp_path("zip_presence_na", "rpf");
+    let raw_partial = unique_temp_path("zip_presence_partial", "raw");
+    let out_partial = unique_temp_path("zip_presence_partial", "rpf");
+
+    let raw_not_available_text = r#"0, 100.0, 33, 0, 0, 60.0 / ZIP_PRESENCE_NA
+ZIP PRESENCE
+ZIP PRESENCE
+1,'BUS1',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'BUS2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+2,'1',1,1,1,40.0,15.0
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+1,1,0.0,10.0,'AREA1'
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+1,'ZONE1'
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+1,'OWNER1'
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_not_available, raw_not_available_text).expect("write not_available raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_not_available.to_str().unwrap(),
+        None,
+        out_not_available.to_str().unwrap(),
+    )
+    .expect("conversion should succeed for not_available path");
+    let meta_not_available = raptrix_cim_arrow::rpf_file_metadata(&out_not_available)
+        .expect("metadata read for not_available");
+    assert_eq!(
+        meta_not_available
+            .get(METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE)
+            .map(String::as_str),
+        Some("not_available")
+    );
+
+    let raw_partial_text = r#"0, 100.0, 33, 0, 0, 60.0 / ZIP_PRESENCE_PARTIAL
+ZIP PRESENCE
+ZIP PRESENCE
+1,'BUS1',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'BUS2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+3,'BUS3',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+2,'1',1,1,1,40.0,15.0
+3,'1',1,1,1,20.0,8.0,1.0,2.0,3.0,4.0,1,1,0
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+1,1,0.0,10.0,'AREA1'
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+1,'ZONE1'
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+1,'OWNER1'
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_partial, raw_partial_text).expect("write partial raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_partial.to_str().unwrap(),
+        None,
+        out_partial.to_str().unwrap(),
+    )
+    .expect("conversion should succeed for partial path");
+    let meta_partial =
+        raptrix_cim_arrow::rpf_file_metadata(&out_partial).expect("metadata read for partial");
+    assert_eq!(
+        meta_partial
+            .get(METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE)
+            .map(String::as_str),
+        Some("partial")
+    );
+
+    let _ = fs::remove_file(raw_not_available);
+    let _ = fs::remove_file(out_not_available);
+    let _ = fs::remove_file(raw_partial);
+    let _ = fs::remove_file(out_partial);
 }
 
 #[test]

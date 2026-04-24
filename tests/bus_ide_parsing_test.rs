@@ -53,7 +53,11 @@ L3
     let by_id: std::collections::HashMap<u32, BusType> =
         n.buses.iter().map(|b| (b.i, b.ide)).collect();
     assert_eq!(by_id[&1], BusType::LoadBus);
-    assert_eq!(by_id[&2], BusType::GeneratorPV, "PSS/E IDE=2 is PV (interchange type 3)");
+    assert_eq!(
+        by_id[&2],
+        BusType::GeneratorPV,
+        "PSS/E IDE=2 is PV (interchange type 3)"
+    );
     assert_eq!(
         by_id[&3],
         BusType::GeneratorPQ,
@@ -93,7 +97,10 @@ L3
     let n = write_parse(raw);
     let b1 = n.buses.iter().find(|b| b.i == 1).expect("bus 1");
     assert_eq!(b1.ide, BusType::GeneratorPV);
-    assert!((b1.vm - 1.03125).abs() < 1e-9, "VM must follow OWNER column, not substation token");
+    assert!(
+        (b1.vm - 1.03125).abs() < 1e-9,
+        "VM must follow OWNER column, not substation token"
+    );
     assert!((b1.va - 0.50).abs() < 1e-9);
     assert_eq!(b1.area, 7);
     assert_eq!(b1.zone, 26);

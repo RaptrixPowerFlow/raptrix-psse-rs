@@ -23,6 +23,7 @@ tests/golden/*.rpf
 
 # Internal private marketing guidance file (must never be committed).
 INTERNAL-MARKETING-GUIDE.md
+INTERNAL-PSSE-RPF-ROADMAP.md
 
 # Cursor AI project rules — internal agent guidance; not committed on public repo.
 .cursor/rules/

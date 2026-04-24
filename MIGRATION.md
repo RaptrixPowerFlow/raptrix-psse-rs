@@ -18,9 +18,29 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.4: RPF v0.9.0 -> **v0.9.1** (Non-breaking)
+
+`raptrix-psse-rs` now aligns with the additive **RPF v0.9.1** load-model extension from the linked `raptrix-cim-arrow` contract.
+
+**What changed:**
+
+- `loads` now exports ZIP terms to new nullable columns:
+  - `p_i_pu = IP / SBASE`
+  - `q_i_pu = IQ / SBASE`
+  - `p_y_pu = YP / SBASE`
+  - `q_y_pu = YQ / SBASE`
+- Existing `p_pu` / `q_pu` semantics are unchanged (`PL/SBASE`, `QL/SBASE`).
+- Root file metadata now includes `rpf.loads.zip_fidelity_presence`:
+  - `not_available` | `partial` | `complete`
+
+**Compatibility:**
+
+- Additive only: no required root table order changes and no field removals/renames.
+- Readers that ignore unknown columns continue to work; v0.9.1-aware readers can consume ZIP fidelity directly.
+
 ### v0.3.1: RPF v0.8.9 generator layout → **v0.9.0** contract (Breaking)
 
-Crate **0.3.3** tracks the latest **`raptrix-cim-arrow`** contract (currently **RPF v0.9.0**). Releases **0.3.1** through **0.3.3** cover the hierarchical generator model and the v0.9.0 wire shape (no `ibr_devices`; extended metadata / contingencies). **0.3.3** improves RAW/DYR parsing and export fidelity without changing the interchange schema version.
+Crate **0.3.4** tracks the latest **`raptrix-cim-arrow`** contract (currently **RPF v0.9.1**). Releases **0.3.1** through **0.3.4** cover the hierarchical generator model and the v0.9.x wire shape (no `ibr_devices`; extended metadata / contingencies). **0.3.4** adds ZIP load-fidelity export columns and metadata without breaking root/table compatibility.
 
 **Generator & ownership (from v0.8.9-era alignment):**
 
@@ -28,9 +48,9 @@ Crate **0.3.3** tracks the latest **`raptrix-cim-arrow`** contract (currently **
 - Legacy flat RAW units export as `hierarchy_level = "unit"`, `parent_generator_id = null`, `aggregation_count = null`.
 - `generators.owner_id`, `buses.owner_id`, `branches.owner_id`; `owners` shape with `short_name`, `type`, `params`.
 
-**v0.9.0 wire contract:**
+**v0.9.x wire contract:**
 
-- Canonical RPF is **v0.9.0** (see `raptrix-cim-rs` `docs/schema-contract.md`).
+- Canonical RPF is **v0.9.1** (see `raptrix-cim-rs` `docs/schema-contract.md`).
 - **`ibr_devices` removed** — **18** required root tables; IBRs only on **`generators`**.
 - **`metadata`**: five additional nullable columns in v0.9.0 (default **null** for PSS/E-only exports): `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`.
 - **`contingencies`**: six additional nullable columns in v0.9.0 (null for minimal exports from this converter).
