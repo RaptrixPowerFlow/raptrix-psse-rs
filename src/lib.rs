@@ -14,6 +14,21 @@
 //!
 //! Serialisation to `.rpf` is delegated to the [`raptrix_cim_arrow`] crate.
 //!
+//! # Fidelity
+//!
+//! The converter **maps** PSS/E `.raw` / `.dyr` into the interchange schema and
+//! adds **context** only where the contract requires it (metadata timestamps,
+//! deterministic `bus_uuid`, `case_fingerprint`, optional CLI metadata). Deck
+//! numbers and codes are **not** clamped or solver-tuned here: parsed values are
+//! written as-is, except for schema-defined structure (per-unit scaling by
+//! `SBASE`, bus-table **aggregates** in `docs/psse-mapping.md`, and PSS/E-documented
+//! defaults when a token is missing). One explicit **interchange boundary**:
+//! after aggregating reactive limits onto a bus, if `q_min` > `q_max` the exporter
+//! **swaps** them so the bus row obeys min/max ordering (PSS/E `QB`/`QT` on each
+//! `generators` row stay as in the deck). Extra RAW numerics without dedicated
+//! columns (e.g. generator `VS` / `IREG` / impedance taps) are packed into typed
+//! `params` maps where the schema provides them.
+//!
 //! # Branding
 //! raptrix-psse-rs
 //! Copyright (c) 2026 Raptrix PowerFlow
@@ -193,7 +208,6 @@ pub fn write_psse_to_rpf_with_options(
 
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
     let bus_aggregates = build_bus_aggregates(&network);
-    let connected_buses = build_connected_bus_set(&network);
     let bus_nominal_kv = build_bus_nominal_kv_map(&network);
     let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
         network.case_id.sbase
@@ -215,7 +229,7 @@ pub fn write_psse_to_rpf_with_options(
     );
     table_batches.insert(
         TABLE_BUSES,
-        build_buses_batch(&network.buses, &bus_aggregates, &connected_buses)?,
+        build_buses_batch(&network.buses, &bus_aggregates)?,
     );
     table_batches.insert(
         TABLE_BRANCHES,
@@ -271,11 +285,7 @@ pub fn write_psse_to_rpf_with_options(
     };
     table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
 
-    validate_export_invariants(
-        &table_batches,
-        &connected_buses,
-        options.transformer_representation_mode,
-    )?;
+    validate_export_invariants(&table_batches, options.transformer_representation_mode)?;
 
     let root_options = RootWriteOptions {
         contingencies_are_stub: true,
@@ -485,50 +495,6 @@ fn build_bus_nominal_kv_map(network: &Network) -> HashMap<u32, f64> {
         .collect::<HashMap<_, _>>()
 }
 
-fn build_connected_bus_set(network: &Network) -> HashSet<u32> {
-    let mut connected = HashSet::new();
-
-    for branch in &network.branches {
-        if branch.st != 0 {
-            connected.insert(branch.i);
-            connected.insert(branch.j);
-        }
-    }
-
-    for transformer in &network.transformers {
-        if transformer.stat != 0 {
-            connected.insert(transformer.i);
-            connected.insert(transformer.j);
-        }
-    }
-
-    for generator in &network.generators {
-        if generator.stat != 0 {
-            connected.insert(generator.i);
-        }
-    }
-
-    for load in &network.loads {
-        if load.status != 0 {
-            connected.insert(load.i);
-        }
-    }
-
-    for shunt in &network.fixed_shunts {
-        if shunt.status != 0 {
-            connected.insert(shunt.i);
-        }
-    }
-
-    for shunt in &network.switched_shunts {
-        if shunt.stat != 0 {
-            connected.insert(shunt.i);
-        }
-    }
-
-    connected
-}
-
 fn normalize_transformer_representation(
     network: &mut Network,
     mode: TransformerRepresentationMode,
@@ -602,49 +568,8 @@ fn ensure_star_leg_mapping_is_resolvable(network: &Network) -> Result<()> {
 
 fn validate_export_invariants(
     table_batches: &HashMap<&'static str, RecordBatch>,
-    connected_buses: &HashSet<u32>,
     transformer_mode: TransformerRepresentationMode,
 ) -> Result<()> {
-    let buses = table_batches
-        .get(TABLE_BUSES)
-        .ok_or_else(|| anyhow::anyhow!("missing buses batch"))?;
-
-    let bus_ids = buses
-        .column_by_name("bus_id")
-        .ok_or_else(|| anyhow::anyhow!("buses.bus_id missing"))?
-        .as_any()
-        .downcast_ref::<Int32Array>()
-        .ok_or_else(|| anyhow::anyhow!("buses.bus_id is not Int32"))?;
-
-    let v_mag_set = buses
-        .column_by_name("v_mag_set")
-        .ok_or_else(|| anyhow::anyhow!("buses.v_mag_set missing"))?
-        .as_any()
-        .downcast_ref::<Float64Array>()
-        .ok_or_else(|| anyhow::anyhow!("buses.v_mag_set is not Float64"))?;
-
-    let mut invalid: Vec<i32> = Vec::new();
-    for i in 0..buses.num_rows() {
-        let bus_id = bus_ids.value(i);
-        if !connected_buses.contains(&(bus_id as u32)) {
-            continue;
-        }
-        let vm = v_mag_set.value(i);
-        if !vm.is_finite() || vm <= 0.0 {
-            invalid.push(bus_id);
-            if invalid.len() >= 8 {
-                break;
-            }
-        }
-    }
-
-    if !invalid.is_empty() {
-        anyhow::bail!(
-            "export invariant violation: connected buses with nonpositive/invalid v_mag_set: {:?}",
-            invalid
-        );
-    }
-
     let branches = table_batches
         .get(TABLE_BRANCHES)
         .ok_or_else(|| anyhow::anyhow!("missing branches batch"))?;
@@ -1477,7 +1402,8 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
             agg.p_min_agg += generator.pb / base_mva;
             agg.p_max_agg += generator.pt / base_mva;
 
-            if (0.85..1.15).contains(&generator.vs) {
+            // `buses.v_mag_set`: last in-service row with finite non-zero VS (PSS/E uses 0 as unset).
+            if generator.vs.is_finite() && generator.vs != 0.0 {
                 agg.v_mag_set_override = Some(generator.vs);
             }
         }
@@ -1489,7 +1415,6 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
 fn build_buses_batch(
     buses: &[models::Bus],
     agg_by_bus: &HashMap<u32, BusAggregate>,
-    connected_buses: &HashSet<u32>,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BUSES).expect("buses schema must exist"));
 
@@ -1514,35 +1439,29 @@ fn build_buses_batch(
     let mut nominal_kv = Float64Builder::new();
     let mut bus_uuid = StringDictionaryBuilder::<Int32Type>::new();
 
-    let mut sanitized_count = 0usize;
-    let mut sanitized_examples: Vec<u32> = Vec::new();
-
     for bus in buses {
         let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
+        // PSS/E lists QB (min Q) and QT (max Q) in machine MVAr; decks sometimes
+        // arrive with QB>QT (sign quirks, rounding, or tooling). The interchange
+        // and downstream solvers expect `q_min` ≤ `q_max` on the **bus** row — so
+        // we swap here only to restore ordering, not to discard RAW (per-machine
+        // QB/QT remain on `generators` and in `generators.params`).
         let mut q_min_val = agg.q_min;
         let mut q_max_val = agg.q_max;
         if q_min_val > q_max_val {
             std::mem::swap(&mut q_min_val, &mut q_max_val);
         }
 
-        let vm_raw = agg.v_mag_set_override.unwrap_or(bus.vm);
-        let vm_sanitized = sanitize_bus_v_mag_set(vm_raw, bus.nvlo, bus.nvhi);
-        if (vm_sanitized - vm_raw).abs() > 1.0e-12 {
-            sanitized_count += 1;
-            if sanitized_examples.len() < 8 {
-                sanitized_examples.push(bus.i);
-            }
-        }
+        let vm_export = agg.v_mag_set_override.unwrap_or(bus.vm);
 
         bus_id.append_value(bus.i as i32);
         name.append_value(bus.name.as_ref());
         bus_type.append_value(bus.ide as i8);
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
-        // v0.8.5: preserve RAW voltage setpoints for warm-start parity.
-        // Use generator VS for regulated buses; fallback to RAW bus VM so
-        // solved NYISO/external snapshots retain their initial conditions.
-        v_mag_set.append_value(vm_sanitized);
+        // `v_mag_set`: interchange aggregate — last non-zero finite in-service `VS`
+        // at the bus when present, else `bus.vm` from the RAW bus record (no clamp).
+        v_mag_set.append_value(vm_export);
         // Preserve RAW bus angle (PSS/E degrees → radians for raptrix-core).
         v_ang_set.append_value(bus.va.to_radians());
         q_min.append_value(q_min_val);
@@ -1558,21 +1477,6 @@ fn build_buses_batch(
         p_max_agg.append_value(agg.p_max_agg);
         nominal_kv.append_value(bus.baskv);
         bus_uuid.append_value(format!("psse:bus:{}", bus.i));
-
-        if connected_buses.contains(&bus.i) && vm_sanitized <= 0.0 {
-            anyhow::bail!(
-                "connected bus {} would export nonpositive v_mag_set={}",
-                bus.i,
-                vm_sanitized
-            );
-        }
-    }
-
-    if sanitized_count > 0 {
-        eprintln!(
-            "[converter] sanitized {} bus voltage setpoint(s) to valid positive values (example bus IDs: {:?})",
-            sanitized_count, sanitized_examples
-        );
     }
 
     RecordBatch::try_new(
@@ -1601,35 +1505,6 @@ fn build_buses_batch(
         ],
     )
     .context("building buses batch")
-}
-
-fn sanitize_bus_v_mag_set(vm_candidate: f64, nvlo: f64, nvhi: f64) -> f64 {
-    let mut vm = if vm_candidate.is_finite() {
-        vm_candidate
-    } else {
-        1.0
-    };
-
-    // Enforce a physically meaningful positive initialization.
-    if vm <= 0.0 {
-        vm = 1.0;
-    }
-
-    // If normal voltage bounds are valid and positive, keep v_mag_set inside them.
-    if nvlo.is_finite() && nvhi.is_finite() && nvlo > 0.0 && nvhi >= nvlo {
-        if vm < nvlo {
-            vm = nvlo;
-        } else if vm > nvhi {
-            vm = nvhi;
-        }
-    }
-
-    // Final safety net in case bounds were malformed.
-    if !vm.is_finite() || vm <= 0.0 {
-        1.0
-    } else {
-        vm
-    }
 }
 
 fn build_branches_batch(
@@ -1807,6 +1682,35 @@ fn build_branches_batch(
     .context("building branches batch")
 }
 
+/// Push PSS/E generator section numerics into `generators.params` (keys are
+/// stable lowercase PSS/E tokens). Units match the RAW file: `qg` is MVAr,
+/// impedances are on `MBASE`, etc. Keeps first-class columns lean while giving
+/// the solver the full machine record.
+fn append_psse_generator_raw_params(
+    params: &mut MapBuilder<StringBuilder, Float64Builder>,
+    machine: &models::Generator,
+) -> Result<()> {
+    let mut push = |k: &str, v: f64| -> Result<()> {
+        params.keys().append_value(k);
+        params.values().append_value(v);
+        Ok(())
+    };
+    push("vs", machine.vs)?;
+    if machine.ireg > 0 {
+        push("ireg", machine.ireg as f64)?;
+    }
+    push("zr", machine.zr)?;
+    push("zx", machine.zx)?;
+    push("rt", machine.rt)?;
+    push("xt", machine.xt)?;
+    push("gtap", machine.gtap)?;
+    push("rmpct", machine.rmpct)?;
+    push("qg", machine.qg)?;
+    push("wmod", machine.wmod as f64)?;
+    push("wpf", machine.wpf)?;
+    Ok(())
+}
+
 fn build_generators_batch(
     generators: &[models::Generator],
     dyr_lookup: &HashMap<(u32, String), &models::DyrGeneratorData>,
@@ -1883,33 +1787,25 @@ fn build_generators_batch(
         }
         market_resource_id.append_null();
 
-        let mut has_param = false;
+        append_psse_generator_raw_params(&mut params, generator)
+            .context("PSS/E generator params")?;
         if let Some(dyn_data) = dyr_lookup.get(&(generator.i, generator.id.to_string())) {
-            if dyn_data.h > 0.0 {
+            if dyn_data.h.is_finite() {
                 params.keys().append_value("H");
                 params.values().append_value(dyn_data.h);
-                has_param = true;
             }
-            if dyn_data.xd_prime > 0.0 {
+            if dyn_data.xd_prime.is_finite() {
                 params.keys().append_value("xd_prime");
                 params.values().append_value(dyn_data.xd_prime);
-                has_param = true;
             }
-            if dyn_data.d != 0.0 {
+            if dyn_data.d.is_finite() {
                 params.keys().append_value("D");
                 params.values().append_value(dyn_data.d);
-                has_param = true;
             }
         }
-        if has_param {
-            params
-                .append(true)
-                .context("building generators.params map entry")?;
-        } else {
-            params
-                .append(false)
-                .context("building generators.params null entry")?;
-        }
+        params
+            .append(true)
+            .context("building generators.params map entry")?;
     }
 
     let params_arr = params.finish();

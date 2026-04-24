@@ -72,9 +72,10 @@ several `buses` columns:
 | `b_shunt` | Bus BL/SBASE + Σ(in-service fixed-shunt BL/SBASE) + Σ(in-service branch BI at from-bus) + Σ(in-service branch BJ at to-bus) |
 | `q_min` | min(QB) over in-service generators at bus; −9999 pu for PQ load buses |
 | `q_max` | max(QT) over in-service generators at bus; 9999 pu for PQ load buses |
+| *(ordering)* | — | — | After aggregation, if `q_min` > `q_max`, the exporter **swaps** them so the bus row satisfies interchange `q_min` ≤ `q_max`. PSS/E `QB`/`QT` on each `generators` row are unchanged; this only normalizes the **bus-level** envelope for solvers that assume ordered limits. |
 | `p_min_agg` | Σ(in-service generator PB / SBASE) |
 | `p_max_agg` | Σ(in-service generator PT / SBASE); 9999 pu for PQ load buses |
-| `v_mag_set` | Generator VS if 0.85 ≤ VS ≤ 1.15 pu; otherwise Bus VM |
+| `v_mag_set` | Last in-service generator **VS** when finite and non-zero (PSS/E “unset” VS is 0); otherwise **Bus VM** — no band clamp on export |
 | `v_ang_set` | Bus VA converted to radians |
 
 > **Design note**: line-end admittances GI/BI/GJ/BJ are folded into the bus shunt
@@ -105,16 +106,16 @@ several `buses` columns:
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
 | NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
 | BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (nullable Float64). |
-| IDE | 4 | `ide` | `type` | Int8: 1=PQ, 2=PQ-gen, 3=PV, 4=slack. |
+| IDE | 4 | `ide` | `type` | Int8: 1=PQ load, 2=PQ-gen, 3=PV, 4=slack (interchange). PSS/E `IDE` uses **2** for PV and **3** for PQ generator; the importer maps these to interchange **3** / **2**. |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
 | ZONE | 6 | `zone` | `zone` | Foreign key → `zones.zone_id`. |
 | OWNER | 7 | `owner` | `owner` | Foreign key → `owners.owner_id`. |
 | GL | 8* | `gl` | `g_shunt` (partial) | Inline bus shunt conductance (MW @ 1 pu); folded into aggregated `g_shunt`. |
 | BL | 9* | `bl` | `b_shunt` (partial) | Inline bus shunt susceptance (MVAr @ 1 pu); folded into aggregated `b_shunt`. |
-| VM | — | `vm` | `v_mag_set` (fallback) | Used when no generator VS override in range 0.85–1.15 pu. If VM is non-finite or ≤ 0, export falls back to 1.0 pu and is then constrained to valid NVLO/NVHI bounds when present. |
+| VM | — | `vm` | `v_mag_set` (fallback) | Used when no in-service generator supplies a non-zero finite **VS** for `v_mag_set` aggregation. |
 | VA | — | `va` | `v_ang_set` | Bus.VA × π/180 → radians. |
-| NVHI | — | `nvhi` | `v_max` | Normal voltage upper limit (pu). |
-| NVLO | — | `nvlo` | `v_min` | Normal voltage lower limit (pu). |
+| NVHI | — | `nvhi` | `v_max` | Normal voltage upper limit (pu); stored as parsed (missing tail fields → 0.0). |
+| NVLO | — | `nvlo` | `v_min` | Normal voltage lower limit (pu); stored as parsed. |
 | EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no canonical column in v0.8.8. |
 | EVLO | — | `evlo` | *(not stored)* | " |
 
@@ -183,28 +184,18 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 |---|---|---|---|
 | I | `i` | `bus_id` | |
 | ID | `id` | `id` | Dictionary-encoded. |
-| PG | `pg` | `p_sched_pu` | PG / SBASE. |
-| PT | `pt` | `p_max_pu` | PT / SBASE. |
-| PB | `pb` | `p_min_pu` | PB / SBASE. |
-| QT | `qt` | `q_max_pu` | QT / SBASE. |
-| QB | `qb` | `q_min_pu` | QB / SBASE. |
+| PG | `pg` | `p_sched_mw` | MW as in RAW. |
+| PT | `pt` | `p_max_mw` | MW. |
+| PB | `pb` | `p_min_mw` | MW. |
+| QT | `qt` | `q_max_mvar` | MVAr. |
+| QB | `qb` | `q_min_mvar` | MVAr. |
 | STAT | `stat` | `status` | Bool. |
 | MBASE | `mbase` | `mbase_mva` | Machine MVA base in MVA (not normalised). |
-| ZX | `zx` | `xd_prime` | Used as Xd′ fallback when no DYR data is provided. |
-| VS | `vs` | *(bus aggregation only)* | VS drives `buses.v_mag_set` if 0.85 ≤ VS ≤ 1.15 pu; not stored in `generators`. |
-| QG | `qg` | *(bus aggregation only)* | QG contributes to `buses.q_sched`; not stored in `generators`. |
-| IREG | `ireg` | *(not stored)* | Remote regulated bus number. |
-| ZR | `zr` | *(not stored)* | Positive-sequence resistance (machine base pu). |
-| RT | `rt` | *(not stored)* | Step-up transformer resistance. |
-| XT | `xt` | *(not stored)* | Step-up transformer reactance. |
-| GTAP | `gtap` | *(not stored)* | Step-up transformer off-nominal turns ratio. |
-| RMPCT | `rmpct` | *(not stored)* | Fraction of MVAR range for remote voltage control. |
-| O1 | `o1` | *(not stored)* | Owner number. |
-| WMOD | `wmod` | *(not stored)* | Wind machine flag. |
-| WPF | `wpf` | *(not stored)* | Power factor for WMOD modes 2 and 3. |
-| — | — | `h` | Inertia constant from DYR; 0.0 if no DYR provided. |
-| — | — | `xd_prime` | From DYR; falls back to generator ZX if no DYR. |
-| — | — | `D` | Damping coefficient from DYR; 0.0 if no DYR. |
+| O1 | `o1` | `owner_id` | Nullable when 0. |
+| VS, IREG, ZR, ZX, RT, XT, GTAP, RMPCT, QG, WMOD, WPF | `vs`, `ireg`, … | `params` | Map keys: `vs`, `ireg` (only when non-zero), `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg` (MVAr), `wmod`, `wpf` — same numeric units as PSS/E RAW. |
+| — | DYR (`DyrGeneratorData`) | `params` | Adds `H`, `xd_prime`, `D` when finite (alongside RAW keys above). |
+| VS | `vs` | *(also bus aggregate)* | With other in-service machines at the bus, last **non-zero** finite `VS` sets `buses.v_mag_set` when present; else `buses` uses bus `VM`. |
+| QG | `qg` | *(also bus aggregate)* | Contributes to `buses.q_sched`. |
 | — | — | `name` | Always null (PSS/E generators have no display name in RAW). |
 
 ---
@@ -406,6 +397,18 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 | Synchronous-machine parameters on `generators` | Populated for `GENROU`, `GENROE`, `GENSAL`, `GENSAE`, `GENCLS` where parameters map cleanly. |
 | Other DYR families (e.g. exciters, governors, PSS, renewables) | Retained as `dynamics_models` rows; consumers read `model_type` / `params` as needed. |
 | Non-numeric / user-defined payloads | Not represented in `dynamics_models.params` (`Map<Utf8, Float64>` only). |
+
+---
+
+## PSS/E RAW coverage (solver-oriented)
+
+**Exported today (static RAW path):** bus, load (PQ columns only — see `loads` schema), fixed shunt, generator, branch, 2W/3W transformer, area, zone, owner, switched shunt (+ derived `switched_shunt_banks`), multi-section line, two-terminal / VSC DC (`dc_lines_2w`), FACTS (merged onto matching `branches` FACTS columns where paired).
+
+**Parsed but not written as standalone RPF tables:** FACTS rows are folded into `branches` when a branch pair matches; there is no separate `facts_devices` batch in this exporter yet.
+
+**Parser skips (records discarded in `parser.rs`):** SYSTEM-WIDE DATA, SYSTEM SWITCHING DEVICE, impedance correction, inter-area transfer, GNE device, induction machine blocks — no `Network` fields today. Multi-terminal DC is only flagged via `has_multi_terminal_dc`; no MTDC table in the interchange.
+
+**Interchange schema limits (not PSS/E gaps):** `loads` has no columns for IP/IQ/YP/YQ, load AREA/ZONE, or ZIP fractions; `buses` has no EVHI/EVLO columns; `transformers_2w` has no `params` map for CW/CZ and other RAW-only knobs. Closing those requires `raptrix-cim-arrow` / schema-contract changes plus exporter updates.
 
 ---
 

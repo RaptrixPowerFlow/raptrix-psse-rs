@@ -16,7 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, MapArray, StringArray};
 use raptrix_cim_arrow::{
     METADATA_KEY_CASE_MODE, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_METADATA,
     TABLE_OWNERS,
@@ -120,6 +120,23 @@ CONTRACT SMOKE
         .downcast_ref::<Int32Array>()
         .expect("generators.owner_id must be Int32");
     assert_eq!(generator_owner.value(0), 1);
+
+    let params_col = generators
+        .column_by_name("params")
+        .expect("missing generators.params");
+    assert!(
+        !params_col.is_null(0),
+        "generators.params must carry PSS/E RAW machine fields"
+    );
+    let params_map = params_col
+        .as_any()
+        .downcast_ref::<MapArray>()
+        .expect("generators.params must be a Map array");
+    assert!(params_map.is_valid(0));
+    assert!(
+        params_map.value_length(0) >= 10,
+        "expected PSS/E vs/zr/zx/… keys in params map"
+    );
 
     let buses = tables
         .iter()
