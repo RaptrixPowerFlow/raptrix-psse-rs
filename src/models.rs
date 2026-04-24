@@ -89,18 +89,23 @@ pub struct CaseId {
 // Section 1 — Bus data
 // ---------------------------------------------------------------------------
 
-/// Bus type codes as defined in the PSS/E documentation.
+/// Bus-type codes stored on [`Bus::ide`] and exported to RPF `buses.type`.
+///
+/// Numeric values follow the Raptrix interchange (PSS/E ≥34 style): **1** PQ
+/// load, **2** PQ generator bus, **3** PV bus, **4** slack.  This matches PSS/E
+/// `IDE` except PSS/E uses **2** for PV and **3** for PQ generator — the parser
+/// maps those to `GeneratorPV` / `GeneratorPQ` accordingly.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BusType {
     /// Load bus / isolated (no generation, not a slack).
     #[default]
     LoadBus = 1,
-    /// Generator bus (PQ bus — generator regulates Q).
+    /// PQ generator bus (PSS/E `IDE` = 3).
     GeneratorPQ = 2,
-    /// Generator bus (PV bus — generator regulates V).
+    /// PV bus — voltage-regulating generator bus (PSS/E `IDE` = 2).
     GeneratorPV = 3,
-    /// Slack (swing) bus.
+    /// Slack (swing) bus (PSS/E `IDE` = 4).
     Slack = 4,
 }
 

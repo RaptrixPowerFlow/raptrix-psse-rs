@@ -448,6 +448,53 @@ fn token_looks_alpha(token: &str) -> bool {
     token.trim().chars().any(|c| c.is_ascii_alphabetic())
 }
 
+/// PSS/E bus type tokens are always a single digit 1–4 in modern RAW decks.
+/// Used to detect an **extra** v34/v35 field (e.g. substation name) inserted
+/// between `BASKV` and `IDE` without mis-parsing area/zone integers as IDE.
+fn strict_psse_bus_ide_token(t: &str) -> Option<u8> {
+    match t.trim() {
+        "1" | "2" | "3" | "4" => t.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+/// Return the token index of the `IDE` field for this bus record.
+///
+/// PSS/E v35+ may insert an optional alphanumeric field (substation / metadata)
+/// immediately after `BASKV`, before `IDE`.  When the token after `BASKV` is
+/// not a strict `1`…`4`, treat the following token as `IDE` instead.
+fn resolve_bus_ide_index(f: &[String], baskv_idx: usize, psse_version: u32) -> usize {
+    if psse_version < 35 {
+        return baskv_idx + 1;
+    }
+    if f
+        .get(baskv_idx + 1)
+        .and_then(|s| strict_psse_bus_ide_token(s))
+        .is_some()
+    {
+        baskv_idx + 1
+    } else if f
+        .get(baskv_idx + 2)
+        .and_then(|s| strict_psse_bus_ide_token(s))
+        .is_some()
+    {
+        baskv_idx + 2
+    } else {
+        baskv_idx + 1
+    }
+}
+
+fn psse_bus_ide_raw_to_type(ide_raw: u8) -> BusType {
+    match ide_raw {
+        1 => BusType::LoadBus,
+        // PSS/E: 2 = voltage-regulating (PV), 3 = PQ generator — matches RPF `type` 3 / 2.
+        2 => BusType::GeneratorPV,
+        3 => BusType::GeneratorPQ,
+        4 => BusType::Slack,
+        _ => BusType::LoadBus,
+    }
+}
+
 fn token_to_positive_u32(token: &str) -> Option<u32> {
     let t = token.trim();
     if t.is_empty() {
@@ -476,7 +523,11 @@ fn token_to_f64(token: &str) -> Option<f64> {
 /// Handles the optional bus NAME field: very old PSS/E formats (pre-v29) omit
 /// it.  The heuristic: if `parts[1]` is empty or `''`, treat name as absent
 /// and shift all subsequent indices down by one.
-fn parse_bus_record(f: &[String]) -> Option<Bus> {
+///
+/// PSS/E v35+ may insert an optional field between `BASKV` and `IDE` (handled
+/// via [`resolve_bus_ide_index`]); all fields after `IDE` are indexed from
+/// the resolved `IDE` position so `AREA`…`VA` stay aligned.
+fn parse_bus_record(f: &[String], psse_version: u32) -> Option<Bus> {
     if f.is_empty() {
         return None;
     }
@@ -493,22 +544,22 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
         .unwrap_or(false);
 
     let baskv_idx = if has_name { 2 } else { 1 };
-    let ide_idx = baskv_idx + 1;
+    let ide_idx = resolve_bus_ide_index(f, baskv_idx, psse_version);
     let (gl_idx, bl_idx, area_idx, zone_idx, owner_idx, vm_idx, va_idx) = {
-        let modern_area_idx = baskv_idx + 2;
-        let modern_zone_idx = baskv_idx + 3;
-        let modern_owner_idx = baskv_idx + 4;
-        let modern_vm_idx = baskv_idx + 5;
-        let modern_va_idx = baskv_idx + 6;
+        let modern_area_idx = ide_idx + 1;
+        let modern_zone_idx = ide_idx + 2;
+        let modern_owner_idx = ide_idx + 3;
+        let modern_vm_idx = ide_idx + 4;
+        let modern_va_idx = ide_idx + 5;
 
         // Some legacy/variant RAW exports include inline GL/BL in BUS records:
         // I, NAME, BASKV, IDE, GL, BL, AREA, ZONE, OWNER, VM, VA, ...
         // Use a conservative heuristic so v33/v35 layouts remain unchanged.
         let has_inline_shunt = if f.len() > modern_va_idx + 2 {
-            let old_area_idx = baskv_idx + 4;
-            let old_zone_idx = baskv_idx + 5;
-            let old_owner_idx = baskv_idx + 6;
-            let old_vm_idx = baskv_idx + 7;
+            let old_area_idx = ide_idx + 3;
+            let old_zone_idx = ide_idx + 4;
+            let old_owner_idx = ide_idx + 5;
+            let old_vm_idx = ide_idx + 6;
 
             let modern_area = field_u32(f, modern_area_idx);
             let modern_zone = field_u32(f, modern_zone_idx);
@@ -529,8 +580,8 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
                 + (old_owner > 0) as u8
                 + ((0.2..=2.0).contains(&old_vm)) as u8;
 
-            let gl_token = f.get(baskv_idx + 2).map(|s| s.as_str()).unwrap_or("");
-            let bl_token = f.get(baskv_idx + 3).map(|s| s.as_str()).unwrap_or("");
+            let gl_token = f.get(ide_idx + 1).map(|s| s.as_str()).unwrap_or("");
+            let bl_token = f.get(ide_idx + 2).map(|s| s.as_str()).unwrap_or("");
             let shunt_tokens_floaty = token_looks_float(gl_token) || token_looks_float(bl_token);
 
             old_score > modern_score || (old_score == modern_score && shunt_tokens_floaty)
@@ -540,13 +591,13 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
 
         if has_inline_shunt {
             (
-                Some(baskv_idx + 2),
-                Some(baskv_idx + 3),
-                baskv_idx + 4,
-                baskv_idx + 5,
-                baskv_idx + 6,
-                baskv_idx + 7,
-                baskv_idx + 8,
+                Some(ide_idx + 1),
+                Some(ide_idx + 2),
+                ide_idx + 3,
+                ide_idx + 4,
+                ide_idx + 5,
+                ide_idx + 6,
+                ide_idx + 7,
             )
         } else {
             (
@@ -561,41 +612,22 @@ fn parse_bus_record(f: &[String]) -> Option<Bus> {
         }
     };
 
-    let ide_raw = field_u8(f, ide_idx);
-    let ide = match ide_raw {
-        2 => BusType::GeneratorPQ,
-        3 => BusType::GeneratorPV,
-        4 => BusType::Slack,
-        _ => BusType::LoadBus,
+    let ide_raw = if psse_version >= 35 {
+        f.get(ide_idx)
+            .and_then(|s| strict_psse_bus_ide_token(s))
+            .unwrap_or_else(|| field_u8(f, ide_idx))
+    } else {
+        field_u8(f, ide_idx)
     };
+    let ide = psse_bus_ide_raw_to_type(ide_raw);
 
     let vm_raw = field_f64(f, vm_idx);
 
-    let nvhi_raw = field_f64(f, va_idx + 1);
-    let nvlo_raw = field_f64(f, va_idx + 2);
-    let nvhi = if nvhi_raw > 0.5 && nvhi_raw <= 2.0 {
-        nvhi_raw
-    } else {
-        1.1
-    };
-    let nvlo = if nvlo_raw > 0.0 && nvlo_raw <= 2.0 {
-        nvlo_raw
-    } else {
-        0.9
-    };
-
-    let evhi_raw = field_f64(f, va_idx + 3);
-    let evlo_raw = field_f64(f, va_idx + 4);
-    let evhi = if evhi_raw > 0.5 && evhi_raw <= 2.0 {
-        evhi_raw
-    } else {
-        1.1
-    };
-    let evlo = if evlo_raw > 0.0 && evlo_raw <= 2.0 {
-        evlo_raw
-    } else {
-        0.9
-    };
+    // NV/EV limits: pass through parsed tokens (PSS/E defaults apply when fields are absent → 0.0).
+    let nvhi = field_f64(f, va_idx + 1);
+    let nvlo = field_f64(f, va_idx + 2);
+    let evhi = field_f64(f, va_idx + 3);
+    let evlo = field_f64(f, va_idx + 4);
 
     Some(Bus {
         i,
@@ -1259,7 +1291,7 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             // ================================================================
             ParseState::Bus => {
                 let f = tokenize(data);
-                if let Some(bus) = parse_bus_record(&f) {
+                if let Some(bus) = parse_bus_record(&f, psse_version) {
                     result.buses.push(bus);
                 }
             }

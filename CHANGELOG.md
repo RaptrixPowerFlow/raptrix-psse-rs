@@ -16,6 +16,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`buses.q_min` / `q_max` ordering**: when aggregated PSS/E limits end up with `q_min` > `q_max`, swap again so the bus row matches interchange / solver expectations; per-machine `QB`/`QT` on `generators` (and `generators.params`) stay faithful to the deck.
+
+---
+
+## [0.3.3] - 2026-04-24
+
+Patch release: **RAW/DYR parsing and export fidelity** (RPF v0.9.0 wire shape unchanged).
+
+### Fixed
+
+- **PSS/E bus `IDE` parsing**: map PSS/E **2** → PV and **3** → PQ generator (interchange `type` 3 / 2), matching `parse_psse_raw_ex` / phased RAW audits; previously 2 and 3 were swapped.
+- **PSS/E v35+ bus records**: optional extra field after `BASKV` (e.g. substation name) no longer shifts `IDE` / `AREA` / `VM` / `VA` one column left — PV buses were mis-read as PQ loads, breaking Texas2k-style v35 decks.
+
+### Changed
+
+- **RAW fidelity on export**: removed `v_mag_set` clamping to NVLO/NVHI and forced-positive “sanitization”; dropped export-time rejection of nonpositive `v_mag_set` on connected buses. `VS` → `v_mag_set` now uses every **non-zero finite** in-service machine value (last in file order wins). Bus **NVHI/NVLO/EVHI/EVLO** are stored as parsed without substituting 1.1 / 0.9 when outside a heuristic band. Crate rustdoc documents the fidelity policy.
+
+### Added
+
+- **`generators.params` PSS/E pass-through**: every generator row now includes a non-null `params` map with RAW machine numerics (`vs`, `ireg` when non-zero, `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg`, `wmod`, `wpf`) plus existing DYR keys (`H`, `xd_prime`, `D`) when finite — closes the gap where VS/IREG/ZIP machine data had no RPF home beyond bus aggregates.
+
+### Documentation
+
+- **`docs/psse-mapping.md`**: new **PSS/E RAW coverage** section (exported vs skipped vs schema-limited); generator table rows aligned with actual RPF column names and `params` behavior.
+
+---
+
 ## [0.3.2] - 2026-04-23
 
 ### Release & CI
@@ -207,14 +238,14 @@ To create and publish a release:
 
 # 2. Commit changes
 git add Cargo.toml CHANGELOG.md
-git commit -m "chore: bump to v0.3.2"
+git commit -m "chore: bump to v0.3.3"
 
 # 3. Create an annotated tag
-git tag -a v0.3.2 -m "Release v0.3.2: RPF v0.9.0 + CI/release gates"
+git tag -a v0.3.3 -m "Release v0.3.3: RAW/DYR fidelity + bus IDE fixes (RPF v0.9.0)"
 
 # 4. Push commits and tags
 git push origin main
-git push origin v0.3.2
+git push origin v0.3.3
 ```
 
 The GitHub Actions `release` workflow will automatically:
@@ -226,6 +257,7 @@ The GitHub Actions `release` workflow will automatically:
 
 ---
 
+[0.3.3]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.3
 [0.3.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.2
 [0.3.1]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.1
 [0.3.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.0

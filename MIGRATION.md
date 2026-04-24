@@ -20,7 +20,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ### v0.3.1: RPF v0.8.9 generator layout → **v0.9.0** contract (Breaking)
 
-Crate **0.3.2** tracks the latest **`raptrix-cim-arrow`** contract (currently **RPF v0.9.0**). Releases **0.3.1** and **0.3.2** cover the hierarchical generator model and the v0.9.0 wire shape (no `ibr_devices`; extended metadata / contingencies).
+Crate **0.3.3** tracks the latest **`raptrix-cim-arrow`** contract (currently **RPF v0.9.0**). Releases **0.3.1** through **0.3.3** cover the hierarchical generator model and the v0.9.0 wire shape (no `ibr_devices`; extended metadata / contingencies). **0.3.3** improves RAW/DYR parsing and export fidelity without changing the interchange schema version.
 
 **Generator & ownership (from v0.8.9-era alignment):**
 

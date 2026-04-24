@@ -107,13 +107,13 @@ Metadata includes modern-grid fields plus v0.9.0 **additional nullable columns**
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
-## What's New in v0.3.2
+## What's New in v0.3.3
 
-- **Release numbering**: **0.3.2** is the public follow-on to **0.3.1** (same RPF v0.9.0 output shape); use this version for new tags and downloads.
+- **Bug-fix release** (patch **0.3.3**): correct PSS/E bus **`IDE`** mapping (PV vs PQ), v35 bus layout after **`BASKV`**, export **fidelity** (no `v_mag_set` / NV limit rewriting), and full generator **RAW** numerics in **`generators.params`** for solver parity. RPF remains **v0.9.0** — regenerate golden `.rpf` if you rely on bit-identical bus typing or setpoints from older converter builds.
 - **CI on every PR**: `fmt`, `clippy`, and full `cargo test` on Ubuntu; public-safety, markdownlint, and version/CHANGELOG consistency checks (aligned with `raptrix-cim-rs` practice).
 - **Safer releases**: the **Release** workflow runs **`cargo test --workspace`** before building Windows / Linux / macOS binaries.
 
-See **v0.3.1** in [CHANGELOG.md](CHANGELOG.md) for RPF v0.9.0 schema alignment notes (tables, metadata, `case_mode`, optional `scenario_context` API).
+See **v0.3.1**–**v0.3.2** in [CHANGELOG.md](CHANGELOG.md) for RPF v0.9.0 schema alignment and CI/release notes.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -205,6 +205,7 @@ These are **local engineering reference numbers**, not vendor benchmarks. Use th
 The converter aims for **predictable, contract-aligned** `.rpf` output. Like any interchange layer, **not every PSS/E field becomes a first-class column**—some are folded into aggregates, omitted when the RPF schema has no home, or left for consumers to interpret from raw dynamics rows. Authoritative per-field rules live in [`docs/psse-mapping.md`](docs/psse-mapping.md); highlights include:
 
 - **Aggregates vs. raw fields**: e.g. line-end shunts feed bus `g_shunt` / `b_shunt`; loads export the PQ portion documented in the mapping doc.
+- **Coverage matrix**: see **PSS/E RAW coverage** in the mapping doc for what is exported, folded into other tables, skipped by the parser, or blocked by interchange schema (ZIP loads, optional MTDC / node-breaker tables, etc.).
 - **Parser coverage**: some RAW sections and rows are skipped or rejected with counts logged; see the mapping doc and `parser.rs` for current behavior.
 - **Dynamics**: DYR numeric rows are preserved where parsed; attachment and interpretation follow the mapping doc—validate against your toolchain.
 
