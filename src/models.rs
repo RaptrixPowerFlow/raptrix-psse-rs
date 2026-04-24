@@ -171,12 +171,20 @@ pub struct Load {
     pub ql: f64,
     /// Active power component of constant current load in MW (IP).
     pub ip: f64,
+    /// True when the source LOAD row provided the IP term token explicitly.
+    pub ip_available: bool,
     /// Reactive power component of constant current load in MVAr (IQ).
     pub iq: f64,
+    /// True when the source LOAD row provided the IQ term token explicitly.
+    pub iq_available: bool,
     /// Active power component of constant admittance load in MW (YP).
     pub yp: f64,
+    /// True when the source LOAD row provided the YP term token explicitly.
+    pub yp_available: bool,
     /// Reactive power component of constant admittance load in MVAr (YQ).
     pub yq: f64,
+    /// True when the source LOAD row provided the YQ term token explicitly.
+    pub yq_available: bool,
     /// Owner to which the load is assigned (OWNER).
     pub owner: u32,
     /// Wind machine flag: 0 = load is not a wind machine (SCALE).

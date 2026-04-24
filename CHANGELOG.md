@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.3.4] - 2026-04-24
+
+### Added
+
+- **RPF v0.9.1 load ZIP fidelity**: `loads` export now populates nullable `p_i_pu`, `q_i_pu`, `p_y_pu`, and `q_y_pu` from PSS/E `IP/IQ/YP/YQ` (all `/ SBASE`) while preserving sign and keeping existing `p_pu` / `q_pu` behavior unchanged.
+- **Root metadata key**: exporter now writes `rpf.loads.zip_fidelity_presence` with `not_available | partial | complete` based on per-row ZIP source-term availability.
+
 ### Fixed
 
 - **`buses.q_min` / `q_max` ordering**: when aggregated PSS/E limits end up with `q_min` > `q_max`, swap again so the bus row matches interchange / solver expectations; per-machine `QB`/`QT` on `generators` (and `generators.params`) stay faithful to the deck.
@@ -238,14 +247,14 @@ To create and publish a release:
 
 # 2. Commit changes
 git add Cargo.toml CHANGELOG.md
-git commit -m "chore: bump to v0.3.3"
+git commit -m "chore: bump to v0.3.4"
 
 # 3. Create an annotated tag
-git tag -a v0.3.3 -m "Release v0.3.3: RAW/DYR fidelity + bus IDE fixes (RPF v0.9.0)"
+git tag -a v0.3.4 -m "Release v0.3.4: RPF v0.9.1 ZIP fidelity + metadata alignment"
 
 # 4. Push commits and tags
 git push origin main
-git push origin v0.3.3
+git push origin v0.3.4
 ```
 
 The GitHub Actions `release` workflow will automatically:
@@ -257,6 +266,7 @@ The GitHub Actions `release` workflow will automatically:
 
 ---
 
+[0.3.4]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.4
 [0.3.3]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.3
 [0.3.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.2
 [0.3.1]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.1

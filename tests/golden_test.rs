@@ -18,6 +18,7 @@ use raptrix_cim_arrow::{
 };
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
+const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
 
 const RAW_PATH: &str = "tests/data/external/Texas7k_20210804.RAW";
 const DYR_PATH: &str = "tests/data/external/Texas7k_20210804.dyr";
@@ -387,6 +388,18 @@ fn golden_texas7k_static() {
     );
 
     let loads = table_by_name(&tables, TABLE_LOADS);
+    loads
+        .column_by_name("p_i_pu")
+        .expect("missing loads.p_i_pu");
+    loads
+        .column_by_name("q_i_pu")
+        .expect("missing loads.q_i_pu");
+    loads
+        .column_by_name("p_y_pu")
+        .expect("missing loads.p_y_pu");
+    loads
+        .column_by_name("q_y_pu")
+        .expect("missing loads.q_y_pu");
     let load_status = col_bool(loads, "status");
     let load_p_pu_col = col_f64(loads, "p_pu");
     let load_p_pu = sum_f64_where(load_p_pu_col, load_status);
@@ -568,6 +581,14 @@ fn golden_texas2k_static() {
         RPF_VERSION,
         "rpf_version metadata must match the canonical schema"
     );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "complete",
+        "Texas2k deck should export complete ZIP fidelity metadata"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -620,6 +641,26 @@ fn golden_texas2k_dynamic() {
             .unwrap_or(""),
         RPF_VERSION,
         "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "complete",
+        "EI deck should export complete ZIP fidelity metadata"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_EI_STATIC))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    let loads = table_by_name(&tables, TABLE_LOADS);
+    let q_y = col_f64(loads, "q_y_pu");
+    let nonzero_yq = (0..q_y.len())
+        .filter(|&i| !q_y.is_null(i) && q_y.value(i).abs() > 1.0e-9)
+        .count();
+    assert!(
+        nonzero_yq > 0,
+        "expected non-zero loads.q_y_pu rows in EI dataset"
     );
 }
 

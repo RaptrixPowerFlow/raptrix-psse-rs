@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.0**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.1**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,9 +33,10 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.9.0 contract (current)
+### v0.9.1 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
+- `loads` includes additive ZIP fidelity columns in v0.9.1: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
 - `metadata` includes modern-grid fields plus additional nullable v0.9.0 columns (typically **null** for PSS/E-only exports):
@@ -145,10 +146,10 @@ where they belong in fixed shunt section 3.
 | STATUS | `status` | `status` | Bool: 1 → true, 0 → false. |
 | PL | `pl` | `p_pu` | Constant-power active load; PL / SBASE. |
 | QL | `ql` | `q_pu` | Constant-power reactive load; QL / SBASE. |
-| IP | `ip` | *(not stored)* | Constant-current component discarded; no canonical column in v0.8.8. |
-| IQ | `iq` | *(not stored)* | " |
-| YP | `yp` | *(not stored)* | Constant-admittance component discarded. |
-| YQ | `yq` | *(not stored)* | " |
+| IP | `ip` | `p_i_pu` | Constant-current active component; IP / SBASE. Nullable when source term is not present in the LOAD row. |
+| IQ | `iq` | `q_i_pu` | Constant-current reactive component; IQ / SBASE. Nullable when source term is not present in the LOAD row. |
+| YP | `yp` | `p_y_pu` | Constant-admittance active component; YP / SBASE. Nullable when source term is not present in the LOAD row. |
+| YQ | `yq` | `q_y_pu` | Constant-admittance reactive component; YQ / SBASE. Nullable when source term is not present in the LOAD row. |
 | AREA | `area` | *(not stored)* | |
 | ZONE | `zone` | *(not stored)* | |
 | OWNER | `owner` | *(not stored)* | |
@@ -156,8 +157,7 @@ where they belong in fixed shunt section 3.
 | INTRPT | `intrpt` | *(not stored)* | Interruptible load flag. |
 | — | — | `name` | Always null (PSS/E loads have no display name). |
 
-> **ZIP load note**: RPF v0.8.8 `loads` carries only the constant-power (PQ) portion.
-> IP/IQ constant-current and YP/YQ constant-admittance components are dropped for this export path (see load field table above).
+> **ZIP load note**: RPF v0.9.1 carries full constant-power + constant-current + constant-admittance terms on `loads`. Source sign is preserved exactly; missing ZIP source terms are exported as null (not fabricated zeros).
 
 ---
 
@@ -378,11 +378,11 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 | PSS/E section | RPF table | Status (this crate) |
 |---|---|---|
-| Section 8 — Two-terminal DC | — | Not converted to native DC tables in the path documented here. |
-| Section 9 — VSC DC | — | Not converted here. |
+| Section 8 — Two-terminal DC | `dc_lines_2w` | Converted to `dc_lines_2w` rows when records parse cleanly. |
+| Section 9 — VSC DC | `dc_lines_2w` | Converted to `dc_lines_2w` rows for supported fields. |
 | Section 10 — Impedance correction | — | Not converted here. |
 | Section 11 — Multi-terminal DC | — | Not converted here. |
-| Section 12 — Multi-section line | — | Not converted here. |
+| Section 12 — Multi-section line | `multi_section_lines` (+ `branches` linkage) | Converted for supported records; malformed rows are skipped with parser accounting. |
 | Section 14 — Inter-area transfer | — | Not converted here. |
 | Section 18 — FACTS devices | `branches` FACTS columns | Subset: parser may attach FACTS metadata to matching branches when the deck allows a safe mapping. |
 | Section 19 — GNE devices | — | Not converted here. |
@@ -402,13 +402,13 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 ## PSS/E RAW coverage (solver-oriented)
 
-**Exported today (static RAW path):** bus, load (PQ columns only — see `loads` schema), fixed shunt, generator, branch, 2W/3W transformer, area, zone, owner, switched shunt (+ derived `switched_shunt_banks`), multi-section line, two-terminal / VSC DC (`dc_lines_2w`), FACTS (merged onto matching `branches` FACTS columns where paired).
+**Exported today (static RAW path):** bus, load (PQ + ZIP columns — see `loads` schema), fixed shunt, generator, branch, 2W/3W transformer, area, zone, owner, switched shunt (+ derived `switched_shunt_banks`), multi-section line, two-terminal / VSC DC (`dc_lines_2w`), FACTS (merged onto matching `branches` FACTS columns where paired).
 
 **Parsed but not written as standalone RPF tables:** FACTS rows are folded into `branches` when a branch pair matches; there is no separate `facts_devices` batch in this exporter yet.
 
 **Parser skips (records discarded in `parser.rs`):** SYSTEM-WIDE DATA, SYSTEM SWITCHING DEVICE, impedance correction, inter-area transfer, GNE device, induction machine blocks — no `Network` fields today. Multi-terminal DC is only flagged via `has_multi_terminal_dc`; no MTDC table in the interchange.
 
-**Interchange schema limits (not PSS/E gaps):** `loads` has no columns for IP/IQ/YP/YQ, load AREA/ZONE, or ZIP fractions; `buses` has no EVHI/EVLO columns; `transformers_2w` has no `params` map for CW/CZ and other RAW-only knobs. Closing those requires `raptrix-cim-arrow` / schema-contract changes plus exporter updates.
+**Interchange schema limits (not PSS/E gaps):** load AREA/ZONE/OWNER/SCALE/INTRPT have no dedicated `loads` columns; `buses` has no EVHI/EVLO columns; `transformers_2w` has no `params` map for CW/CZ and other RAW-only knobs. Closing those requires `raptrix-cim-arrow` / schema-contract changes plus exporter updates.
 
 ---
 

@@ -404,6 +404,13 @@ fn field_f64(fields: &[String], idx: usize) -> f64 {
         .unwrap_or(0.0)
 }
 
+fn field_present(fields: &[String], idx: usize) -> bool {
+    fields
+        .get(idx)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn field_u32(fields: &[String], idx: usize) -> u32 {
     fields
         .get(idx)
@@ -467,8 +474,7 @@ fn resolve_bus_ide_index(f: &[String], baskv_idx: usize, psse_version: u32) -> u
     if psse_version < 35 {
         return baskv_idx + 1;
     }
-    if f
-        .get(baskv_idx + 1)
+    if f.get(baskv_idx + 1)
         .and_then(|s| strict_psse_bus_ide_token(s))
         .is_some()
     {
@@ -680,9 +686,13 @@ fn parse_load_record(f: &[String]) -> Option<Load> {
         pl: field_f64(f, 5),
         ql: field_f64(f, 6),
         ip: field_f64(f, 7),
+        ip_available: field_present(f, 7),
         iq: field_f64(f, 8),
+        iq_available: field_present(f, 8),
         yp: field_f64(f, 9),
+        yp_available: field_present(f, 9),
         yq: field_f64(f, 10),
+        yq_available: field_present(f, 10),
         owner: field_u32_default(f, 11, 1),
         scale: field_u8(f, 12),
         intrpt: field_u8(f, 13),

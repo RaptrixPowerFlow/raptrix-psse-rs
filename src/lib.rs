@@ -70,6 +70,7 @@ use raptrix_cim_arrow::{
 use crate::models::Network;
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
+const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
 const SYNTHETIC_STAR_BUS_MIN_ID_EXCLUSIVE: u32 = 10_000_000;
 
 /// Export-time policy for representing 3-winding transformers.
@@ -314,6 +315,10 @@ pub fn write_psse_to_rpf_with_options(
             .transformer_representation_mode
             .as_stable_str()
             .to_string(),
+    );
+    additional_root_metadata.insert(
+        METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE.to_string(),
+        classify_loads_zip_fidelity_presence(&network.loads).to_string(),
     );
 
     write_root_rpf_with_metadata(
@@ -1865,6 +1870,10 @@ fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatc
     let mut status = BooleanBuilder::new();
     let mut p_pu = Float64Builder::new();
     let mut q_pu = Float64Builder::new();
+    let mut p_i_pu = Float64Builder::new();
+    let mut q_i_pu = Float64Builder::new();
+    let mut p_y_pu = Float64Builder::new();
+    let mut q_y_pu = Float64Builder::new();
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
 
     for load in loads {
@@ -1873,6 +1882,26 @@ fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatc
         status.append_value(load.status != 0);
         p_pu.append_value(load.pl / base_mva);
         q_pu.append_value(load.ql / base_mva);
+        if load.ip_available {
+            p_i_pu.append_value(load.ip / base_mva);
+        } else {
+            p_i_pu.append_null();
+        }
+        if load.iq_available {
+            q_i_pu.append_value(load.iq / base_mva);
+        } else {
+            q_i_pu.append_null();
+        }
+        if load.yp_available {
+            p_y_pu.append_value(load.yp / base_mva);
+        } else {
+            p_y_pu.append_null();
+        }
+        if load.yq_available {
+            q_y_pu.append_value(load.yq / base_mva);
+        } else {
+            q_y_pu.append_null();
+        }
         name_b.append_null();
     }
 
@@ -1884,10 +1913,31 @@ fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatc
             Arc::new(status.finish()),
             Arc::new(p_pu.finish()),
             Arc::new(q_pu.finish()),
+            Arc::new(p_i_pu.finish()),
+            Arc::new(q_i_pu.finish()),
+            Arc::new(p_y_pu.finish()),
+            Arc::new(q_y_pu.finish()),
             Arc::new(name_b.finish()),
         ],
     )
     .context("building loads batch")
+}
+
+fn classify_loads_zip_fidelity_presence(loads: &[models::Load]) -> &'static str {
+    if loads.is_empty() {
+        return "not_available";
+    }
+    let complete_rows = loads
+        .iter()
+        .filter(|l| l.ip_available && l.iq_available && l.yp_available && l.yq_available)
+        .count();
+    if complete_rows == 0 {
+        "not_available"
+    } else if complete_rows == loads.len() {
+        "complete"
+    } else {
+        "partial"
+    }
 }
 
 fn build_fixed_shunts_batch(
