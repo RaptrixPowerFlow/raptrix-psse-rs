@@ -453,7 +453,9 @@ fn token_to_positive_u32(token: &str) -> Option<u32> {
     if t.is_empty() {
         return None;
     }
-    t.parse::<i64>().ok().and_then(|v| (v > 0).then_some(v as u32))
+    t.parse::<i64>()
+        .ok()
+        .and_then(|v| (v > 0).then_some(v as u32))
 }
 
 fn token_to_f64(token: &str) -> Option<f64> {
@@ -462,11 +464,7 @@ fn token_to_f64(token: &str) -> Option<f64> {
         return None;
     }
     let v = parse_fortran_double(t);
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
-    }
+    if v.is_finite() { Some(v) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -976,7 +974,12 @@ fn parse_dc_line_record(f: &[String], dc_line_id: i32, converter_type: &str) -> 
     let control_mode_token = f
         .iter()
         .find(|t| t.chars().any(|c| c.is_ascii_alphabetic()))
-        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_ascii_lowercase())
+        .map(|s| {
+            s.trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .to_ascii_lowercase()
+        })
         .unwrap_or_else(|| "power".to_string());
 
     let p_setpoint_mw = numeric_tail.get(2).copied();
@@ -1533,8 +1536,7 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             // ================================================================
             ParseState::MultiSectionLine => {
                 let f = tokenize(data);
-                if let Some(row) = parse_multi_section_line_record(&f, next_multi_section_line_id)
-                {
+                if let Some(row) = parse_multi_section_line_record(&f, next_multi_section_line_id) {
                     result.multi_section_lines.push(row);
                     next_multi_section_line_id += 1;
                 } else {
@@ -1621,9 +1623,7 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
     );
 
     if dc_rows_rejected > 0 {
-        eprintln!(
-            "[parser] skipped {dc_rows_rejected} malformed/unsupported DC section row(s)"
-        );
+        eprintln!("[parser] skipped {dc_rows_rejected} malformed/unsupported DC section row(s)");
     }
     if multi_section_rows_rejected > 0 {
         eprintln!(

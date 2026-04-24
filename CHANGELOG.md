@@ -16,11 +16,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.2] - 2026-04-23
+
+### Release & CI
+
+- Bumped crate version to **0.3.2** (0.3.1 was already published; this release carries the RPF v0.9.0 work plus automation).
+- Added **CI** workflow: `cargo fmt --check`, `cargo clippy`, `cargo test` on every push/PR to `main`.
+- Added **Public Safety** workflow (blocked paths, secrets scan) aligned with `raptrix-cim-rs`.
+- Added **Markdown lint** and **version consistency** checks (`CHANGELOG` heading must match `Cargo.toml`).
+- **Release** workflow now runs **`cargo test --workspace`** before cross-compiling artifacts.
+- **`scripts/verify-external-golden.sh`**: release-mode CLI pass over the full `tests/data/external` corpus (aligned with `golden_test.rs`); strict by default, `RELAX_MISSING=1` for partial trees.
+- **`scripts/test-wsl.ps1`** and **`scripts/verify.ps1`** (optional `-ExternalGolden`): same WSL workflow as `raptrix-cim-rs` for Windows / OneDrive file-access issues.
+- **`scripts/generate_all_rpfs.sh`**: repo-relative paths only; includes ACTIVSg10k (static + dynamic) and Texas2k GFM dynamic; removed hardcoded `/mnt/c/...` paths.
+- Optional **`external-golden.yml`** workflow (manual dispatch) runs the verify script with `RELAX_MISSING=1` on hosted runners without licensed inputs.
+- **README**: performance snapshot table, expanded testing / WSL / verification docs, and a short “solver completeness” gap list.
+
+### Schema (unchanged from 0.3.1 line)
+
+- Output remains RPF **v0.9.0** via `raptrix-cim-arrow` from `main` (see 0.3.1 changelog for field/table details).
+
+---
+
 ## [0.3.1] - 2026-04-19
 
 ### Schema Alignment
 
-- Completed full canonical RPF v0.8.9 support.
+- Completed full canonical RPF **v0.9.0** support (via `raptrix-cim-arrow` on `main`): **18** required root tables; removed `ibr_devices`; IBRs unified on `generators`.
+- Extended **`metadata`** with five nullable v0.9.0 Sentinel-readiness fields (null for legacy PSS/E exports).
+- Extended stub **`contingencies`** batch with six nullable v0.9.0 Sentinel columns (null for planning exports).
+- Added **`case_mode`** override path (`ExportOptions` / CLI `--case-mode`) including `hour_ahead_advisory`.
+- Reserved **`scenario_context`** API (`ExportOptions::scenario_context_rows`); non-empty rows error until optional-root IPC writer support lands in `raptrix-cim-arrow`.
 - Added explicit `owner_id` linkage on required exported tables.
 - Migrated generator export to unified hierarchical generator shape.
 
@@ -176,24 +201,25 @@ To create and publish a release:
 
 # 2. Commit changes
 git add Cargo.toml CHANGELOG.md
-git commit -m "chore: bump to v0.3.1"
+git commit -m "chore: bump to v0.3.2"
 
 # 3. Create an annotated tag
-git tag -a v0.3.1 -m "Release v0.3.1: full v0.8.9 schema alignment"
+git tag -a v0.3.2 -m "Release v0.3.2: RPF v0.9.0 + CI/release gates"
 
 # 4. Push commits and tags
 git push origin main
-git push origin v0.3.1
+git push origin v0.3.2
 ```
 
 The GitHub Actions `release` workflow will automatically:
 - Trigger on tag push (`v*.*.*` pattern).
-- Build binaries for Windows (x86_64), Linux (x86_64), and macOS (arm64).
+- Run `cargo test --workspace`, then build release binaries for Windows (x86_64), Linux (x86_64), and macOS (arm64).
 - Create a GitHub Release with auto-generated release notes.
 - Attach platform-specific executables and source archives.
 
 ---
 
+[0.3.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.2
 [0.3.1]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.1
 [0.3.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.0
 [0.2.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.2.2

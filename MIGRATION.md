@@ -16,32 +16,28 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
-### v0.3.1: Canonical RPF v0.8.9 Sync (Breaking)
+### v0.3.1: RPF v0.8.9 generator layout → **v0.9.0** contract (Breaking)
 
-Summary of changes:
-- Canonical RPF contract is now v0.8.9.
-- `generators` is now emitted in the unified hierarchical shape:
-    - `generator_id`, `unit_type`, `hierarchy_level`, `parent_generator_id`, `aggregation_count`
-    - MW/MVAR-native dispatch fields (`p_sched_mw`, `p_min_mw`, `p_max_mw`, `q_min_mvar`, `q_max_mvar`)
-    - `is_ibr`, `ibr_subtype`, `owner_id`, and `params`
-- Legacy flat generator rows are migrated at export time to unit-level hierarchy:
-    - `hierarchy_level = "unit"`
-    - `parent_generator_id = null`
-    - `aggregation_count = null`
-- Ownership linkage now exports explicitly on all required tables:
-    - `generators.owner_id`
-    - `buses.owner_id`
-    - `branches.owner_id`
-- `owners` table now emits v0.8.9 shape:
-    - `owner_id`, `name`, `short_name`, `type`, `params`
+Crate **0.3.2** tracks the latest **`raptrix-cim-arrow`** contract (currently **RPF v0.9.0**). Releases **0.3.1** and **0.3.2** cover the hierarchical generator model and the v0.9.0 wire shape (no `ibr_devices`; extended metadata / contingencies).
 
-Behavior notes:
-- IBR classification remains DYR-first with RAW WMOD fallback.
-- Canonical generator `ibr_subtype` values are `solar`, `wind`, `battery`, and `generic_ibr`.
+**Generator & ownership (from v0.8.9-era alignment):**
 
-Compatibility notes:
-- This is a hard break for generator wire shape. v0.8.8-era generator columns are not emitted.
-- This repository targets forward-only v0.8.9 output and does not preserve backward writer compatibility.
+- `generators` unified hierarchical shape: `generator_id`, `unit_type`, `hierarchy_level`, `parent_generator_id`, `aggregation_count`, MW/MVAR-native dispatch fields, `is_ibr`, `ibr_subtype`, `owner_id`, `params`.
+- Legacy flat RAW units export as `hierarchy_level = "unit"`, `parent_generator_id = null`, `aggregation_count = null`.
+- `generators.owner_id`, `buses.owner_id`, `branches.owner_id`; `owners` shape with `short_name`, `type`, `params`.
+
+**v0.9.0 wire contract:**
+
+- Canonical RPF is **v0.9.0** (see `raptrix-cim-rs` `docs/schema-contract.md`).
+- **`ibr_devices` removed** — **18** required root tables; IBRs only on **`generators`**.
+- **`metadata`**: five nullable Sentinel-readiness columns (default **null** for PSS/E): `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`.
+- **`contingencies`**: six nullable Sentinel columns (null for stub/planning exports).
+- **`case_mode`**: supports `hour_ahead_advisory` (CLI `--case-mode` / `ExportOptions::case_mode_override`; else inferred flat/warm from RAW).
+- **Optional `scenario_context`**: not emitted by default; non-empty `ExportOptions::scenario_context_rows` **errors** until `raptrix-cim-arrow` optional-root IPC support exists.
+
+**Behavior:** IBR classification remains DYR-first with RAW WMOD fallback; canonical `ibr_subtype` values remain `solar`, `wind`, `battery`, `generic_ibr`.
+
+**Compatibility:** Hard break vs v0.8.8 generator columns; regenerate `.rpf` artifacts; tooling must be v0.9.0-aware (no `ibr_devices` root column).
 
 ### v0.2.3 -> v0.2.4: Canonical RPF v0.8.8 Sync
 

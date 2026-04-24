@@ -1,0 +1,25 @@
+# Optional: run the external corpus check on a self-hosted runner that has
+# tests/data/external populated (licensed inputs are not in git).
+# Default GitHub-hosted runners will skip every case when RELAX_MISSING=1.
+
+name: External golden (optional)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release + verify (relaxed — no inputs in CI)
+        run: |
+          cargo build --release
+          RELAX_MISSING=1 ./scripts/verify-external-golden.sh

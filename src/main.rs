@@ -65,6 +65,13 @@ enum Commands {
         /// Optional scenario tags metadata override (repeatable).
         #[arg(long = "scenario-tag")]
         scenario_tags: Vec<String>,
+
+        /// Optional `metadata.case_mode` / root `rpf.case_mode` override (v0.9.0).
+        ///
+        /// Allowed: flat_start_planning, warm_start_planning, solved_snapshot, hour_ahead_advisory.
+        /// When omitted, mode is inferred from RAW bus voltages.
+        #[arg(long)]
+        case_mode: Option<String>,
     },
 
     /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file summary.
@@ -107,6 +114,7 @@ fn main() -> Result<()> {
             transformer_mode,
             study_purpose,
             scenario_tags,
+            case_mode,
         } => {
             let raw_str = raw
                 .to_str()
@@ -131,6 +139,8 @@ fn main() -> Result<()> {
                 transformer_representation_mode,
                 study_purpose,
                 scenario_tags,
+                case_mode_override: case_mode,
+                ..Default::default()
             };
 
             raptrix_psse_rs::write_psse_to_rpf_with_options(

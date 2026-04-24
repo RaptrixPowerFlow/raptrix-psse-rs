@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF v0.8.8) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.0**) Apache
 Arrow schema.
 
 > **Fidelity policy**: numeric fields are written exactly as they appear in the
@@ -31,18 +31,15 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.8.8 additions
+### v0.9.0 contract (current)
 
-- Required tables now include `multi_section_lines`, `dc_lines_2w`, `switched_shunt_banks`, and `ibr_devices`.
+- **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
+- Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
-- `metadata` includes modern-grid fields:
-  - `modern_grid_profile`
-  - `ibr_penetration_pct`
-  - `has_ibr`
-  - `has_smart_valve`
-  - `has_multi_terminal_dc`
-  - `study_purpose`
-  - `scenario_tags`
+- `metadata` includes modern-grid fields plus nullable Sentinel-readiness columns (typically **null** for PSS/E-only exports):
+  - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
+  - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
+- Optional **`scenario_context`** table is a Sentinel export feature; this converter does not emit it by default.
 
 ---
 

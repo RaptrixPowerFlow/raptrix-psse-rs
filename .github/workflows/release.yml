@@ -53,6 +53,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain (test gate)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo test (release gate)
+        run: cargo test --workspace
+
       - name: Resolve version
         id: version
         shell: bash
