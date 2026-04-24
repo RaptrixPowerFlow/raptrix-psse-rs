@@ -84,11 +84,11 @@ impl TransformerRepresentationMode {
     }
 }
 
-/// One row for the optional v0.9.0 `scenario_context` table (Sentinel exports).
+/// One row for the optional v0.9.0 `scenario_context` table when a writer emits that optional root.
 ///
-/// Writing these rows to disk requires `raptrix-cim-arrow` optional-root support; until then,
-/// [`write_psse_to_rpf_with_options`] returns an error if [`ExportOptions::scenario_context_rows`]
-/// is non-empty.
+/// Persisting these rows requires optional-root IPC support from the linked `raptrix-cim-arrow`
+/// build. [`write_psse_to_rpf_with_options`] returns an error if [`ExportOptions::scenario_context_rows`]
+/// is non-empty when that path is unavailable.
 #[derive(Debug, Clone)]
 pub struct ScenarioContextRow {
     pub scenario_context_id: i32,
@@ -122,8 +122,8 @@ pub struct ExportOptions {
     /// Allowed: `flat_start_planning`, `warm_start_planning`, `solved_snapshot`,
     /// `hour_ahead_advisory`.
     pub case_mode_override: Option<String>,
-    /// Optional Sentinel `scenario_context` rows. Non-empty is rejected until the Arrow writer
-    /// can append the optional root column (see README).
+    /// Optional `scenario_context` rows. Non-empty input is rejected when the Arrow IPC
+    /// writer cannot emit that optional root (see README).
     pub scenario_context_rows: Vec<ScenarioContextRow>,
 }
 
@@ -147,11 +147,9 @@ struct BusAggregate {
 
 /// Parse `raw_path` and write a Raptrix PowerFlow Interchange `.rpf` file.
 ///
-/// # C++ port TODO
-/// - Populate aggregated bus P/Q fields from loads and generators.
-/// - Fill `g_shunt` / `b_shunt` from fixed-shunt records keyed by bus.
-/// - Map PSS/E vector-group codes to CIM VectorGroup enum values.
-/// - Extend solver-side interpretation for non-machine DYR model families.
+/// Authoritative field coverage and “not stored” rules are documented in
+/// `docs/psse-mapping.md` for the released crate—rustdoc here stays minimal so
+/// the public API does not read like an internal task list.
 ///
 /// Pass `dyr_path = None` when no dynamic data file is available.
 pub fn write_psse_to_rpf(raw_path: &str, dyr_path: Option<&str>, output: &str) -> Result<()> {
@@ -168,7 +166,7 @@ pub fn write_psse_to_rpf_with_options(
 ) -> Result<()> {
     if !options.scenario_context_rows.is_empty() {
         anyhow::bail!(
-            "scenario_context_rows is non-empty, but optional `scenario_context` root emission is not yet wired in raptrix-cim-arrow's IPC writer. Omit scenario_context_rows for standard PSS/E exports."
+            "scenario_context_rows is non-empty, but optional `scenario_context` root emission is unsupported in this build's Arrow IPC path. Omit scenario_context_rows for standard PSS/E exports."
         );
     }
 
@@ -1344,7 +1342,7 @@ fn build_metadata_batch(
         scenario_tags_arr.append(true);
     }
 
-    // v0.9.0 Sentinel-readiness metadata — null for legacy PSS/E planning exports.
+    // v0.9.0 extended nullable metadata columns — null for typical PSS/E planning exports.
     let mut hour_ahead_uncertainty_band = Float64Builder::new();
     hour_ahead_uncertainty_band.append_null();
     let mut commitment_source = StringBuilder::new();
@@ -2299,8 +2297,8 @@ fn build_dc_lines_2w_batch(rows: &[models::DcLine2W]) -> Result<RecordBatch> {
     .context("building dc_lines_2w batch")
 }
 
-/// Build optional `scenario_context` batch (v0.9.0). Reserved for when raptrix-cim-arrow can append
-/// this optional root column; currently unused by the write path.
+/// Build optional `scenario_context` batch (v0.9.0). Used only when the write path can emit
+/// that optional root; otherwise the export errors before this runs.
 #[allow(dead_code)]
 fn build_scenario_context_batch(rows: &[ScenarioContextRow]) -> Result<RecordBatch> {
     let schema =
@@ -2430,7 +2428,7 @@ fn build_transformers_2w_batch(
         ckt.append_value(t.ckt.as_ref());
         r.append_value(t.r12);
         x.append_value(t.x12);
-        winding1_r.append_value(0.0); // TODO: decompose per-winding impedance
+        winding1_r.append_value(0.0); // Placeholder: see psse-mapping for 3W export notes
         winding1_x.append_value(0.0);
         winding2_r.append_value(0.0);
         winding2_x.append_value(0.0);
@@ -2596,7 +2594,7 @@ fn append_vector_group(
 ) {
     // PSS/E RAW does not directly encode IEC vector-group semantics.
     // CW/CZ describe voltage/impedance coding, not winding connection group.
-    // The schema requires a non-null value, so use an explicit sentinel rather
+    // The schema requires a non-null value, so use an explicit placeholder rather
     // than fabricating a specific IEC vector group.
     let _ = transformer;
     builder.append_value("unknown");

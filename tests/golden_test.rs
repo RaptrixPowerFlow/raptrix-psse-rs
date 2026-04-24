@@ -806,6 +806,13 @@ const OUT_IEEE14: &str = "tests/golden/IEEE_14_bus_static.rpf";
 
 #[test]
 fn golden_ieee14_static() {
+    if !std::path::Path::new(RAW_PATH_IEEE14).exists() {
+        eprintln!(
+            "[skip] {} not found — place IEEE 14-bus RAW at this path to enable test",
+            RAW_PATH_IEEE14
+        );
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_IEEE14, None, OUT_IEEE14)
         .unwrap_or_else(|e| panic!("IEEE 14 conversion failed: {e:#}"));
@@ -872,6 +879,13 @@ const OUT_IEEE118: &str = "tests/golden/IEEE_118_Bus_static.rpf";
 
 #[test]
 fn golden_ieee118_static() {
+    if !std::path::Path::new(RAW_PATH_IEEE118).exists() {
+        eprintln!(
+            "[skip] {} not found — place IEEE 118-bus RAW at this path to enable test",
+            RAW_PATH_IEEE118
+        );
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_IEEE118, None, OUT_IEEE118)
         .unwrap_or_else(|e| panic!("IEEE 118 conversion failed: {e:#}"));
@@ -1269,6 +1283,13 @@ const OUT_ACTIVSG25K: &str = "tests/golden/ACTIVSg25k_static.rpf";
 
 #[test]
 fn golden_activsg25k_static() {
+    if !std::path::Path::new(RAW_PATH_ACTIVSG25K).exists() {
+        eprintln!(
+            "[skip] {} not found — place ACTIVSg25k RAW at this path to enable test",
+            RAW_PATH_ACTIVSG25K
+        );
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSG25K, None, OUT_ACTIVSG25K)
         .unwrap_or_else(|e| panic!("ACTIVSg25k conversion failed: {e:#}"));
@@ -1336,6 +1357,13 @@ const OUT_ACTIVSG70K: &str = "tests/golden/ACTIVSg70k_static.rpf";
 
 #[test]
 fn golden_activsg70k_static() {
+    if !std::path::Path::new(RAW_PATH_ACTIVSG70K).exists() {
+        eprintln!(
+            "[skip] {} not found — place ACTIVSg70k RAW at this path to enable test",
+            RAW_PATH_ACTIVSG70K
+        );
+        return;
+    }
     let t0 = Instant::now();
     raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVSG70K, None, OUT_ACTIVSG70K)
         .unwrap_or_else(|e| panic!("ACTIVSg70k conversion failed: {e:#}"));
