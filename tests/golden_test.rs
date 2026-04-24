@@ -12,9 +12,9 @@ use std::time::Instant;
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, ListArray, StringArray};
 use raptrix_cim_arrow::{
     RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS,
-    TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_IBR_DEVICES, TABLE_LOADS, TABLE_METADATA,
-    TABLE_MULTI_SECTION_LINES, TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS,
-    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
+    TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_MULTI_SECTION_LINES,
+    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W,
+    TABLE_TRANSFORMERS_3W,
 };
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
@@ -39,18 +39,30 @@ fn has_table(summary: &raptrix_cim_arrow::RpfSummary, table_name: &str) -> bool 
     summary.tables.iter().any(|t| t.table_name == table_name)
 }
 
-fn assert_v089_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
+fn assert_v090_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
     for table in [
         TABLE_MULTI_SECTION_LINES,
         TABLE_DC_LINES_2W,
         TABLE_SWITCHED_SHUNT_BANKS,
-        TABLE_IBR_DEVICES,
     ] {
         assert!(
             has_table(summary, table),
-            "missing v0.8.9 required table: {table}"
+            "missing v0.9.0 required table: {table}"
         );
     }
+}
+
+fn count_ibr_generators(generators: &arrow::record_batch::RecordBatch) -> usize {
+    let col = generators
+        .column_by_name("is_ibr")
+        .expect("missing generators.is_ibr");
+    let flags = col
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("generators.is_ibr must be Boolean");
+    (0..generators.num_rows())
+        .filter(|&i| !flags.is_null(i) && flags.value(i))
+        .count()
 }
 
 fn first_existing_path<'a>(candidates: &[&'a str]) -> Option<&'a str> {
@@ -240,7 +252,7 @@ fn golden_texas7k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v089_required_tables(&summary);
+    assert_v090_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -476,7 +488,7 @@ fn golden_texas7k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v089_required_tables(&summary);
+    assert_v090_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -547,7 +559,7 @@ fn golden_texas2k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v089_required_tables(&summary);
+    assert_v090_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -600,7 +612,7 @@ fn golden_texas2k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v089_required_tables(&summary);
+    assert_v090_required_tables(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -624,12 +636,14 @@ const DYR_PATH_ACTIVS10K_DYN: &str = "tests/data/external/ACTIVSg10k.dyn";
 const OUT_ACTIVS10K_DYNAMIC: &str = "tests/golden/ACTIVSg10k_dynamic.rpf";
 
 const RAW_PATH_TX2K_GFM: &str = "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.RAW";
-const DYR_PATH_TX2K_GFM_DYR: &str = "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.dyr";
-const DYR_PATH_TX2K_GFM_DYN: &str = "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.dyn";
+const DYR_PATH_TX2K_GFM_DYR: &str =
+    "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.dyr";
+const DYR_PATH_TX2K_GFM_DYN: &str =
+    "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.dyn";
 const OUT_TX2K_GFM_DYNAMIC: &str = "tests/golden/Texas2k_series24_gfm_dynamic.rpf";
 
 #[test]
-fn golden_activsg10k_dynamic_v089_tables_and_metadata() {
+fn golden_activsg10k_dynamic_v090_tables_and_metadata() {
     let Some(dyr_path) = first_existing_path(&[DYR_PATH_ACTIVS10K_DYN, DYR_PATH_ACTIVS10K_DYR])
     else {
         eprintln!(
@@ -651,8 +665,11 @@ fn golden_activsg10k_dynamic_v089_tables_and_metadata() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "expected DYR payload rows");
-    assert_v089_required_tables(&summary);
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
+        "expected DYR payload rows"
+    );
+    assert_v090_required_tables(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
@@ -664,8 +681,13 @@ fn golden_activsg10k_dynamic_v089_tables_and_metadata() {
         .downcast_ref::<BooleanArray>()
         .expect("metadata.has_ibr must be Boolean")
         .value(0);
-    let ibr_rows = table_by_name(&tables, TABLE_IBR_DEVICES).num_rows();
-    assert_eq!(has_ibr, ibr_rows > 0, "metadata.has_ibr must match ibr_devices rows");
+    let generators = table_by_name(&tables, TABLE_GENERATORS);
+    let ibr_gens = count_ibr_generators(generators);
+    assert_eq!(
+        has_ibr,
+        ibr_gens > 0,
+        "metadata.has_ibr must match generators with is_ibr"
+    );
 }
 
 #[test]
@@ -691,8 +713,11 @@ fn golden_texas2k_gfm_dynamic_ibr_detection() {
 
     let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
-    assert!(rows(&summary, TABLE_DYNAMICS_MODELS) > 0, "expected DYR payload rows");
-    assert_v089_required_tables(&summary);
+    assert!(
+        rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
+        "expected DYR payload rows"
+    );
+    assert_v090_required_tables(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
@@ -704,12 +729,15 @@ fn golden_texas2k_gfm_dynamic_ibr_detection() {
         .downcast_ref::<BooleanArray>()
         .expect("metadata.has_ibr must be Boolean")
         .value(0);
-    assert!(has_ibr, "Texas2k GFM dynamic case should be tagged as containing IBR");
-
-    let ibr_devices = table_by_name(&tables, TABLE_IBR_DEVICES);
     assert!(
-        ibr_devices.num_rows() > 0,
-        "Texas2k GFM dynamic case should emit ibr_devices rows"
+        has_ibr,
+        "Texas2k GFM dynamic case should be tagged as containing IBR"
+    );
+
+    let generators = table_by_name(&tables, TABLE_GENERATORS);
+    assert!(
+        count_ibr_generators(generators) > 0,
+        "Texas2k GFM dynamic case should mark IBR on at least one generator row"
     );
 }
 

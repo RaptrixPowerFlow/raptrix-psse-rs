@@ -55,8 +55,6 @@ pub struct Network {
     pub switched_shunts: Vec<SwitchedShunt>,
     /// Switched shunt per-bank decomposition rows (v0.8.9 table source).
     pub switched_shunt_banks: Vec<SwitchedShuntBank>,
-    /// IBR devices derived from RAW + DYR records.
-    pub ibr_devices: Vec<IbrDevice>,
     /// True when section 9 (multi-terminal DC) contains non-empty records.
     pub has_multi_terminal_dc: bool,
     /// All dynamic model records parsed from a paired `.dyr` file.
@@ -593,35 +591,6 @@ pub struct SwitchedShuntBank {
     pub status: bool,
     /// Step index within the bank.
     pub step: i32,
-}
-
-/// IBR device row for the v0.8.9 `ibr_devices` table.
-#[derive(Debug, Default, Clone)]
-pub struct IbrDevice {
-    /// Stable IBR identifier synthesized by converter.
-    pub device_id: i32,
-    /// Connected bus id.
-    pub bus_id: u32,
-    /// Source generator id on the same bus (internal join key).
-    pub generator_id: Box<str>,
-    /// Device type token (`wind`, `solar`, `bess`, `generic_inverter`).
-    pub device_type: Box<str>,
-    /// Rated MVA.
-    pub rated_mva: f64,
-    /// Maximum active power in MW.
-    pub p_max_mw: f64,
-    /// Minimum reactive power in MVAr.
-    pub q_min_mvar: f64,
-    /// Maximum reactive power in MVAr.
-    pub q_max_mvar: f64,
-    /// Control mode token.
-    pub control_mode: Box<str>,
-    /// In-service status.
-    pub status: bool,
-    /// Flattened numeric parameter map entries (`key`, `value`).
-    pub params: Vec<(Box<str>, f64)>,
-    /// Optional display name.
-    pub name: Option<Box<str>>,
 }
 
 // ---------------------------------------------------------------------------

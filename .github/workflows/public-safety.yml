@@ -1,0 +1,25 @@
+# raptrix-psse-rs
+# SPDX-License-Identifier: MPL-2.0
+
+name: Public Safety
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run public safety checks
+        run: |
+          chmod +x ./scripts/public-safety-check.sh
+          ./scripts/public-safety-check.sh --mode tracked

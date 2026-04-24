@@ -323,7 +323,8 @@ fn negative_bus_numbers_rejected() {
 #[test]
 fn msl_with_wmod_like_field() {
     let raw = raw_with_msl_rows("100, 200, 'MSL1', 0.01, 0.05, 0.02, 500.0, 400.0, 1");
-    let network = parse_snippet(&raw).expect("Failed to parse MSL row with trailing WMOD-like field");
+    let network =
+        parse_snippet(&raw).expect("Failed to parse MSL row with trailing WMOD-like field");
 
     assert_eq!(network.multi_section_lines.len(), 1);
     let msl = &network.multi_section_lines[0];

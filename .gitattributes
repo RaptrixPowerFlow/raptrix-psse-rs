@@ -1,0 +1,2 @@
+# Bash entrypoints must use LF so WSL/Linux shebangs work (avoid env: bash\r).
+scripts/*.sh text eol=lf
