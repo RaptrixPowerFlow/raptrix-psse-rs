@@ -656,9 +656,7 @@ fn golden_texas2k_dynamic() {
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
     let loads = table_by_name(&tables, TABLE_LOADS);
     let q_y = col_f64(loads, "q_y_pu");
-    let present_yq = (0..q_y.len())
-        .filter(|&i| !q_y.is_null(i))
-        .count();
+    let present_yq = (0..q_y.len()).filter(|&i| !q_y.is_null(i)).count();
     assert!(
         present_yq > 0,
         "expected at least one populated loads.q_y_pu row in Texas2k dynamic dataset"
