@@ -29,6 +29,10 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt --all -- --check
 
+      - name: Version sync check
+        shell: pwsh
+        run: ./scripts/sync-versions.ps1 -Check
+
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets --all-features
 
