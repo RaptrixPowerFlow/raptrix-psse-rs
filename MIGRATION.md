@@ -18,6 +18,17 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.5: RPF v0.9.1 -> **v0.9.2** (Schema-field additive, strict reader expectation)
+
+`raptrix-psse-rs` now writes the required per-generator reactive schedule field:
+
+- `generators.q_sched_mvar = QG` (MVAr, from RAW section 4 machine rows)
+
+Compatibility notes:
+
+- Files produced against v0.9.2 include `q_sched_mvar` as a required generator column.
+- Reader paths using v0.9.2 contract validation reject generator tables missing `q_sched_mvar`.
+
 ### v0.3.4: RPF v0.9.0 -> **v0.9.1** (Non-breaking)
 
 `raptrix-psse-rs` now aligns with the additive **RPF v0.9.1** load-model extension from the linked `raptrix-cim-arrow` contract.

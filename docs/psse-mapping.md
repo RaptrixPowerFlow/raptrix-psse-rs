@@ -195,7 +195,7 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | VS, IREG, ZR, ZX, RT, XT, GTAP, RMPCT, QG, WMOD, WPF | `vs`, `ireg`, … | `params` | Map keys: `vs`, `ireg` (only when non-zero), `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg` (MVAr), `wmod`, `wpf` — same numeric units as PSS/E RAW. |
 | — | DYR (`DyrGeneratorData`) | `params` | Adds `H`, `xd_prime`, `D` when finite (alongside RAW keys above). |
 | VS | `vs` | *(also bus aggregate)* | With other in-service machines at the bus, last **non-zero** finite `VS` sets `buses.v_mag_set` when present; else `buses` uses bus `VM`. |
-| QG | `qg` | *(also bus aggregate)* | Contributes to `buses.q_sched`. |
+| QG | `qg` | `q_sched_mvar` | MVAr schedule per generator; also contributes to `buses.q_sched` aggregate. |
 | — | — | `name` | Always null (PSS/E generators have no display name in RAW). |
 
 ---

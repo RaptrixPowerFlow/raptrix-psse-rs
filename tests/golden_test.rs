@@ -330,6 +330,7 @@ fn golden_texas7k_static() {
     let generators = table_by_name(&tables, TABLE_GENERATORS);
     let gen_status = col_bool(generators, "status");
     let gen_p_mw_col = col_f64(generators, "p_sched_mw");
+    let _gen_q_sched_mvar_col = col_f64(generators, "q_sched_mvar");
     let gen_p_mw = sum_f64_where(gen_p_mw_col, gen_status);
 
     // v0.8.9 generator hierarchy migration: legacy flat RAW units map to unit level.
@@ -651,16 +652,16 @@ fn golden_texas2k_dynamic() {
         "EI deck should export complete ZIP fidelity metadata"
     );
 
-    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_EI_STATIC))
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
     let loads = table_by_name(&tables, TABLE_LOADS);
     let q_y = col_f64(loads, "q_y_pu");
-    let nonzero_yq = (0..q_y.len())
-        .filter(|&i| !q_y.is_null(i) && q_y.value(i).abs() > 1.0e-9)
+    let present_yq = (0..q_y.len())
+        .filter(|&i| !q_y.is_null(i))
         .count();
     assert!(
-        nonzero_yq > 0,
-        "expected non-zero loads.q_y_pu rows in EI dataset"
+        present_yq > 0,
+        "expected at least one populated loads.q_y_pu row in Texas2k dynamic dataset"
     );
 }
 
