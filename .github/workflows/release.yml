@@ -119,6 +119,10 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
       - uses: actions/checkout@v5
         if: github.event_name != 'workflow_run'
@@ -149,6 +153,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: github.ref_type == 'tag' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: v${{ steps.version.outputs.value }}
           target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           generate_release_notes: true
