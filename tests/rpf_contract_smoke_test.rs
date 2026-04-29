@@ -123,6 +123,14 @@ CONTRACT SMOKE
         .expect("generators.owner_id must be Int32");
     assert_eq!(generator_owner.value(0), 1);
 
+    let q_sched_mvar = generators
+        .column_by_name("q_sched_mvar")
+        .expect("missing generators.q_sched_mvar")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("generators.q_sched_mvar must be Float64");
+    assert_eq!(q_sched_mvar.value(0), 10.0);
+
     let params_col = generators
         .column_by_name("params")
         .expect("missing generators.params");

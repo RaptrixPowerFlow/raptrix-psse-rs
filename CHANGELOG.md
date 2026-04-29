@@ -20,6 +20,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.5] - 2026-04-29
+
+### Added
+
+- **Required generator reactive schedule export**: `generators.q_sched_mvar` is now always exported from PSS/E RAW `QG` (MVAr), aligning with schema v0.9.2 strict per-generator reactive scheduling.
+
+### Changed
+
+- **Generator table contract alignment**: generator batch construction now emits `q_sched_mvar` in canonical order between `p_sched_mw` and `p_min_mw`.
+- **Contract tests/golden checks** updated to assert `q_sched_mvar` presence and type.
+
+### Documentation
+
+- `docs/psse-mapping.md` now maps `QG -> generators.q_sched_mvar` and documents its continued contribution to `buses.q_sched`.
+
+---
+
 ## [0.3.4] - 2026-04-24
 
 ### Added

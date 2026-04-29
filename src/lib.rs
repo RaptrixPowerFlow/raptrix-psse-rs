@@ -1740,6 +1740,7 @@ fn build_generators_batch(
     let mut is_ibr = BooleanBuilder::new();
     let mut ibr_subtype = StringBuilder::new();
     let mut p_sched_mw = Float64Builder::new();
+    let mut q_sched_mvar = Float64Builder::new();
     let mut p_min_mw = Float64Builder::new();
     let mut p_max_mw = Float64Builder::new();
     let mut q_min_mvar = Float64Builder::new();
@@ -1776,6 +1777,7 @@ fn build_generators_batch(
             ibr_subtype.append_null();
         }
         p_sched_mw.append_value(generator.pg);
+        q_sched_mvar.append_value(generator.qg);
         p_min_mw.append_value(generator.pb);
         p_max_mw.append_value(generator.pt);
         q_min_mvar.append_value(generator.qb);
@@ -1836,6 +1838,7 @@ fn build_generators_batch(
             Arc::new(is_ibr.finish()),
             Arc::new(ibr_subtype.finish()),
             Arc::new(p_sched_mw.finish()),
+            Arc::new(q_sched_mvar.finish()),
             Arc::new(p_min_mw.finish()),
             Arc::new(p_max_mw.finish()),
             Arc::new(q_min_mvar.finish()),
