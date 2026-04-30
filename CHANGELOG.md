@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.3.6] - 2026-04-30
+
 ### Changed
 
 - **Schema v0.9.3 nominal-kV alignment**: `branches`, `transformers_2w`, and `transformers_3w` nominal-kV columns now export as required non-null values.
