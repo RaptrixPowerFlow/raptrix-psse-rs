@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Schema v0.9.3 nominal-kV alignment**: `branches`, `transformers_2w`, and `transformers_3w` nominal-kV columns now export as required non-null values.
+- **Nominal-kV fallback policy**: transformer nominal-kV uses RAW `NOMV*` when valid, then bus nominal-kV fallback; expanded star-leg rows can use opposite-side bus nominal-kV when the synthetic star bus has no base-kV row.
+- **Fail-fast export semantics**: conversion now errors when required nominal-kV cannot be resolved for v0.9.3 contract columns.
+
+### Tests
+
+- Added contract and representation assertions for non-null positive nominal-kV fields across branches and transformer tables.
+- Added smoke coverage for nominal-kV fallback behavior when a transformer side lacks valid `NOMV`.
+
+### Documentation
+
+- Updated `README.md`, `MIGRATION.md`, and `docs/psse-mapping.md` for v0.9.3 required nominal-kV semantics.
+
 ---
 
 ## [0.3.5] - 2026-04-29

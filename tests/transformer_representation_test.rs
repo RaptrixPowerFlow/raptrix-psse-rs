@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{BooleanArray, Int32Array};
+use arrow::array::{Array, BooleanArray, Float64Array, Int32Array};
 use raptrix_cim_arrow::{TABLE_BUSES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W};
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
@@ -142,6 +142,26 @@ fn assert_no_dual_materialization(tables: &[(String, arrow::record_batch::Record
     }
 }
 
+fn assert_non_null_positive_f64_column(
+    batch: &arrow::record_batch::RecordBatch,
+    column: &str,
+    context: &str,
+) {
+    let values = batch
+        .column_by_name(column)
+        .unwrap_or_else(|| panic!("missing {context}.{column}"))
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap_or_else(|| panic!("{context}.{column} must be Float64"));
+    for row in 0..values.len() {
+        assert!(
+            !values.is_null(row) && values.value(row) > 0.0,
+            "schema v0.9.3 requires non-null positive {context}.{column} (row {})",
+            row + 1
+        );
+    }
+}
+
 #[test]
 fn expanded_only_output_contains_no_native_3w_rows() {
     let raw_path = unique_temp_path("expanded_case", "raw");
@@ -173,6 +193,8 @@ fn expanded_only_output_contains_no_native_3w_rows() {
         tx2w.num_rows() >= 4,
         "expanded mode must retain native 2W plus 3W star-leg expansions"
     );
+    assert_non_null_positive_f64_column(tx2w, "from_nominal_kv", "transformers_2w");
+    assert_non_null_positive_f64_column(tx2w, "to_nominal_kv", "transformers_2w");
 
     let root_metadata = raptrix_cim_arrow::rpf_file_metadata(&out_path)
         .expect("rpf_file_metadata must succeed for expanded output");
@@ -218,6 +240,11 @@ fn native_3w_only_output_contains_no_star_legs() {
         1,
         "native mode must keep only real 2W rows and drop 3W star-leg expansions"
     );
+    assert_non_null_positive_f64_column(tx2w, "from_nominal_kv", "transformers_2w");
+    assert_non_null_positive_f64_column(tx2w, "to_nominal_kv", "transformers_2w");
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_h", "transformers_3w");
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_m", "transformers_3w");
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_l", "transformers_3w");
 
     let root_metadata = raptrix_cim_arrow::rpf_file_metadata(&out_path)
         .expect("rpf_file_metadata must succeed for native output");
