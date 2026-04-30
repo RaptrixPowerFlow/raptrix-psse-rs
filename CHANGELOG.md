@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.7] - 2026-04-30
+
+### Fixed
+
+- **Release automation resilience**: auto-tag workflow now reacts to `CHANGELOG.md` updates as well as `Cargo.toml`, so version-sync fixes can automatically retrigger release artifact publishing.
+
+---
+
 ## [0.3.6] - 2026-04-30
 
 ### Changed
