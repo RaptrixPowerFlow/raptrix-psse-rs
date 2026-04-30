@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.1**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.3**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,12 +33,13 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.9.1 contract (current)
+### v0.9.3 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- `loads` includes additive ZIP fidelity columns in v0.9.1: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
+- `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
+- `branches.from_nominal_kv` / `to_nominal_kv`, `transformers_2w.from_nominal_kv` / `to_nominal_kv`, and `transformers_3w.nominal_kv_h/m/l` are required non-null in v0.9.3. Export uses RAW values when valid and falls back to connected bus nominal-kV.
 - `metadata` includes modern-grid fields plus additional nullable v0.9.0 columns (typically **null** for PSS/E-only exports):
   - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
@@ -106,7 +107,7 @@ several `buses` columns:
 |---|---|---|---|---|
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
 | NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
-| BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (nullable Float64). |
+| BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (required Float64). |
 | IDE | 4 | `ide` | `type` | Int8: 1=PQ load, 2=PQ-gen, 3=PV, 4=slack (interchange). PSS/E `IDE` uses **2** for PV and **3** for PQ generator; the importer maps these to interchange **3** / **2**. |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
 | ZONE | 6 | `zone` | `zone` | Foreign key → `zones.zone_id`. |
@@ -225,8 +226,8 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | — | — | `phase` | Always 0.0 (no phase shift on line branches). |
 | — | — | `branch_id` | 1-based row index synthesized at export time. |
 | — | — | `name` | Always null. |
-| — | — | `from_nominal_kv` | Looked up from `buses.nominal_kv` at export time. |
-| — | — | `to_nominal_kv` | Looked up from `buses.nominal_kv` at export time. |
+| — | — | `from_nominal_kv` | Required. Resolved from `buses.nominal_kv` at export time. |
+| — | — | `to_nominal_kv` | Required. Resolved from `buses.nominal_kv` at export time. |
 
 **v0.8.6+ FACTS extension columns** (nullable; populated when section-18 rows can be matched safely):
 
@@ -269,13 +270,13 @@ At export time the converter enforces one representation policy per file:
 | X1-2 | 2 | `x12` | `x` | Series reactance. |
 | SBASE1-2 | 2 | `sbase12` | *(not stored)* | Winding MVA base; used during parse only. |
 | WINDV1 | 3 | `windv1` | `tap_ratio` | Off-nominal turns ratio, winding 1. |
-| NOMV1 | 3 | `nomv1` | `from_nominal_kv` | Rated kV; null if NOMV1 = 0. |
+| NOMV1 | 3 | `nomv1` | `from_nominal_kv` | Required. Uses `NOMV1` when positive, else falls back to connected bus nominal-kV. |
 | ANG1 | 3 | `ang1` | `phase_shift` | ANG1 × π/180 → radians. |
 | RATA1 | 3 | `rata1` | `rate_a` | RATA1 / SBASE (pu). |
 | RATB1 | 3 | `ratb1` | `rate_b` | RATB1 / SBASE. |
 | RATC1 | 3 | `ratc1` | `rate_c` | RATC1 / SBASE. |
 | WINDV2 | 4 | `windv2` | *(not stored)* | Used only during 3W star expansion. |
-| NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Rated kV; null if NOMV2 = 0. |
+| NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Required. Uses `NOMV2` when positive, else falls back to connected bus nominal-kV (or opposite-side bus for synthetic star-leg rows). |
 | — | — | — | `nominal_tap_ratio` | Derived as `NOMV1 / NOMV2` when both rated voltages are present; falls back to `1.0` otherwise. |
 | — | — | — | `vector_group` | Always `"unknown"`. PSS/E RAW does not directly encode IEC vector-group semantics; `CW` / `CZ` describe voltage and impedance coding, not winding connection group. |
 | — | — | — | `winding1_r` / `winding1_x` | Placeholder 0.0 in this exporter; series branch R/X carry the modeled impedance. |

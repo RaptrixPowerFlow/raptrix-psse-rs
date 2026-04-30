@@ -18,6 +18,28 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.6: RPF v0.9.2 -> **v0.9.3** (Breaking)
+
+`raptrix-psse-rs` now aligns with the schema v0.9.3 nominal-kV requirement for reporting and visual-display fidelity.
+
+What changed:
+
+- `branches.from_nominal_kv` and `branches.to_nominal_kv` are now required (non-null).
+- `transformers_2w.from_nominal_kv` and `transformers_2w.to_nominal_kv` are now required (non-null).
+- `transformers_3w.nominal_kv_h`, `nominal_kv_m`, and `nominal_kv_l` are now required (non-null).
+
+Writer behavior:
+
+- Prefer RAW transformer `NOMV*` values when they are positive.
+- Fallback to connected bus nominal-kV when `NOMV*` is missing/non-positive.
+- In expanded star-leg cases where one side is synthetic, the opposite winding bus nominal-kV is used as deterministic fallback.
+- Export fails fast when a required nominal-kV cannot be resolved.
+
+Compatibility notes:
+
+- This is a breaking contract change relative to v0.9.2 nullability.
+- Regenerate all golden `.rpf` outputs so downstream checks consume v0.9.3-valid files.
+
 ### v0.3.5: RPF v0.9.1 -> **v0.9.2** (Schema-field additive, strict reader expectation)
 
 `raptrix-psse-rs` now writes the required per-generator reactive schedule field:

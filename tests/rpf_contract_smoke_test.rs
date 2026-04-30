@@ -173,6 +173,26 @@ CONTRACT SMOKE
         .downcast_ref::<Int32Array>()
         .expect("branches.owner_id must be Int32");
     assert_eq!(branch_owner.value(0), 1);
+    let branch_from_nominal_kv = branches
+        .column_by_name("from_nominal_kv")
+        .expect("missing branches.from_nominal_kv")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("branches.from_nominal_kv must be Float64");
+    let branch_to_nominal_kv = branches
+        .column_by_name("to_nominal_kv")
+        .expect("missing branches.to_nominal_kv")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("branches.to_nominal_kv must be Float64");
+    assert!(
+        !branch_from_nominal_kv.is_null(0) && branch_from_nominal_kv.value(0) > 0.0,
+        "schema v0.9.3 requires non-null positive branches.from_nominal_kv"
+    );
+    assert!(
+        !branch_to_nominal_kv.is_null(0) && branch_to_nominal_kv.value(0) > 0.0,
+        "schema v0.9.3 requires non-null positive branches.to_nominal_kv"
+    );
 
     let owners = tables
         .iter()
@@ -471,6 +491,73 @@ CM
     assert_eq!(
         meta.get(METADATA_KEY_CASE_MODE).map(|s| s.as_str()),
         Some("hour_ahead_advisory")
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn nominal_kv_required_uses_opposite_bus_fallback_for_star_or_missing_side() {
+    let raw_path = unique_temp_path("nominal_kv_required_fail", "raw");
+    let out_path = unique_temp_path("nominal_kv_required_fail", "rpf");
+
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / NOMINAL_KV_REQUIRED_FAIL
+NOMINAL KV FAIL
+NOMINAL KV FAIL
+1,'B1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'B2',0.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+1,2,0,'1',1,1,1,0.0,0.0,1,'',1
+0.01,0.10,100.0
+1.0,0.0,0.0,100.0,110.0,120.0
+1.0,0.0
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+1,1,0.0,10.0,'AREA1'
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+1,'ZONE1'
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+1,'OWNER1'
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write raw");
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().expect("raw path must be utf-8"),
+        None,
+        out_path.to_str().expect("out path must be utf-8"),
+    )
+    .expect("conversion must succeed with opposite-bus nominal-kV fallback");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let tx2w = tables
+        .iter()
+        .find(|(name, _)| name == raptrix_cim_arrow::TABLE_TRANSFORMERS_2W)
+        .map(|(_, batch)| batch)
+        .expect("missing transformers_2w");
+    let to_nominal_kv = tx2w
+        .column_by_name("to_nominal_kv")
+        .expect("missing transformers_2w.to_nominal_kv")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("transformers_2w.to_nominal_kv must be Float64");
+    assert!(
+        !to_nominal_kv.is_null(0) && to_nominal_kv.value(0) > 0.0,
+        "required to_nominal_kv must be populated from fallback"
     );
 
     let _ = fs::remove_file(raw_path);

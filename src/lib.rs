@@ -268,11 +268,11 @@ pub fn write_psse_to_rpf_with_options(
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_2W,
-        build_transformers_2w_batch(&network.transformers, base_mva)?,
+        build_transformers_2w_batch(&network.transformers, &bus_nominal_kv, base_mva)?,
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_3W,
-        build_transformers_3w_batch(&network.transformers_3w, base_mva)?,
+        build_transformers_3w_batch(&network.transformers_3w, &bus_nominal_kv, base_mva)?,
     );
     table_batches.insert(TABLE_AREAS, build_areas_batch(&network.areas)?);
     table_batches.insert(TABLE_ZONES, build_zones_batch(&network.zones)?);
@@ -496,8 +496,63 @@ fn build_bus_nominal_kv_map(network: &Network) -> HashMap<u32, f64> {
     network
         .buses
         .iter()
-        .map(|b| (b.i, b.baskv))
+        .filter_map(|b| (b.baskv > 0.0).then_some((b.i, b.baskv)))
         .collect::<HashMap<_, _>>()
+}
+
+fn required_bus_nominal_kv(
+    bus_nominal_kv: &HashMap<u32, f64>,
+    bus_id: u32,
+    field: &str,
+) -> Result<f64> {
+    bus_nominal_kv.get(&bus_id).copied().ok_or_else(|| {
+        anyhow::anyhow!(
+            "schema v0.9.3 requires non-null {field}; no valid nominal kV found for bus {bus_id}"
+        )
+    })
+}
+
+fn resolve_required_branch_nominal_kv(
+    primary_bus_id: u32,
+    opposite_bus_id: u32,
+    bus_nominal_kv: &HashMap<u32, f64>,
+    field: &str,
+) -> Result<f64> {
+    if let Some(kv) = bus_nominal_kv.get(&primary_bus_id).copied() {
+        return Ok(kv);
+    }
+    if let Some(kv) = bus_nominal_kv.get(&opposite_bus_id).copied() {
+        return Ok(kv);
+    }
+    anyhow::bail!(
+        "schema v0.9.3 requires non-null {field}; no valid nominal kV found for bus {primary_bus_id} or opposite bus {opposite_bus_id}"
+    );
+}
+
+fn resolve_required_transformer_nominal_kv(
+    declared_nominal_kv: f64,
+    primary_bus_id: u32,
+    opposite_bus_id: u32,
+    bus_nominal_kv: &HashMap<u32, f64>,
+    field: &str,
+) -> Result<f64> {
+    if declared_nominal_kv > 0.0 {
+        return Ok(declared_nominal_kv);
+    }
+
+    if let Some(kv) = bus_nominal_kv.get(&primary_bus_id).copied() {
+        return Ok(kv);
+    }
+
+    // Expanded 3W star-leg rows can reference a synthetic star bus that is not in
+    // the canonical buses table. Use the opposite winding bus as a deterministic fallback.
+    if let Some(kv) = bus_nominal_kv.get(&opposite_bus_id).copied() {
+        return Ok(kv);
+    }
+
+    anyhow::bail!(
+        "schema v0.9.3 requires non-null {field}; no valid nominal kV found for bus {primary_bus_id} or opposite bus {opposite_bus_id}"
+    );
 }
 
 fn normalize_transformer_representation(
@@ -1589,8 +1644,18 @@ fn build_branches_batch(
             owner_id.append_null();
         }
         name_b.append_null(); // branches have no name in RAW
-        from_nominal_kv.append_option(bus_nominal_kv.get(&branch.i).copied());
-        to_nominal_kv.append_option(bus_nominal_kv.get(&branch.j).copied());
+        from_nominal_kv.append_value(resolve_required_branch_nominal_kv(
+            branch.i,
+            branch.j,
+            bus_nominal_kv,
+            "branches.from_nominal_kv",
+        )?);
+        to_nominal_kv.append_value(resolve_required_branch_nominal_kv(
+            branch.j,
+            branch.i,
+            bus_nominal_kv,
+            "branches.to_nominal_kv",
+        )?);
         parent_line_id.append_null();
         section_index.append_null();
 
@@ -2343,6 +2408,7 @@ fn build_scenario_context_batch(rows: &[ScenarioContextRow]) -> Result<RecordBat
 
 fn build_transformers_2w_batch(
     transformers: &[models::TwoWindingTransformer],
+    bus_nominal_kv: &HashMap<u32, f64>,
     base_mva: f64,
 ) -> Result<RecordBatch> {
     let schema =
@@ -2392,8 +2458,22 @@ fn build_transformers_2w_batch(
         rate_c.append_value(t.ratc1 / base_mva);
         status.append_value(t.stat != 0);
         name_b.append_null();
-        from_nominal_kv.append_option(if t.nomv1 > 0.0 { Some(t.nomv1) } else { None });
-        to_nominal_kv.append_option(if t.nomv2 > 0.0 { Some(t.nomv2) } else { None });
+        let from_kv = resolve_required_transformer_nominal_kv(
+            t.nomv1,
+            t.i,
+            t.j,
+            bus_nominal_kv,
+            "transformers_2w.from_nominal_kv",
+        )?;
+        let to_kv = resolve_required_transformer_nominal_kv(
+            t.nomv2,
+            t.j,
+            t.i,
+            bus_nominal_kv,
+            "transformers_2w.to_nominal_kv",
+        )?;
+        from_nominal_kv.append_value(from_kv);
+        to_nominal_kv.append_value(to_kv);
     }
 
     RecordBatch::try_new(
@@ -2428,6 +2508,7 @@ fn build_transformers_2w_batch(
 
 fn build_transformers_3w_batch(
     transformers: &[models::ThreeWindingTransformer],
+    bus_nominal_kv: &HashMap<u32, f64>,
     base_mva: f64,
 ) -> Result<RecordBatch> {
     let schema =
@@ -2480,21 +2561,24 @@ fn build_transformers_3w_batch(
         rate_c.append_value(t.rate_c_mva / base_mva);
         status.append_value(t.stat != 0);
         name_b.append_null();
-        nominal_kv_h.append_option(if t.nominal_kv_h > 0.0 {
-            Some(t.nominal_kv_h)
+        let kv_h = if t.nominal_kv_h > 0.0 {
+            t.nominal_kv_h
         } else {
-            None
-        });
-        nominal_kv_m.append_option(if t.nominal_kv_m > 0.0 {
-            Some(t.nominal_kv_m)
+            required_bus_nominal_kv(bus_nominal_kv, t.bus_h, "transformers_3w.nominal_kv_h")?
+        };
+        let kv_m = if t.nominal_kv_m > 0.0 {
+            t.nominal_kv_m
         } else {
-            None
-        });
-        nominal_kv_l.append_option(if t.nominal_kv_l > 0.0 {
-            Some(t.nominal_kv_l)
+            required_bus_nominal_kv(bus_nominal_kv, t.bus_m, "transformers_3w.nominal_kv_m")?
+        };
+        let kv_l = if t.nominal_kv_l > 0.0 {
+            t.nominal_kv_l
         } else {
-            None
-        });
+            required_bus_nominal_kv(bus_nominal_kv, t.bus_l, "transformers_3w.nominal_kv_l")?
+        };
+        nominal_kv_h.append_value(kv_h);
+        nominal_kv_m.append_value(kv_m);
+        nominal_kv_l.append_value(kv_l);
     }
 
     RecordBatch::try_new(

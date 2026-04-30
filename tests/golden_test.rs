@@ -146,6 +146,36 @@ fn table_by_name<'a>(
         .unwrap_or_else(|| panic!("missing table '{table_name}'"))
 }
 
+fn assert_non_null_positive_f64_column(
+    batch: &arrow::record_batch::RecordBatch,
+    column: &str,
+    context: &str,
+) {
+    let values = col_f64(batch, column);
+    for row in 0..values.len() {
+        assert!(
+            !values.is_null(row) && values.value(row) > 0.0,
+            "schema v0.9.3 requires non-null positive {context}.{column} (row {})",
+            row + 1
+        );
+    }
+}
+
+fn assert_required_nominal_kv_fields(tables: &[(String, arrow::record_batch::RecordBatch)]) {
+    let branches = table_by_name(tables, TABLE_BRANCHES);
+    assert_non_null_positive_f64_column(branches, "from_nominal_kv", "branches");
+    assert_non_null_positive_f64_column(branches, "to_nominal_kv", "branches");
+
+    let tx2w = table_by_name(tables, TABLE_TRANSFORMERS_2W);
+    assert_non_null_positive_f64_column(tx2w, "from_nominal_kv", "transformers_2w");
+    assert_non_null_positive_f64_column(tx2w, "to_nominal_kv", "transformers_2w");
+
+    let tx3w = table_by_name(tables, TABLE_TRANSFORMERS_3W);
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_h", "transformers_3w");
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_m", "transformers_3w");
+    assert_non_null_positive_f64_column(tx3w, "nominal_kv_l", "transformers_3w");
+}
+
 fn assert_three_w_star_leg_consistency(
     tables: &[(String, arrow::record_batch::RecordBatch)],
     expected_nonzero_3w: bool,
@@ -273,6 +303,7 @@ fn golden_texas7k_static() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_STATIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
 
     let metadata = table_by_name(&tables, TABLE_METADATA);
     metadata
@@ -654,6 +685,7 @@ fn golden_texas2k_dynamic() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     let loads = table_by_name(&tables, TABLE_LOADS);
     let q_y = col_f64(loads, "q_y_pu");
     let present_yq = (0..q_y.len()).filter(|&i| !q_y.is_null(i)).count();
@@ -713,6 +745,7 @@ fn golden_activsg10k_dynamic_v090_tables_and_metadata() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     let metadata = table_by_name(&tables, TABLE_METADATA);
     let has_ibr = metadata
         .column_by_name("has_ibr")
@@ -761,6 +794,7 @@ fn golden_texas2k_gfm_dynamic_ibr_detection() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     let metadata = table_by_name(&tables, TABLE_METADATA);
     let has_ibr = metadata
         .column_by_name("has_ibr")
@@ -895,6 +929,7 @@ fn golden_ieee14_static() {
     // Verify no data was silently dropped: bus IDs 1-14 must all appear.
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_IEEE14))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     let buses = table_by_name(&tables, TABLE_BUSES);
     let bus_id_col = buses
         .column_by_name("bus_id")
@@ -970,6 +1005,7 @@ fn golden_ieee118_static() {
     // be clamped or modified by the converter; the solver handles singularities).
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_IEEE118))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     let branches = table_by_name(&tables, TABLE_BRANCHES);
     let x_col = col_f64(branches, "x");
     // Just verify the column is present and has the right row count.
@@ -1312,6 +1348,7 @@ fn golden_midwest24k_static() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_MIDWEST24K))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     assert_three_w_star_leg_consistency(&tables, true);
 }
 
@@ -1386,6 +1423,7 @@ fn golden_activsg25k_static() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVSG25K))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     assert_three_w_star_leg_consistency(&tables, true);
 }
 
@@ -1460,5 +1498,6 @@ fn golden_activsg70k_static() {
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVSG70K))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
     assert_three_w_star_leg_consistency(&tables, true);
 }
