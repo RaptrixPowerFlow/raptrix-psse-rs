@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - Cargo.toml
+      - CHANGELOG.md
       - "!README.md"
 
 permissions:
