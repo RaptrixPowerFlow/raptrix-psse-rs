@@ -86,6 +86,7 @@ echo "[verify-external-golden] RELAX_MISSING=$RELAX_MISSING"
 
 # --- Corpus (keep in sync with tests/golden_test.rs) ---
 
+run_static "Texas7k 2022" "tests/data/external/Texas7k_20220923.RAW" "tests/golden/Texas7k_20220923_static.rpf"
 run_static "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" "tests/golden/Texas7k_20210804_static.rpf"
 if [[ -f "tests/data/external/Texas7k_20210804.dyr" ]]; then
   run_dynamic "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" \

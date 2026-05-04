@@ -69,7 +69,9 @@ several `buses` columns:
 | `buses` column | Aggregation rule |
 |---|---|
 | `p_sched` | Σ(in-service generator PG) − Σ(in-service load PL), all / SBASE |
-| `q_sched` | Σ(in-service generator QG) − Σ(in-service load QL), all / SBASE |
+| `q_sched` | Σ(in-service generator QG) − Σ(in-service load QL), all / SBASE (= `qg_sched_pu − qd_load_pu`) |
+| `qd_load_pu` | Σ(in-service load QL) / SBASE — signed reactive load (positive = inductive, negative = capacitive when QL < 0) **(v0.9.4+)** |
+| `qg_sched_pu` | Σ(in-service generator QG) / SBASE — pure scheduled reactive injection (any sign) **(v0.9.4+)** |
 | `g_shunt` | Bus GL/SBASE + Σ(in-service fixed-shunt GL/SBASE) + Σ(in-service branch GI at from-bus) + Σ(in-service branch GJ at to-bus) |
 | `b_shunt` | Bus BL/SBASE + Σ(in-service fixed-shunt BL/SBASE) + Σ(in-service branch BI at from-bus) + Σ(in-service branch BJ at to-bus) |
 | `q_min` | min(QB) over in-service generators at bus; −9999 pu for PQ load buses |
@@ -129,7 +131,9 @@ where they belong in fixed shunt section 3.
 | RPF column | Source |
 |---|---|
 | `p_sched` | Net scheduled active injection (see bus aggregation table above). |
-| `q_sched` | Net scheduled reactive injection. |
+| `q_sched` | Net scheduled reactive injection = `qg_sched_pu − qd_load_pu`. |
+| `qd_load_pu` | Σ(in-service load QL) / SBASE; signed. **(v0.9.4+)** |
+| `qg_sched_pu` | Σ(in-service generator QG) / SBASE. **(v0.9.4+)** |
 | `g_shunt` | Combined conductance from bus GL + fixed shunts + line-end GI/GJ. |
 | `b_shunt` | Combined susceptance from bus BL + fixed shunts + line-end BI/BJ. |
 | `q_min` / `q_max` | Generator reactive capability range at bus. |

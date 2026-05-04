@@ -20,6 +20,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.8] - 2026-05-03
+
+### Added (Breaking — RPF v0.9.4)
+
+- **`buses.qd_load_pu`** (v0.9.4): new required column — Σ(in-service load QL) / SBASE per bus; signed (positive for inductive, negative when QL < 0 for capacitive reactive injection through load records).
+- **`buses.qg_sched_pu`** (v0.9.4): new required column — Σ(in-service generator QG) / SBASE per bus (any sign).
+- The machine-checkable identity `q_sched ≈ qg_sched_pu − qd_load_pu` now holds for every bus row; verified in golden tests.
+- Updated `raptrix-cim-arrow` pin to `v0.3.4` (SHA `ea6b02a6`) which carries the schema change and extends `SUPPORTED_RPF_VERSIONS` to include `v0.9.4` / `0.9.4` alongside the existing `v0.9.3` / `0.9.3` backward-compat aliases.
+
+### Changed
+
+- `BusAggregate` struct in `src/lib.rs` gains two new accumulator fields (`qd_load_pu`, `qg_sched_pu`).
+- `build_bus_aggregates`: loads loop now increments `agg.qd_load_pu += load.ql / base_mva`; generators loop increments `agg.qg_sched_pu += generator.qg / base_mva`.
+- `build_buses_batch`: two new `Float64Builder` columns appended after `bus_uuid` to match `buses_schema()` column order.
+
+### Tests
+
+- `assert_v094_bus_q_decomposition` helper added; called in `golden_ieee14_static` and `golden_texas7k_static` to verify non-null columns and the `q_sched` identity across all bus rows.
+- Added `golden_activsg10k_static` so the Rust golden suite matches `scripts/verify-external-golden.sh` static conversion for ACTIVSg10k (feeds `test_v093_raw_vs_rpf_parity` stem pairing in raptrix-core).
+
+### Documentation
+
+- `docs/psse-mapping.md`: bus aggregation table and aggregated-only column reference updated with `qd_load_pu` / `qg_sched_pu` entries.
+- `MIGRATION.md`: new `v0.3.8` section with handoff notes for raptrix-core.
+- Expanded `tests/golden/README.md` with `.dyn` vs `.dyr` precedence and a table of expected `tests/data/external/` filenames aligned with `golden_test.rs`.
+
+---
+
 ## [0.3.7] - 2026-04-30
 
 ### Fixed

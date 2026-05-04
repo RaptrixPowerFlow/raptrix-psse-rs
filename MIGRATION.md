@@ -18,6 +18,41 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.8: RPF v0.9.3 → **v0.9.4** (Breaking)
+
+`raptrix-psse-rs` v0.3.8 outputs RPF v0.9.4, which adds two new required columns to the `buses` table.
+
+#### What changed
+
+The `buses` table gains two new non-nullable columns at positions 20–21 (after `bus_uuid`):
+
+| Column | Type | Meaning |
+|---|---|---|
+| `qd_load_pu` | Float64, non-null | Σ(in-service load QL) / SBASE; **signed** (positive = inductive, negative = capacitive when QL < 0) |
+| `qg_sched_pu` | Float64, non-null | Σ(in-service generator QG) / SBASE (any sign) |
+
+The existing `q_sched` column (position 4) retains its canonical meaning as the net scheduled injection: `q_sched == qg_sched_pu − qd_load_pu` for every bus row. This identity is machine-checkable.
+
+#### Why this is a breaking change
+
+Any reader that validates the `buses` schema strictly (e.g., by checking column count or exact field list) will reject v0.9.4 files unless updated. Any writer producing RPF must now emit both new columns.
+
+#### Backward compatibility
+
+`SUPPORTED_RPF_VERSIONS` in `raptrix-cim-arrow` now accepts `v0.9.4` / `0.9.4` (new) and `v0.9.3` / `0.9.3` (old). Rust readers will still accept existing v0.9.3 files.
+
+#### raptrix-core handoff (C++ reader upgrade required)
+
+The `raptrix-core` engineer must:
+
+1. Update the version gate in `rpf_reader.cpp` (around line 3182: `if (*rpf_version != "v0.9.3")`) to also accept `"v0.9.4"`.
+2. Read `buses.qd_load_pu` from the RPF table with a **fallback of `0.0`** when the column is absent (for v0.9.3 backward compat).
+3. Fix `psse_parser.cpp` to restore uniform `q_sched = Qg − Qd` on the `Bus` struct and use `qd_load_pu` as the solver-internal PV/slack Q seed (`-qd_load_pu`), rather than overwriting `q_sched` differently for PV/slack buses.
+4. Emit `qd_load_pu` and `qg_sched_pu` in `arrow_adapter.cpp` (the RPF export path from the C++ solver).
+5. Re-run `test_v093_raw_vs_rpf_parity` (now `test_v094_raw_vs_rpf_parity`) and the round-trip test to verify numerical identity between RAW-loaded and RPF-loaded solutions.
+
+---
+
 ### v0.3.6: RPF v0.9.2 -> **v0.9.3** (Breaking)
 
 `raptrix-psse-rs` now aligns with the schema v0.9.3 nominal-kV requirement for reporting and visual-display fidelity.
