@@ -52,6 +52,7 @@ casing must match exactly. Extra files in that directory are ignored until you a
 | Inputs | Notes |
 |--------|--------|
 | `Texas7k_20220923.RAW` | static only |
+| `Texas7k_20210804_updated_SAInt.RAW` | static only |
 | `Texas7k_20210804.RAW`, `Texas7k_20210804.dyr` | static + dynamic |
 | `Texas2k_series25_case1_summerpeak.RAW`, `.dyr` | static + dynamic |
 | `Base_Eastern_Interconnect_515GW.RAW` | static |

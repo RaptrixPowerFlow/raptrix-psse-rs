@@ -37,14 +37,14 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical v0.9.3 required root tables (zero-row where applicable) so downstream pipelines stay deterministic.
+- Always emit the **18** canonical v0.9.5 required root tables (zero-row where applicable) so downstream pipelines stay deterministic.
 
 ## CLI Reference
 
 ### convert
 
 ```bash
-raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transformer-mode <MODE>] [--study-purpose <TEXT>] [--scenario-tag <TAG> ...] [--case-mode <MODE>]
+raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transformer-mode <MODE>] [--study-purpose <TEXT>] [--scenario-tag <TAG> ...] [--case-mode <MODE>] [--default-shunt-control-mode <MODE>]
 ```
 
 | Flag | Required | Description |
@@ -56,6 +56,7 @@ raptrix-psse-rs convert --raw <FILE> [--dyr <FILE>] --output <FILE> [--transform
 | `--study-purpose <TEXT>` | no | Metadata override for `metadata.study_purpose`. |
 | `--scenario-tag <TAG>` | no | Repeatable metadata override for `metadata.scenario_tags`. |
 | `--case-mode <MODE>` | no | Optional override for `metadata.case_mode` / root `rpf.case_mode`. Allowed: `flat_start_planning`, `warm_start_planning`, `solved_snapshot`, `hour_ahead_advisory`. If omitted, flat vs warm start is inferred from RAW bus voltages. |
+| `--default-shunt-control-mode <MODE>` | no | Optional override for v0.9.5 `metadata.default_shunt_control_mode` / root `rpf.default_shunt_control_mode`. When omitted, planning `case_mode` values default to `planning_full`. |
 
 ### view
 
@@ -65,9 +66,9 @@ raptrix-psse-rs view --input <FILE>
 
 Prints a summary of every table in the .rpf file with row counts.
 
-## RPF v0.9.3 coverage
+## RPF v0.9.5 coverage
 
-The converter emits the **18** required root tables from the locked v0.9.3 contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked **v0.9.5** contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -104,18 +105,18 @@ Metadata includes modern-grid fields plus v0.9.0/0.9.1 **additional nullable col
 - solver_q_limit_infeasible_count
 - pv_to_pq_switch_count
 - real_time_discovery
+- default_shunt_control_mode (v0.9.5+; nullable — typical planning exports use `planning_full`)
+
+**v0.9.5** also adds **`generators.controlled_bus_id`** (PSS/E **IREG** / remote voltage regulation target; `0` = local).
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
-For schema v0.9.3, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
+For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## What's New in v0.3.4
+## Recent release (v0.3.9)
 
-- **Schema-alignment release** (patch **0.3.4**): align to RPF **v0.9.1** and populate `loads` ZIP fidelity columns (`p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`) from RAW `IP/IQ/YP/YQ`, plus emit root metadata `rpf.loads.zip_fidelity_presence`.
-- **CI on every PR**: `fmt`, `clippy`, and full `cargo test` on Ubuntu; public-safety, markdownlint, and version/CHANGELOG consistency checks (aligned with `raptrix-cim-rs` practice).
-- **Safer releases**: the **Release** workflow runs **`cargo test --workspace`** before building Windows / Linux / macOS binaries.
-
-See [CHANGELOG.md](CHANGELOG.md) for full per-release schema alignment and CI/release notes.
+- **RPF v0.9.5**: `generators.controlled_bus_id`, `metadata.default_shunt_control_mode`, and optional root **`rpf.default_shunt_control_mode`** (planning exports default to `planning_full`).
+- **`raptrix-cim-arrow`** pinned to **`a556662e`** on [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs).
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -152,7 +153,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to v0.9.3 `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.9.5** `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
 
 ### Windows, OneDrive, and WSL
 

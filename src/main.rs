@@ -72,6 +72,11 @@ enum Commands {
         /// When omitted, mode is inferred from RAW bus voltages.
         #[arg(long)]
         case_mode: Option<String>,
+
+        /// Optional `metadata.default_shunt_control_mode` / root `rpf.default_shunt_control_mode`
+        /// (v0.9.5+). When omitted, planning `case_mode` values default to `planning_full`.
+        #[arg(long)]
+        default_shunt_control_mode: Option<String>,
     },
 
     /// Pretty-print a Raptrix PowerFlow Interchange (.rpf) file summary.
@@ -115,6 +120,7 @@ fn main() -> Result<()> {
             study_purpose,
             scenario_tags,
             case_mode,
+            default_shunt_control_mode,
         } => {
             let raw_str = raw
                 .to_str()
@@ -140,6 +146,7 @@ fn main() -> Result<()> {
                 study_purpose,
                 scenario_tags,
                 case_mode_override: case_mode,
+                default_shunt_control_mode_override: default_shunt_control_mode,
                 ..Default::default()
             };
 

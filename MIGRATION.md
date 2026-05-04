@@ -18,6 +18,24 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.9: RPF v0.9.4 → **v0.9.5** (Additive)
+
+`raptrix-psse-rs` v0.3.9 emits RPF **v0.9.5** via the updated `raptrix-cim-arrow` pin.
+
+#### What changed
+
+- **`generators`**: new required trailing column **`controlled_bus_id`** (Int32). Semantics: **`0` or `bus_id`** = local voltage regulation at the machine terminal; any other valid dense **`bus_id`** = remote regulation target (**PSS/E IREG** denormalized). The `params` map still carries **`ireg`** when non-zero in the RAW deck.
+- **`metadata`**: new nullable column **`default_shunt_control_mode`** (Dictionary\<Int32, Utf8\>) and optional IPC root key **`rpf.default_shunt_control_mode`** with values `planning_full` \| `real_time_hot_start` \| `real_time_frozen`. Typical **PSS/E planning** exports from this converter stamp **`planning_full`** for flat/warm/hour-ahead `case_mode` values (same default as `raptrix-cim-rs` planning writers).
+
+#### Backward compatibility
+
+Readers aligned with `raptrix-cim-arrow::read_rpf_tables` continue to accept **24-column** v0.9.4 `generators` tables: missing **`controlled_bus_id`** is synthesized as **`0`**. Older `metadata` rows without **`default_shunt_control_mode`** remain valid (column reads as null).
+
+#### Integrator checklist
+
+- Strict schema validators must accept the new **`generators`** width and optional **`metadata`** / root keys.
+- Downstream tooling that only inspects IPC file metadata should look for **`rpf.default_shunt_control_mode`** when present.
+
 ### v0.3.8: RPF v0.9.3 → **v0.9.4** (Breaking)
 
 `raptrix-psse-rs` v0.3.8 outputs RPF v0.9.4, which adds two new required columns to the `buses` table.

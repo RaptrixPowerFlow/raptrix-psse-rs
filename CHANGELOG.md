@@ -20,6 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.9] - 2026-05-04
+
+### Added (RPF v0.9.5)
+
+- **`generators.controlled_bus_id`**: required Int32 trailing column — PSS/E **IREG** mapped to dense `bus_id` space (`0` when IREG is unset or equals the machine bus; otherwise the remote regulated bus).
+- **`metadata.default_shunt_control_mode`** (nullable Dictionary) and file-level **`rpf.default_shunt_control_mode`**: planning exports (`flat_start_planning`, `warm_start_planning`, `hour_ahead_advisory`) default to `planning_full`, matching `raptrix-cim-rs` planning writers; `solved_snapshot` omits unless overridden.
+- **`ExportOptions::default_shunt_control_mode_override`** and CLI **`--default-shunt-control-mode`** for explicit control of the v0.9.5 shunt-mode stamp.
+- Golden integration test **`golden_texas7k_updated_saint_static`** and matching **`verify-external-golden.sh`** entry for `tests/data/external/Texas7k_20210804_updated_SAInt.RAW`.
+
+### Changed
+
+- Pinned **`raptrix-cim-arrow`** to git rev **`a556662edccff03739566e95820315843dbaf537`** (RPF / schema **v0.9.5**; `SUPPORTED_RPF_VERSIONS` includes `v0.9.5` / `0.9.5` and retains v0.9.4 / v0.9.3 read aliases).
+
+### Tests
+
+- `generators_hierarchy_ownership_and_metadata_smoke`: remote **IREG** fixture and assertions on `controlled_bus_id` plus root `rpf.default_shunt_control_mode`.
+
+### Documentation
+
+- `docs/psse-mapping.md`, `README.md`, and `MIGRATION.md` updated for v0.9.5.
+
+---
+
 ## [0.3.8] - 2026-05-03
 
 ### Added (Breaking — RPF v0.9.4)

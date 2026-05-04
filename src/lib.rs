@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.9.4 converter.
+//! Raptrix PowerFlow Interchange v0.9.5 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -26,8 +26,9 @@
 //! after aggregating reactive limits onto a bus, if `q_min` > `q_max` the exporter
 //! **swaps** them so the bus row obeys min/max ordering (PSS/E `QB`/`QT` on each
 //! `generators` row stay as in the deck). Extra RAW numerics without dedicated
-//! columns (e.g. generator `VS` / `IREG` / impedance taps) are packed into typed
-//! `params` maps where the schema provides them.
+//! columns (e.g. generator `VS` / impedance taps) are packed into typed
+//! `params` maps where the schema provides them. **IREG** is also exported as
+//! **`generators.controlled_bus_id`** (v0.9.5) while remaining in `params` when non-zero.
 //!
 //! # Branding
 //! raptrix-psse-rs
@@ -58,13 +59,13 @@ use arrow::{
 };
 use chrono::{SecondsFormat, Utc};
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_SOLVED_STATE_PRESENCE,
-    METADATA_KEY_VALIDATION_MODE, RootWriteOptions, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES,
-    TABLE_CONTINGENCIES, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
-    TABLE_GENERATORS, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA, TABLE_MULTI_SECTION_LINES,
-    TABLE_OWNERS, TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS,
-    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema,
-    write_root_rpf_with_metadata,
+    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE,
+    METADATA_KEY_SOLVED_STATE_PRESENCE, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
+    TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_CONTINGENCIES, TABLE_DC_LINES_2W,
+    TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_INTERFACES, TABLE_LOADS,
+    TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT,
+    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W,
+    TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -141,6 +142,10 @@ pub struct ExportOptions {
     /// Optional `scenario_context` rows. Non-empty input is rejected when the Arrow IPC
     /// writer cannot emit that optional root (see README).
     pub scenario_context_rows: Vec<ScenarioContextRow>,
+    /// Optional override for `metadata.default_shunt_control_mode` and file-level
+    /// `rpf.default_shunt_control_mode` (v0.9.5+). When `None`, planning `case_mode` values
+    /// default to `planning_full` to match `raptrix-cim-rs` planning exports.
+    pub default_shunt_control_mode_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -309,6 +314,15 @@ pub fn write_psse_to_rpf_with_options(
     );
     // v0.8.5: case_mode — detected from RAW bus voltage state.
     additional_root_metadata.insert(METADATA_KEY_CASE_MODE.to_string(), case_mode.clone());
+    if let Some(mode_str) = resolved_default_shunt_control_mode(
+        case_mode.as_str(),
+        options.default_shunt_control_mode_override.as_deref(),
+    ) {
+        additional_root_metadata.insert(
+            METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE.to_string(),
+            mode_str,
+        );
+    }
     // v0.8.5: solved_state_presence — this converter never produces solved data.
     additional_root_metadata.insert(
         METADATA_KEY_SOLVED_STATE_PRESENCE.to_string(),
@@ -1010,6 +1024,35 @@ fn resolve_case_mode(network: &Network, options: &ExportOptions) -> Result<Strin
     Ok(detect_case_mode(network).to_string())
 }
 
+/// v0.9.5: optional `metadata.default_shunt_control_mode` / root `rpf.default_shunt_control_mode`.
+/// Aligns with `raptrix-cim-rs` `WriteOptions::resolved_default_shunt_control_mode`.
+fn resolved_default_shunt_control_mode(
+    case_mode: &str,
+    override_opt: Option<&str>,
+) -> Option<String> {
+    if let Some(raw) = override_opt {
+        let t = raw.trim();
+        if t.is_empty() {
+            return None;
+        }
+        return Some(t.to_string());
+    }
+    match case_mode {
+        "flat_start_planning" | "warm_start_planning" | "hour_ahead_advisory" => {
+            Some("planning_full".to_string())
+        }
+        _ => None,
+    }
+}
+
+/// v0.9.5: PSS/E IREG → `generators.controlled_bus_id` (dense bus numbering). `0` = local
+/// regulation (IREG unset or same as machine bus); else remote regulated bus id.
+fn generator_controlled_bus_id(machine: &models::Generator) -> i32 {
+    let bus = machine.i as i32;
+    let ireg = machine.ireg as i32;
+    if ireg == 0 || ireg == bus { 0 } else { ireg }
+}
+
 fn derive_switched_shunt_banks(network: &mut Network) {
     network.switched_shunt_banks.clear();
     for (shunt_row_idx, shunt) in network.switched_shunts.iter().enumerate() {
@@ -1344,6 +1387,17 @@ fn build_metadata_batch(
     let mut real_time_discovery = BooleanBuilder::new();
     real_time_discovery.append_null();
 
+    // v0.9.5: optional declarative shunt control mode (planning exports default to planning_full).
+    let mut default_shunt_control_mode = StringDictionaryBuilder::<Int32Type>::new();
+    if let Some(mode) = resolved_default_shunt_control_mode(
+        case_mode,
+        _options.default_shunt_control_mode_override.as_deref(),
+    ) {
+        default_shunt_control_mode.append_value(mode.as_str());
+    } else {
+        default_shunt_control_mode.append_null();
+    }
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -1384,6 +1438,7 @@ fn build_metadata_batch(
             Arc::new(solver_q_limit_infeasible_count.finish()),
             Arc::new(pv_to_pq_switch_count.finish()),
             Arc::new(real_time_discovery.finish()),
+            Arc::new(default_shunt_control_mode.finish()),
         ],
     )
     .context("building metadata batch")
@@ -1830,6 +1885,7 @@ fn build_generators_batch(
     let mut ramp_rate_down_mw_min = Float64Builder::new();
     let mut owner_id = Int32Builder::new();
     let mut market_resource_id = StringBuilder::new();
+    let mut controlled_bus_id = Int32Builder::new();
     let mut params = MapBuilder::new(
         Some(map_field_names),
         StringBuilder::new(),
@@ -1871,6 +1927,7 @@ fn build_generators_batch(
             owner_id.append_null();
         }
         market_resource_id.append_null();
+        controlled_bus_id.append_value(generator_controlled_bus_id(generator));
 
         append_psse_generator_raw_params(&mut params, generator)
             .context("PSS/E generator params")?;
@@ -1929,6 +1986,7 @@ fn build_generators_batch(
             Arc::new(owner_id.finish()),
             Arc::new(market_resource_id.finish()),
             params_cast,
+            Arc::new(controlled_bus_id.finish()),
         ],
     )
     .context("building generators batch")

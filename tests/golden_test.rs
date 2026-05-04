@@ -166,7 +166,10 @@ fn assert_non_null_positive_f64_column(
 fn assert_v094_bus_q_decomposition(tables: &[(String, arrow::record_batch::RecordBatch)]) {
     let buses = table_by_name(tables, TABLE_BUSES);
     let n = buses.num_rows();
-    assert!(n > 0, "buses table must be non-empty for Q decomposition check");
+    assert!(
+        n > 0,
+        "buses table must be non-empty for Q decomposition check"
+    );
 
     let q_sched = col_f64(buses, "q_sched");
     let qd = col_f64(buses, "qd_load_pu");
@@ -777,7 +780,11 @@ fn golden_activsg10k_static() {
         raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVS10K_STATIC))
             .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
 
-    print_summary("ACTIVSg10k — static (no dynamics deck)", &summary, elapsed_ms);
+    print_summary(
+        "ACTIVSg10k — static (no dynamics deck)",
+        &summary,
+        elapsed_ms,
+    );
 
     assert!(
         rows(&summary, TABLE_BUSES) > 1000,
@@ -1389,6 +1396,60 @@ fn golden_texas7k_2022_static() {
     );
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX7K_2022))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
+    assert_v094_bus_q_decomposition(&tables);
+}
+
+// ---------------------------------------------------------------------------
+// Texas7k 2021 deck — SAInt update variant (static only)
+// ---------------------------------------------------------------------------
+const RAW_PATH_TX7K_SAINT: &str = "tests/data/external/Texas7k_20210804_updated_SAInt.RAW";
+const OUT_TX7K_SAINT: &str = "tests/golden/Texas7k_20210804_updated_SAInt_static.rpf";
+
+#[test]
+fn golden_texas7k_updated_saint_static() {
+    if !std::path::Path::new(RAW_PATH_TX7K_SAINT).exists() {
+        eprintln!(
+            "[skip] {} not found — place file at this path to enable test",
+            RAW_PATH_TX7K_SAINT
+        );
+        return;
+    }
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX7K_SAINT, None, OUT_TX7K_SAINT)
+        .unwrap_or_else(|e| panic!("Texas7k SAInt update conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX7K_SAINT))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX7K_SAINT))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary(
+        "Texas7k 20210804_updated_SAInt — static",
+        &summary,
+        elapsed_ms,
+    );
+
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count for Texas 7k case"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX7K_SAINT))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
     assert_required_nominal_kv_fields(&tables);
     assert_v094_bus_q_decomposition(&tables);

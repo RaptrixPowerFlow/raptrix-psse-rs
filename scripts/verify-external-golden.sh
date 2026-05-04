@@ -88,6 +88,8 @@ echo "[verify-external-golden] RELAX_MISSING=$RELAX_MISSING"
 
 run_static "Texas7k 2022" "tests/data/external/Texas7k_20220923.RAW" "tests/golden/Texas7k_20220923_static.rpf"
 run_static "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" "tests/golden/Texas7k_20210804_static.rpf"
+run_static "Texas7k 2021 SAInt update" "tests/data/external/Texas7k_20210804_updated_SAInt.RAW" \
+  "tests/golden/Texas7k_20210804_updated_SAInt_static.rpf"
 if [[ -f "tests/data/external/Texas7k_20210804.dyr" ]]; then
   run_dynamic "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" \
     "tests/data/external/Texas7k_20210804.dyr" "tests/golden/Texas7k_20210804_dynamic.rpf"

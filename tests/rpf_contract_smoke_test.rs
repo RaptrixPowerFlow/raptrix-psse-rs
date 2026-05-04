@@ -18,8 +18,8 @@ use std::{
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, MapArray, StringArray};
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_MODE, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_METADATA, TABLE_OWNERS,
+    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, TABLE_BRANCHES, TABLE_BUSES,
+    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
 };
 
 const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
@@ -49,7 +49,7 @@ CONTRACT SMOKE
 2,'1',1,1,1,40.0,15.0,0,0,0,0,1,1,0
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
-1,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0,1,1,1.0
+1,'1',75.0,10.0,40.0,-20.0,1.02,2,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0,1,1,1.0
 0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
 1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
 0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
@@ -130,6 +130,27 @@ CONTRACT SMOKE
         .downcast_ref::<Float64Array>()
         .expect("generators.q_sched_mvar must be Float64");
     assert_eq!(q_sched_mvar.value(0), 10.0);
+
+    let controlled_bus_id = generators
+        .column_by_name("controlled_bus_id")
+        .expect("missing generators.controlled_bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("generators.controlled_bus_id must be Int32");
+    assert_eq!(
+        controlled_bus_id.value(0),
+        2,
+        "IREG=2 must map to controlled_bus_id=2"
+    );
+
+    let root_meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("rpf root metadata");
+    assert_eq!(
+        root_meta
+            .get(METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE)
+            .map(|s| s.as_str()),
+        Some("planning_full"),
+        "planning export must stamp rpf.default_shunt_control_mode"
+    );
 
     let params_col = generators
         .column_by_name("params")
