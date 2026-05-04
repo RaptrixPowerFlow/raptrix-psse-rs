@@ -161,6 +161,41 @@ fn assert_non_null_positive_f64_column(
     }
 }
 
+/// v0.9.4: assert buses table carries qd_load_pu / qg_sched_pu and that the
+/// identity `q_sched ≈ qg_sched_pu − qd_load_pu` holds for every row.
+fn assert_v094_bus_q_decomposition(tables: &[(String, arrow::record_batch::RecordBatch)]) {
+    let buses = table_by_name(tables, TABLE_BUSES);
+    let n = buses.num_rows();
+    assert!(n > 0, "buses table must be non-empty for Q decomposition check");
+
+    let q_sched = col_f64(buses, "q_sched");
+    let qd = col_f64(buses, "qd_load_pu");
+    let qg = col_f64(buses, "qg_sched_pu");
+
+    for row in 0..n {
+        assert!(
+            !qd.is_null(row),
+            "buses.qd_load_pu must be non-null at row {row}"
+        );
+        assert!(
+            !qg.is_null(row),
+            "buses.qg_sched_pu must be non-null at row {row}"
+        );
+        // Identity: q_sched == qg_sched_pu - qd_load_pu  (within float tolerance)
+        // Note: qd_load_pu can be negative when PSS/E load QL < 0 (capacitive reactive load)
+        let expected = qg.value(row) - qd.value(row);
+        let actual = q_sched.value(row);
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "buses Q identity failed at row {row}: q_sched={actual:.6e}, \
+             qg_sched_pu={:.6e}, qd_load_pu={:.6e}, diff={:.6e}",
+            qg.value(row),
+            qd.value(row),
+            (actual - expected).abs()
+        );
+    }
+}
+
 fn assert_required_nominal_kv_fields(tables: &[(String, arrow::record_batch::RecordBatch)]) {
     let branches = table_by_name(tables, TABLE_BRANCHES);
     assert_non_null_positive_f64_column(branches, "from_nominal_kv", "branches");
@@ -490,6 +525,9 @@ fn golden_texas7k_static() {
         tx_max_rate < 50.0,
         "transformer rates should be per-unit scale (max |rate|={tx_max_rate})"
     );
+
+    assert_required_nominal_kv_fields(&tables);
+    assert_v094_bus_q_decomposition(&tables);
 }
 
 // ---------------------------------------------------------------------------
@@ -705,6 +743,7 @@ const OUT_EI_STATIC: &str = "tests/golden/Base_Eastern_Interconnect_515GW_static
 const RAW_PATH_ACTIVS10K: &str = "tests/data/external/ACTIVSg10k.RAW";
 const DYR_PATH_ACTIVS10K_DYR: &str = "tests/data/external/ACTIVSg10k.dyr";
 const DYR_PATH_ACTIVS10K_DYN: &str = "tests/data/external/ACTIVSg10k.dyn";
+const OUT_ACTIVS10K_STATIC: &str = "tests/golden/ACTIVSg10k_static.rpf";
 const OUT_ACTIVS10K_DYNAMIC: &str = "tests/golden/ACTIVSg10k_dynamic.rpf";
 
 const RAW_PATH_TX2K_GFM: &str = "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.RAW";
@@ -713,6 +752,78 @@ const DYR_PATH_TX2K_GFM_DYR: &str =
 const DYR_PATH_TX2K_GFM_DYN: &str =
     "tests/data/external/Texas2k_series24_case6_2024lowloadwithgfm.dyn";
 const OUT_TX2K_GFM_DYNAMIC: &str = "tests/golden/Texas2k_series24_gfm_dynamic.rpf";
+
+// ---------------------------------------------------------------------------
+// ACTIVSg10k static (matches scripts/verify-external-golden.sh static convert)
+// writes tests/golden/ACTIVSg10k_static.rpf
+// ---------------------------------------------------------------------------
+#[test]
+fn golden_activsg10k_static() {
+    if !std::path::Path::new(RAW_PATH_ACTIVS10K).exists() {
+        eprintln!(
+            "[skip] {} not found — place ACTIVSg10k RAW at this path to enable test",
+            RAW_PATH_ACTIVS10K
+        );
+        return;
+    }
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_ACTIVS10K, None, OUT_ACTIVS10K_STATIC)
+        .unwrap_or_else(|e| panic!("ACTIVSg10k static conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_ACTIVS10K_STATIC))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata =
+        raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_ACTIVS10K_STATIC))
+            .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("ACTIVSg10k — static (no dynamics deck)", &summary, elapsed_ms);
+
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert_eq!(
+        rows(&summary, TABLE_DYNAMICS_MODELS),
+        0,
+        "dynamics_models must be empty without DYR/DYN"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_v090_required_tables(&summary);
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+    assert_eq!(
+        root_metadata
+            .get(METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE)
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        "native_3w",
+        "default export mode must be stable and machine-readable"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVS10K_STATIC))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
+    assert_three_w_star_leg_consistency(&tables, true);
+}
 
 #[test]
 fn golden_activsg10k_dynamic_v090_tables_and_metadata() {
@@ -944,6 +1055,7 @@ fn golden_ieee14_static() {
         (1i32..=14).collect::<Vec<_>>(),
         "IEEE 14: expected bus IDs 1..=14"
     );
+    assert_v094_bus_q_decomposition(&tables);
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,6 +1333,69 @@ fn golden_nyiso_onpeak_2030_powerworld_static() {
 
 // ---------------------------------------------------------------------------
 // Texas7k 2030 scenario — forward-planning case (topology differs from 2021)
+// ---------------------------------------------------------------------------
+const RAW_PATH_TX7K_2022: &str = "tests/data/external/Texas7k_20220923.RAW";
+const OUT_TX7K_2022: &str = "tests/golden/Texas7k_20220923_static.rpf";
+
+#[test]
+fn golden_texas7k_2022_static() {
+    if !std::path::Path::new(RAW_PATH_TX7K_2022).exists() {
+        eprintln!(
+            "[skip] {} not found — place licensed ERCOT file at this path to enable test",
+            RAW_PATH_TX7K_2022
+        );
+        return;
+    }
+    let t0 = Instant::now();
+    raptrix_psse_rs::write_psse_to_rpf(RAW_PATH_TX7K_2022, None, OUT_TX7K_2022)
+        .unwrap_or_else(|e| panic!("Texas7k 2022 conversion failed: {e:#}"));
+    let elapsed_ms = t0.elapsed().as_millis();
+
+    let summary = raptrix_cim_arrow::summarize_rpf(std::path::Path::new(OUT_TX7K_2022))
+        .unwrap_or_else(|e| panic!("summarize_rpf failed: {e:#}"));
+    let root_metadata = raptrix_cim_arrow::rpf_file_metadata(std::path::Path::new(OUT_TX7K_2022))
+        .unwrap_or_else(|e| panic!("rpf_file_metadata failed: {e:#}"));
+
+    print_summary("Texas7k 2022 — static", &summary, elapsed_ms);
+
+    assert!(
+        rows(&summary, TABLE_BUSES) > 1000,
+        "expected large bus count for Texas 7k case"
+    );
+    assert!(
+        rows(&summary, TABLE_BRANCHES) > 0,
+        "branches should be non-empty"
+    );
+    assert!(
+        rows(&summary, TABLE_GENERATORS) > 0,
+        "generators should be non-empty"
+    );
+    assert!(rows(&summary, TABLE_LOADS) > 0, "loads should be non-empty");
+    assert!(
+        rows(&summary, TABLE_TRANSFORMERS_2W) > 0,
+        "transformers_2w should be non-empty"
+    );
+    assert!(
+        summary.has_all_canonical_tables,
+        "RPF must contain all canonical tables"
+    );
+    assert_eq!(
+        root_metadata
+            .get("rpf_version")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        RPF_VERSION,
+        "rpf_version metadata must match the canonical schema"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX7K_2022))
+        .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
+    assert_required_nominal_kv_fields(&tables);
+    assert_v094_bus_q_decomposition(&tables);
+}
+
+// ---------------------------------------------------------------------------
+// Texas 7k 2030 planning scenario — static only
 // ---------------------------------------------------------------------------
 const RAW_PATH_TX7K_2030: &str = "tests/data/external/Texas7k_2030_20220923.RAW";
 const OUT_TX7K_2030: &str = "tests/golden/Texas7k_2030_static.rpf";

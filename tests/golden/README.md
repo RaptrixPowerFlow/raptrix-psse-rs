@@ -30,8 +30,38 @@ tests/golden/
 
 tests/data/external/  ← you provide inputs here (not in git)
 ├── <casename>.RAW
-└── <casename>.dyr     ← optional
+├── <casename>.dyr     ← optional PSS/E dynamics
+└── <casename>.dyn     ← optional (some corpora ship `.dyn` instead)
 ```
+
+### Dynamics deck precedence (`.dyn` vs `.dyr`)
+
+`tests/golden_test.rs` and `scripts/verify-external-golden.sh` stay in sync for the
+external corpus. For **ACTIVSg10k** and **Texas2k GFM** (`Texas2k_series24_case6_2024lowloadwithgfm`),
+if **both** `.dyn` and `.dyr` exist next to the RAW, **`.dyn` is chosen first**. Remove
+or rename the deck you do not want used so conversions stay deterministic. Texas7k
+and Texas2k summerpeak dynamic tests use a **fixed `.dyr`** path only.
+
+### Expected `tests/data/external/` filenames
+
+These paths are hard-coded in [`tests/golden_test.rs`](../golden_test.rs) and mirrored in
+[`scripts/verify-external-golden.sh`](../../scripts/verify-external-golden.sh). Spelling and
+casing must match exactly. Extra files in that directory are ignored until you add a matching
+`#[test]` (and script lines, if you use the shell verifier).
+
+| Inputs | Notes |
+|--------|--------|
+| `Texas7k_20220923.RAW` | static only |
+| `Texas7k_20210804.RAW`, `Texas7k_20210804.dyr` | static + dynamic |
+| `Texas2k_series25_case1_summerpeak.RAW`, `.dyr` | static + dynamic |
+| `Base_Eastern_Interconnect_515GW.RAW` | static |
+| `ACTIVSg10k.RAW` | static; dynamic uses `.dyn` if present else `.dyr` |
+| `Texas2k_series24_case6_2024lowloadwithgfm.RAW` | dynamic only; `.dyn` preferred over `.dyr` |
+| `IEEE_14_bus.raw`, `IEEE_118_Bus.RAW` | static |
+| `NYISO_offpeak2019_v23.raw`, `NYISO_onpeak2019_v23.raw` | static |
+| `NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw` | static |
+| `Texas7k_2030_20220923.RAW` | static |
+| `Midwest24k_20220923.RAW`, `ACTIVSg25k.RAW`, `ACTIVSg70k.RAW` | static |
 
 ---
 

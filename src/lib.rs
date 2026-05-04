@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.9.0 converter.
+//! Raptrix PowerFlow Interchange v0.9.4 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -147,6 +147,11 @@ pub struct ExportOptions {
 struct BusAggregate {
     p_sched: f64,
     q_sched: f64,
+    /// v0.9.4: Σ(in-service load QL) / SBASE (signed: positive for inductive load,
+    /// negative for capacitive reactive injection via PSS/E load record with QL < 0)
+    qd_load_pu: f64,
+    /// v0.9.4: Σ(in-service generator QG) / SBASE (any sign)
+    qg_sched_pu: f64,
     q_min: f64,
     q_max: f64,
     g_shunt: f64,
@@ -1437,6 +1442,7 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
         if let Some(agg) = agg_by_bus.get_mut(&load.i) {
             agg.p_sched -= load.pl / base_mva;
             agg.q_sched -= load.ql / base_mva;
+            agg.qd_load_pu += load.ql / base_mva;
         }
     }
 
@@ -1447,6 +1453,7 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
         if let Some(agg) = agg_by_bus.get_mut(&generator.i) {
             agg.p_sched += generator.pg / base_mva;
             agg.q_sched += generator.qg / base_mva;
+            agg.qg_sched_pu += generator.qg / base_mva;
 
             let qmin = generator.qb / base_mva;
             let qmax = generator.qt / base_mva;
@@ -1498,6 +1505,8 @@ fn build_buses_batch(
     let mut p_max_agg = Float64Builder::new();
     let mut nominal_kv = Float64Builder::new();
     let mut bus_uuid = StringDictionaryBuilder::<Int32Type>::new();
+    let mut qd_load_pu = Float64Builder::new();
+    let mut qg_sched_pu = Float64Builder::new();
 
     for bus in buses {
         let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
@@ -1537,6 +1546,8 @@ fn build_buses_batch(
         p_max_agg.append_value(agg.p_max_agg);
         nominal_kv.append_value(bus.baskv);
         bus_uuid.append_value(format!("psse:bus:{}", bus.i));
+        qd_load_pu.append_value(agg.qd_load_pu);
+        qg_sched_pu.append_value(agg.qg_sched_pu);
     }
 
     RecordBatch::try_new(
@@ -1562,6 +1573,8 @@ fn build_buses_batch(
             Arc::new(p_max_agg.finish()),
             Arc::new(nominal_kv.finish()),
             Arc::new(bus_uuid.finish()),
+            Arc::new(qd_load_pu.finish()),
+            Arc::new(qg_sched_pu.finish()),
         ],
     )
     .context("building buses batch")

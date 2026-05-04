@@ -7,12 +7,12 @@
 
 [package]
 name = "raptrix-psse-rs"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Raptrix PowerFlow <dev@raptrix.com>"]
 license = "MPL-2.0"
-description = "High-performance PSS/E (.raw + .dyr) -> Raptrix PowerFlow Interchange v0.9.3 converter"
+description = "High-performance PSS/E (.raw + .dyr) -> Raptrix PowerFlow Interchange v0.9.4 converter"
 repository = "https://github.com/RaptrixPowerFlow/raptrix-psse-rs"
 keywords = ["psse", "power-systems", "converter", "raptrix", "cim"]
 categories = ["command-line-utilities", "parser-implementations"]
@@ -26,7 +26,7 @@ clap = { version = "4", features = ["derive"] }
 # Previously this repo contained an embedded `raptrix-cim-arrow` crate.
 # The canonical source is the IEC 61970 CIM implementation at GitHub;
 # depend on the public repository instead of a local path.
-raptrix-cim-arrow = { git = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs", rev = "c204369" }
+raptrix-cim-arrow = { git = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs", rev = "ea6b02a6c33e4551dc66ce82d887d30c5c22f5ab" }
 
 [dev-dependencies]
 # Golden-file integration tests depend on the raptrix-cim-arrow reader.
