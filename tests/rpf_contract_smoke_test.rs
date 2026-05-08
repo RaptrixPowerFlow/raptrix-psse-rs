@@ -16,7 +16,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray};
+use arrow::array::{
+    Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray,
+};
 use raptrix_cim_arrow::{
     METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, TABLE_BRANCHES, TABLE_BUSES,
     TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
@@ -64,8 +66,12 @@ BUS TYPE
 0 / END OF INDUCTION MACHINE DATA
 "#;
     fs::write(&raw_path, raw).expect("write bus type raw");
-    raptrix_psse_rs::write_psse_to_rpf(raw_path.to_str().unwrap(), None, out_path.to_str().unwrap())
-        .expect("conversion should succeed");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
 
     let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
     let buses = tables
@@ -80,7 +86,11 @@ BUS TYPE
         .downcast_ref::<Int8Array>()
         .expect("buses.type must be Int8");
     assert_eq!(bus_type.value(0), 2, "RAW IDE=2 must export canonical PV=2");
-    assert_eq!(bus_type.value(1), 3, "RAW IDE=4 must export canonical slack=3");
+    assert_eq!(
+        bus_type.value(1),
+        3,
+        "RAW IDE=4 must export canonical slack=3"
+    );
 
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
@@ -234,8 +244,8 @@ CONTRACT SMOKE
         .expect("buses.type must be Int8");
     assert_eq!(
         bus_type.value(0),
-        1,
-        "RAW IDE=3 (PQ generator) must export canonical buses.type=1 (PQ)"
+        3,
+        "when no IDE=4 exists, export should auto-assign exactly one canonical slack bus"
     );
     assert_eq!(
         bus_type.value(1),

@@ -205,6 +205,8 @@ pub fn write_psse_to_rpf_with_options(
         network.dyr_generators = parser::extract_dyr_generators(&network.dyr_models);
     }
 
+    enforce_deterministic_slack(&mut network);
+
     derive_switched_shunt_banks(&mut network);
     let ibr_subtype_by_gen = compute_ibr_subtype_by_generator(&network);
 
@@ -499,6 +501,103 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
     for warning in warnings {
         eprintln!("  - {warning}");
     }
+}
+
+fn enforce_deterministic_slack(network: &mut Network) {
+    if network
+        .buses
+        .iter()
+        .any(|b| b.ide == models::BusType::Slack)
+    {
+        return;
+    }
+
+    let mut degree_by_bus: HashMap<u32, u32> = HashMap::with_capacity(network.buses.len());
+    for bus in &network.buses {
+        degree_by_bus.insert(bus.i, 0);
+    }
+    for branch in &network.branches {
+        if branch.st == 0 {
+            continue;
+        }
+        if let Some(v) = degree_by_bus.get_mut(&branch.i) {
+            *v += 1;
+        }
+        if let Some(v) = degree_by_bus.get_mut(&branch.j) {
+            *v += 1;
+        }
+    }
+    for tx in &network.transformers {
+        if tx.stat == 0 {
+            continue;
+        }
+        if let Some(v) = degree_by_bus.get_mut(&tx.i) {
+            *v += 1;
+        }
+        if let Some(v) = degree_by_bus.get_mut(&tx.j) {
+            *v += 1;
+        }
+    }
+    for tx3w in &network.transformers_3w {
+        if tx3w.stat == 0 {
+            continue;
+        }
+        for bus_id in [tx3w.bus_h, tx3w.bus_m, tx3w.bus_l] {
+            if let Some(v) = degree_by_bus.get_mut(&bus_id) {
+                *v += 1;
+            }
+        }
+    }
+
+    let mut pg_by_bus: HashMap<u32, f64> = HashMap::with_capacity(network.generators.len());
+    for generator in &network.generators {
+        if generator.stat == 0 {
+            continue;
+        }
+        *pg_by_bus.entry(generator.i).or_insert(0.0) += generator.pg;
+    }
+
+    let mut selected_idx = 0usize;
+    let mut best_pg = f64::NEG_INFINITY;
+    let mut best_degree = 0u32;
+    let mut best_bus_id = u32::MAX;
+
+    for (idx, bus) in network.buses.iter().enumerate() {
+        let degree = *degree_by_bus.get(&bus.i).unwrap_or(&0);
+        if degree == 0 {
+            continue;
+        }
+        let pg = *pg_by_bus.get(&bus.i).unwrap_or(&0.0);
+        let better = if pg > best_pg {
+            true
+        } else if (pg - best_pg).abs() <= 1.0e-12 {
+            if degree > best_degree {
+                true
+            } else if degree == best_degree {
+                bus.i < best_bus_id
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if better {
+            selected_idx = idx;
+            best_pg = pg;
+            best_degree = degree;
+            best_bus_id = bus.i;
+        }
+    }
+
+    network.buses[selected_idx].ide = models::BusType::Slack;
+    let selected_bus = network.buses[selected_idx].i;
+    let selected_pg = *pg_by_bus.get(&selected_bus).unwrap_or(&0.0);
+    let selected_degree = *degree_by_bus.get(&selected_bus).unwrap_or(&0);
+    eprintln!(
+        "[converter] no explicit slack (IDE=4) found in RAW; auto-assigned bus {} as slack (largest connected generation = {:.3} MW, degree = {}).",
+        selected_bus, selected_pg, selected_degree
+    );
 }
 
 // ---------------------------------------------------------------------------

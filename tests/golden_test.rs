@@ -7,6 +7,7 @@
 
 //! Golden integration test: Texas7k RAW -> RPF conversion (with and without dynamics).
 
+use std::path::Path;
 use std::time::Instant;
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, ListArray, StringArray};
@@ -270,6 +271,135 @@ fn assert_three_w_star_leg_consistency(
     }
 }
 
+fn canonical_static_filenames() -> &'static [&'static str] {
+    &[
+        "ACTIVSg10k_static.rpf",
+        "ACTIVSg25k_static.rpf",
+        "ACTIVSg70k_static.rpf",
+        "Base_Eastern_Interconnect_515GW_static.rpf",
+        "IEEE_118_Bus_static.rpf",
+        "IEEE_14_bus_static.rpf",
+        "Midwest24k_static.rpf",
+        "NYISO_offpeak2019_v23_static.rpf",
+        "NYISO_onpeak2019_v23_static.rpf",
+        "NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf",
+        "Texas2k_series25_static.rpf",
+        "Texas7k_20210804_static.rpf",
+        "Texas7k_20210804_updated_SAInt_static.rpf",
+        "Texas7k_20220923_static.rpf",
+        "Texas7k_2030_static.rpf",
+    ]
+}
+
+fn canonical_static_inputs() -> &'static [(&'static str, &'static str)] {
+    &[
+        (
+            "tests/data/external/ACTIVSg10k.RAW",
+            "ACTIVSg10k_static.rpf",
+        ),
+        (
+            "tests/data/external/ACTIVSg25k.RAW",
+            "ACTIVSg25k_static.rpf",
+        ),
+        (
+            "tests/data/external/ACTIVSg70k.RAW",
+            "ACTIVSg70k_static.rpf",
+        ),
+        (
+            "tests/data/external/Base_Eastern_Interconnect_515GW.RAW",
+            "Base_Eastern_Interconnect_515GW_static.rpf",
+        ),
+        (
+            "tests/data/external/IEEE_118_Bus.RAW",
+            "IEEE_118_Bus_static.rpf",
+        ),
+        (
+            "tests/data/external/IEEE_14_bus.raw",
+            "IEEE_14_bus_static.rpf",
+        ),
+        (
+            "tests/data/external/Midwest24k_20220923.RAW",
+            "Midwest24k_static.rpf",
+        ),
+        (
+            "tests/data/external/NYISO_offpeak2019_v23.raw",
+            "NYISO_offpeak2019_v23_static.rpf",
+        ),
+        (
+            "tests/data/external/NYISO_onpeak2019_v23.raw",
+            "NYISO_onpeak2019_v23_static.rpf",
+        ),
+        (
+            "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw",
+            "NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf",
+        ),
+        (
+            "tests/data/external/Texas2k_series25_case1_summerpeak.RAW",
+            "Texas2k_series25_static.rpf",
+        ),
+        (
+            "tests/data/external/Texas7k_20210804.RAW",
+            "Texas7k_20210804_static.rpf",
+        ),
+        (
+            "tests/data/external/Texas7k_20210804_updated_SAInt.RAW",
+            "Texas7k_20210804_updated_SAInt_static.rpf",
+        ),
+        (
+            "tests/data/external/Texas7k_20220923.RAW",
+            "Texas7k_20220923_static.rpf",
+        ),
+        (
+            "tests/data/external/Texas7k_2030_20220923.RAW",
+            "Texas7k_2030_static.rpf",
+        ),
+    ]
+}
+
+#[test]
+fn golden_folder_guardrails_static_names_and_versions() {
+    let golden_dir = Path::new("tests/golden");
+    if !golden_dir.exists() {
+        return;
+    }
+
+    let expected: std::collections::HashSet<&str> =
+        canonical_static_filenames().iter().copied().collect();
+    let mut seen_static: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let entries = std::fs::read_dir(golden_dir).expect("read tests/golden");
+    for entry in entries {
+        let entry = entry.expect("read_dir entry");
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rpf") {
+            continue;
+        }
+
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("utf8 filename")
+            .to_string();
+
+        if file_name.ends_with("_static.rpf") {
+            assert!(
+                expected.contains(file_name.as_str()),
+                "unexpected static golden file in tests/golden: {file_name}"
+            );
+            seen_static.insert(file_name);
+        }
+    }
+
+    for (raw_path, required) in canonical_static_inputs() {
+        if Path::new(raw_path).exists() {
+            assert!(
+                seen_static.contains(*required),
+                "missing canonical static golden file: {required}"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Static (no DYR) — writes tests/golden/Texas7k_20210804_static.rpf
 // ---------------------------------------------------------------------------
@@ -442,7 +572,7 @@ fn golden_texas7k_static() {
         .downcast_ref::<Int32Array>()
         .expect("buses.owner_id must be Int32");
     assert!(
-        buses_owner.len() > 0,
+        !buses_owner.is_empty(),
         "buses.owner_id column should be populated as nullable Int32"
     );
 
@@ -453,7 +583,7 @@ fn golden_texas7k_static() {
         .downcast_ref::<Int32Array>()
         .expect("branches.owner_id must be Int32");
     assert!(
-        branches_owner.len() > 0,
+        !branches_owner.is_empty(),
         "branches.owner_id column should be populated as nullable Int32"
     );
 

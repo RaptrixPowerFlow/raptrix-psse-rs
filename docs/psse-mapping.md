@@ -129,6 +129,11 @@ several `buses` columns:
 \* GL/BL appear at columns 8–9 in some legacy RAW variants; absent in standard v35 bus records
 where they belong in fixed shunt section 3.
 
+If no explicit RAW `IDE=4` bus is present after parsing, export applies a
+deterministic fallback and marks exactly one connected bus as slack before
+writing `buses.type` (largest connected online generation, then degree, then
+lowest bus id tie-break).
+
 **Aggregated-only columns** (no direct PSS/E bus field — derived via `BusAggregate`):
 
 | RPF column | Source |

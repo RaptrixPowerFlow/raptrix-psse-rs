@@ -113,10 +113,11 @@ The optional **`scenario_context`** root table is **not** written by default. Th
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.3.9)
+## Recent release (v0.3.10)
 
-- **RPF v0.9.5**: `generators.controlled_bus_id`, `metadata.default_shunt_control_mode`, and optional root **`rpf.default_shunt_control_mode`** (planning exports default to `planning_full`).
-- **`raptrix-cim-arrow`** pinned to **`a556662e`** on [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs).
+- Canonical bus-type export fix: `buses.type` now emits contract values `1=PQ`, `2=PV`, `3=slack`.
+- Golden generation scripts now enforce a strict one-to-one canonical `*_static.rpf` set (no alias duplicates).
+- **`raptrix-cim-arrow`** remains pinned to **`a556662e`** on [raptrix-cim-rs](https://github.com/RaptrixPowerFlow/raptrix-cim-rs).
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 

@@ -109,8 +109,7 @@ fn dc_line_full_parameters() {
 
 #[test]
 fn vsc_dc_line_recognized() {
-    let raw = format!(
-        "0, 100.0, 33, 1, 60.0 / parser robustness\n\
+    let raw = "0, 100.0, 33, 1, 60.0 / parser robustness\n\
          TEST CASE\n\
          TEST CASE 2\n\
          0 / END OF BUS DATA, BEGIN LOAD DATA\n\
@@ -125,7 +124,7 @@ fn vsc_dc_line_recognized() {
          0 / END OF VSC DC DATA, BEGIN ZONE DATA\n\
          0 / END OF ZONE DATA\n\
          Q\n"
-    );
+    .to_string();
 
     let network = parse_snippet(&raw).expect("Failed to parse VSC DC line");
 

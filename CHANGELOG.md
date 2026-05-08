@@ -18,19 +18,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.3.10] - 2026-05-08
+
 ### Fixed
 
 - Canonical bus-type export alignment: `buses.type` now writes schema-contract values (`1=PQ`, `2=PV`, `3=slack`) instead of reusing internal parser enum discriminants.
+- Export-time slack normalization now auto-assigns one deterministic slack bus when RAW parsing yields none (largest connected online generation, then degree, then bus id).
+- CI lint gate compliance: addressed strict `rustfmt` / `clippy -D warnings` regressions in test modules so release workflows pass cleanly.
 
 ### Added
 
-- Golden generation scripts now emit same-stem static aliases for known filename mismatches (`Texas2k_series25_case1_summerpeak`, `Midwest24k_20220923`, `Texas7k_2030_20220923`) alongside legacy short-name outputs.
+- Golden folder guardrail checks for canonical static naming and supported RPF version metadata.
+
+### Changed
+
+- Golden generation scripts now follow a strict one-to-one canonical `*_static.rpf` policy (no alias duplicates in `tests/golden`).
 
 ### Tests
 
 - `rpf_contract_smoke_test` now asserts canonical `buses.type` values on exported rows.
-
----
 
 ## [0.3.9] - 2026-05-04
 

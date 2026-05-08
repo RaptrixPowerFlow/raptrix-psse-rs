@@ -51,9 +51,7 @@ run_dynamic() {
 run_static "tests/data/external/Texas7k_20210804.RAW" "tests/golden/Texas7k_20210804_static.rpf"
 run_dynamic "tests/data/external/Texas7k_20210804.RAW" "tests/data/external/Texas7k_20210804.dyr" "tests/golden/Texas7k_20210804_dynamic.rpf"
 
-# Keep legacy short-name and same-stem aliases in sync for downstream regressions.
 run_static "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" "tests/golden/Texas2k_series25_static.rpf"
-run_static "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" "tests/golden/Texas2k_series25_case1_summerpeak_static.rpf"
 run_dynamic "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
   "tests/data/external/Texas2k_series25_case1_summerpeak.dyr" "tests/golden/Texas2k_series25_dynamic.rpf"
 
@@ -81,9 +79,7 @@ run_static "tests/data/external/NYISO_onpeak2019_v23.raw" "tests/golden/NYISO_on
 run_static "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw" \
   "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf"
 run_static "tests/data/external/Texas7k_2030_20220923.RAW" "tests/golden/Texas7k_2030_static.rpf"
-run_static "tests/data/external/Texas7k_2030_20220923.RAW" "tests/golden/Texas7k_2030_20220923_static.rpf"
 run_static "tests/data/external/Midwest24k_20220923.RAW" "tests/golden/Midwest24k_static.rpf"
-run_static "tests/data/external/Midwest24k_20220923.RAW" "tests/golden/Midwest24k_20220923_static.rpf"
 run_static "tests/data/external/ACTIVSg25k.RAW" "tests/golden/ACTIVSg25k_static.rpf"
 run_static "tests/data/external/ACTIVSg70k.RAW" "tests/golden/ACTIVSg70k_static.rpf"
 

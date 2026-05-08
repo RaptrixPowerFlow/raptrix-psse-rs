@@ -18,6 +18,23 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### v0.3.10: RPF v0.9.5 export correctness + CI hygiene (Non-breaking)
+
+`raptrix-psse-rs` v0.3.10 keeps emitting RPF **v0.9.5**, with a critical correctness fix to canonical bus-type export.
+
+#### What changed
+
+- **Canonical `buses.type` mapping fixed at export boundary**:
+  - exported values now strictly follow schema contract: `1=PQ`, `2=PV`, `3=slack`.
+  - RAW `IDE=2` maps to canonical PV (`2`), RAW `IDE=4` maps to canonical slack (`3`), and RAW `IDE=1/3` map to canonical PQ (`1`).
+- Export now guarantees one slack bus in emitted RPFs: when no explicit RAW `IDE=4` survives parsing, converter auto-assigns a deterministic slack (largest connected online generation, then degree, then lowest bus id).
+- Golden conversion scripts now enforce strict one-to-one canonical static outputs (`*_static.rpf`) with no alias duplicates in `tests/golden`.
+
+#### Integrator checklist
+
+- If downstream importers assumed non-canonical `buses.type` codes, update them to canonical v0.9.5 semantics.
+- Use canonical static names from `tests/golden_test.rs` / `scripts/verify-external-golden.sh` as the only supported static regression set.
+
 ### v0.3.9: RPF v0.9.4 → **v0.9.5** (Additive)
 
 `raptrix-psse-rs` v0.3.9 emits RPF **v0.9.5** via the updated `raptrix-cim-arrow` pin.
