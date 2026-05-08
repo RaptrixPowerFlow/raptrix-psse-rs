@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Canonical bus-type export alignment: `buses.type` now writes schema-contract values (`1=PQ`, `2=PV`, `3=slack`) instead of reusing internal parser enum discriminants.
+
+### Added
+
+- Golden generation scripts now emit same-stem static aliases for known filename mismatches (`Texas2k_series25_case1_summerpeak`, `Midwest24k_20220923`, `Texas7k_2030_20220923`) alongside legacy short-name outputs.
+
+### Tests
+
+- `rpf_contract_smoke_test` now asserts canonical `buses.type` values on exported rows.
+
 ---
 
 ## [0.3.9] - 2026-05-04

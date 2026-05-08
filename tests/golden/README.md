@@ -19,6 +19,12 @@ vendor or licensed RAW/DYR files to the public repo).
 Generated `tests/golden/*.rpf` files are also **gitignored** by default; they
 exist for local inspection and regression, not as checked-in fixtures.
 
+For static files, scripts now emit both legacy short-name outputs and same-stem
+aliases for known corpus exceptions:
+- `Texas2k_series25_static.rpf` + `Texas2k_series25_case1_summerpeak_static.rpf`
+- `Midwest24k_static.rpf` + `Midwest24k_20220923_static.rpf`
+- `Texas7k_2030_static.rpf` + `Texas7k_2030_20220923_static.rpf`
+
 ---
 
 ## Layout

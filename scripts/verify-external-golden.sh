@@ -101,6 +101,7 @@ else
 fi
 
 run_static "Texas2k summerpeak" "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" "tests/golden/Texas2k_series25_static.rpf"
+run_static "Texas2k summerpeak (same-stem alias)" "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" "tests/golden/Texas2k_series25_case1_summerpeak_static.rpf"
 if [[ -f "tests/data/external/Texas2k_series25_case1_summerpeak.dyr" ]]; then
   run_dynamic "Texas2k summerpeak" "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
     "tests/data/external/Texas2k_series25_case1_summerpeak.dyr" "tests/golden/Texas2k_series25_dynamic.rpf"
@@ -157,7 +158,9 @@ run_static "NYISO onpeak 2019" "tests/data/external/NYISO_onpeak2019_v23.raw" "t
 run_static "NYISO onpeak 2030 PW" "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw" \
   "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf"
 run_static "Texas7k 2030" "tests/data/external/Texas7k_2030_20220923.RAW" "tests/golden/Texas7k_2030_static.rpf"
+run_static "Texas7k 2030 (same-stem alias)" "tests/data/external/Texas7k_2030_20220923.RAW" "tests/golden/Texas7k_2030_20220923_static.rpf"
 run_static "Midwest24k" "tests/data/external/Midwest24k_20220923.RAW" "tests/golden/Midwest24k_static.rpf"
+run_static "Midwest24k (same-stem alias)" "tests/data/external/Midwest24k_20220923.RAW" "tests/golden/Midwest24k_20220923_static.rpf"
 run_static "ACTIVSg25k" "tests/data/external/ACTIVSg25k.RAW" "tests/golden/ACTIVSg25k_static.rpf"
 run_static "ACTIVSg70k" "tests/data/external/ACTIVSg70k.RAW" "tests/golden/ACTIVSg70k_static.rpf"
 

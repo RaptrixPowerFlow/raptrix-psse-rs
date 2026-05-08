@@ -16,7 +16,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, MapArray, StringArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray};
 use raptrix_cim_arrow::{
     METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, TABLE_BRANCHES, TABLE_BUSES,
     TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
@@ -32,6 +32,58 @@ fn unique_temp_path(stem: &str, ext: &str) -> PathBuf {
         .as_nanos();
     path.push(format!("raptrix_psse_rs_{stem}_{nanos}.{ext}"));
     path
+}
+
+#[test]
+fn buses_type_exports_canonical_codes_for_pv_and_slack() {
+    let raw_path = unique_temp_path("bus_type_codes", "raw");
+    let out_path = unique_temp_path("bus_type_codes", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / BUS_TYPE_CODES
+BUS TYPE
+BUS TYPE
+1,'PVBUS',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+2,'SWBUS',230.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write bus type raw");
+    raptrix_psse_rs::write_psse_to_rpf(raw_path.to_str().unwrap(), None, out_path.to_str().unwrap())
+        .expect("conversion should succeed");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let buses = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .map(|(_, batch)| batch)
+        .expect("missing buses table");
+    let bus_type = buses
+        .column_by_name("type")
+        .expect("missing buses.type")
+        .as_any()
+        .downcast_ref::<Int8Array>()
+        .expect("buses.type must be Int8");
+    assert_eq!(bus_type.value(0), 2, "RAW IDE=2 must export canonical PV=2");
+    assert_eq!(bus_type.value(1), 3, "RAW IDE=4 must export canonical slack=3");
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
 }
 
 #[test]
@@ -174,6 +226,22 @@ CONTRACT SMOKE
         .find(|(name, _)| name == TABLE_BUSES)
         .map(|(_, batch)| batch)
         .expect("missing buses table");
+    let bus_type = buses
+        .column_by_name("type")
+        .expect("missing buses.type")
+        .as_any()
+        .downcast_ref::<Int8Array>()
+        .expect("buses.type must be Int8");
+    assert_eq!(
+        bus_type.value(0),
+        1,
+        "RAW IDE=3 (PQ generator) must export canonical buses.type=1 (PQ)"
+    );
+    assert_eq!(
+        bus_type.value(1),
+        1,
+        "RAW IDE=1 must export canonical buses.type=1 (PQ)"
+    );
     let bus_owner = buses
         .column_by_name("owner_id")
         .expect("missing buses.owner_id")

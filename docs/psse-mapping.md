@@ -113,7 +113,7 @@ several `buses` columns:
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
 | NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
 | BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (required Float64). |
-| IDE | 4 | `ide` | `type` | Int8: 1=PQ load, 2=PQ-gen, 3=PV, 4=slack (interchange). PSS/E `IDE` uses **2** for PV and **3** for PQ generator; the importer maps these to interchange **3** / **2**. |
+| IDE | 4 | `ide` | `type` | Int8 canonical: **1=PQ**, **2=PV**, **3=slack**. RAW `IDE=2` maps to canonical PV (`2`), `IDE=4` maps to slack (`3`), and RAW `IDE=1/3` map to canonical PQ (`1`). |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
 | ZONE | 6 | `zone` | `zone` | Foreign key → `zones.zone_id`. |
 | OWNER | 7 | `owner` | `owner` | Foreign key → `owners.owner_id`. |

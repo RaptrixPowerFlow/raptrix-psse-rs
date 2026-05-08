@@ -1534,6 +1534,15 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
     agg_by_bus
 }
 
+fn canonical_bus_type_code(bus_type: models::BusType) -> i8 {
+    match bus_type {
+        models::BusType::Slack => 3,
+        models::BusType::GeneratorPV => 2,
+        // RAW IDE=1 (load) and IDE=3 (PQ generator) both map to canonical PQ.
+        models::BusType::LoadBus | models::BusType::GeneratorPQ => 1,
+    }
+}
+
 fn build_buses_batch(
     buses: &[models::Bus],
     agg_by_bus: &HashMap<u32, BusAggregate>,
@@ -1580,7 +1589,7 @@ fn build_buses_batch(
 
         bus_id.append_value(bus.i as i32);
         name.append_value(bus.name.as_ref());
-        bus_type.append_value(bus.ide as i8);
+        bus_type.append_value(canonical_bus_type_code(bus.ide));
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
         // `v_mag_set`: interchange aggregate — last non-zero finite in-service `VS`

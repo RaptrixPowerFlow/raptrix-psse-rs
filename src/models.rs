@@ -89,12 +89,10 @@ pub struct CaseId {
 // Section 1 — Bus data
 // ---------------------------------------------------------------------------
 
-/// Bus-type codes stored on [`Bus::ide`] and exported to RPF `buses.type`.
+/// Internal bus categories parsed from PSS/E `IDE`.
 ///
-/// Numeric values follow the Raptrix interchange (PSS/E ≥34 style): **1** PQ
-/// load, **2** PQ generator bus, **3** PV bus, **4** slack.  This matches PSS/E
-/// `IDE` except PSS/E uses **2** for PV and **3** for PQ generator — the parser
-/// maps those to `GeneratorPV` / `GeneratorPQ` accordingly.
+/// These numeric values intentionally match parsed RAW semantics. Export code
+/// maps them to canonical RPF `buses.type` codes: `1=PQ`, `2=PV`, `3=slack`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BusType {
