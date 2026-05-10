@@ -5,7 +5,9 @@
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
-//! Bus `IDE` / RPF `type` alignment: PSS/E 2 = PV, 3 = PQ-gen, and v35 optional field after BASKV.
+//! Bus `IDE` / RPF `type` alignment per the PSS®E Program Operation Manual:
+//!   IDE=1 → load (PQ), IDE=2 → PV generator, IDE=3 → swing/slack, IDE=4 → disconnected (folded into PQ).
+//! Also covers the v35 optional substation-name column inserted after BASKV.
 
 use std::io::Write;
 
@@ -21,14 +23,14 @@ fn write_parse(raw: &str) -> raptrix_psse_rs::models::Network {
 }
 
 #[test]
-fn v33_maps_psse_ide_2_to_pv_and_3_to_pq_gen() {
+fn v33_maps_psse_ide_2_to_pv_3_to_slack_and_4_to_load() {
     let raw = r#"0, 100.0, 33, 0, 0, 60.0 / bus ide v33
 L2
 L3
 1,'PQLOAD    ',138.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
 2,'PVTWO     ',138.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
-3,'PQGEN     ',138.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
-4,'SWING     ',138.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+3,'SWING     ',138.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+4,'ISOLATED  ',138.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
@@ -52,18 +54,26 @@ L3
     let n = write_parse(raw);
     let by_id: std::collections::HashMap<u32, BusType> =
         n.buses.iter().map(|b| (b.i, b.ide)).collect();
-    assert_eq!(by_id[&1], BusType::LoadBus);
+    assert_eq!(
+        by_id[&1],
+        BusType::LoadBus,
+        "PSS/E IDE=1 is a load (PQ) bus"
+    );
     assert_eq!(
         by_id[&2],
         BusType::GeneratorPV,
-        "PSS/E IDE=2 is PV (interchange type 3)"
+        "PSS/E IDE=2 is a voltage-regulating generator (PV)"
     );
     assert_eq!(
         by_id[&3],
-        BusType::GeneratorPQ,
-        "PSS/E IDE=3 is PQ generator (interchange type 2)"
+        BusType::Slack,
+        "PSS/E IDE=3 is the swing/slack bus"
     );
-    assert_eq!(by_id[&4], BusType::Slack);
+    assert_eq!(
+        by_id[&4],
+        BusType::LoadBus,
+        "PSS/E IDE=4 is a disconnected/isolated bus, folded into PQ on import"
+    );
 }
 
 #[test]
@@ -74,6 +84,7 @@ L3
 0 / END OF SYSTEM-WIDE DATA, BEGIN BUS DATA
 1,'WITHSUB   ',138.0,'SUB_A      ',2,7,26,1,1.03125,0.50,1.10,0.90,1.10,0.90
 2,'NOSUB     ',138.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+3,'ISO       ',138.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
@@ -106,5 +117,12 @@ L3
     assert_eq!(b1.zone, 26);
 
     let b2 = n.buses.iter().find(|b| b.i == 2).expect("bus 2");
-    assert_eq!(b2.ide, BusType::GeneratorPQ);
+    assert_eq!(b2.ide, BusType::Slack, "PSS/E IDE=3 is the slack bus");
+
+    let b3 = n.buses.iter().find(|b| b.i == 3).expect("bus 3");
+    assert_eq!(
+        b3.ide,
+        BusType::LoadBus,
+        "PSS/E IDE=4 is disconnected/isolated, folded into PQ"
+    );
 }

@@ -491,12 +491,23 @@ fn resolve_bus_ide_index(f: &[String], baskv_idx: usize, psse_version: u32) -> u
 }
 
 fn psse_bus_ide_raw_to_type(ide_raw: u8) -> BusType {
+    // Authoritative PSS/E PSSE-33/35 IDE field semantics (Bus Data Section):
+    //   1 = Load bus (no generator boundary condition)        → canonical PQ  (RPF type 1)
+    //   2 = Generator/plant bus (voltage-regulating; PV)       → canonical PV  (RPF type 2)
+    //   3 = Swing bus                                          → canonical Slack (RPF type 3)
+    //   4 = Disconnected / isolated bus                        → treated as PQ (RPF type 1)
+    // Notes:
+    //   • PSS/E does *not* define a "PQ generator" IDE code. A machine that doesn't
+    //     regulate voltage still lives at an IDE=1 (load) bus or IDE=2 bus with
+    //     reactive scheduling — the bus IDE itself is unaffected.
+    //   • IDE=4 buses are folded into the PQ pool to mirror the raptrix-core RAW
+    //     parser convention (`type = (IDE == 4) ? 1 : IDE`); the converter's
+    //     deterministic-slack pass later drops them into the export untouched.
     match ide_raw {
         1 => BusType::LoadBus,
-        // PSS/E: 2 = voltage-regulating (PV), 3 = PQ generator — matches RPF `type` 3 / 2.
         2 => BusType::GeneratorPV,
-        3 => BusType::GeneratorPQ,
-        4 => BusType::Slack,
+        3 => BusType::Slack,
+        4 => BusType::LoadBus,
         _ => BusType::LoadBus,
     }
 }
@@ -1211,6 +1222,31 @@ fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
 // Public entry point: parse_raw
 // ---------------------------------------------------------------------------
 
+/// Raw `ST` token tallies and line counts for the BRANCH deck section only.
+///
+/// Populated by [`parse_raw_with_branch_deck_stats`] alongside a full parse.
+/// `status_token_histogram` keys are the integer tokens at the PSS/E `ST`
+/// column (version-aware index); values are how often that token appeared on
+/// non-terminator BRANCH lines with enough fields to read that column.
+#[derive(Debug, Default, Clone)]
+pub struct BranchDeckStats {
+    /// Non-terminator data lines seen while `ParseState::Branch` is active.
+    pub branch_section_lines: usize,
+    /// Histogram of the raw `ST` column integer (before `parse_branch_record`
+    /// maps non-zero values to in-service).
+    pub status_token_histogram: std::collections::BTreeMap<i32, usize>,
+    /// Lines in the BRANCH section where [`parse_branch_record`] returned `None`.
+    pub rejected_branch_lines: usize,
+}
+
+/// Parse a PSS/E RAW file and return the [`Network`] plus BRANCH-section deck
+/// statistics (raw `ST` token histogram, rejected lines).
+pub fn parse_raw_with_branch_deck_stats(path: &Path) -> Result<(Network, BranchDeckStats)> {
+    let mut deck = BranchDeckStats::default();
+    let network = parse_raw_impl(path, Some(&mut deck))?;
+    Ok((network, deck))
+}
+
 /// Parse a PSS/E RAW file (v23–v35+) into a [`Network`].
 ///
 /// Sections are detected by the `0 / END OF X DATA, BEGIN Y DATA` comment
@@ -1224,6 +1260,10 @@ fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
 /// fictitious buses are used only as an internal normalization aid and are
 /// removed before final RPF emission.
 pub fn parse_raw(path: &Path) -> Result<Network> {
+    parse_raw_impl(path, None)
+}
+
+fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) -> Result<Network> {
     let file = fs::File::open(path)
         .with_context(|| format!("cannot open RAW file: {}", path.display()))?;
     let reader = io::BufReader::new(file);
@@ -1341,8 +1381,18 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
             // ================================================================
             ParseState::Branch => {
                 let f = tokenize(data);
+                if let Some(d) = branch_diag.as_mut() {
+                    d.branch_section_lines += 1;
+                    if f.len() > off.branch_status_idx {
+                        if let Ok(v) = f[off.branch_status_idx].trim().parse::<i32>() {
+                            *d.status_token_histogram.entry(v).or_insert(0) += 1;
+                        }
+                    }
+                }
                 if let Some(branch) = parse_branch_record(&f, &off) {
                     result.branches.push(branch);
+                } else if let Some(d) = branch_diag.as_mut() {
+                    d.rejected_branch_lines += 1;
                 }
             }
 
@@ -1679,7 +1729,52 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
-    use super::parse_facts_record;
+    use std::io::Write;
+
+    use super::{parse_facts_record, parse_raw_with_branch_deck_stats};
+
+    #[test]
+    fn branch_deck_stats_histogram_matches_branch_lines_v33() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("deck.raw");
+        let raw = r#"0, 100.0, 33, 0, 0, 60.0 / BRANCH_DECK_TEST
+T1
+T2
+1,'BUS1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'BUS2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+1,2,'2',0.02,0.06,0.0,100.0,110.0,120.0,0,0,0,0,0,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let (net, deck) =
+            parse_raw_with_branch_deck_stats(&path).expect("parse with branch deck stats");
+        assert_eq!(net.branches.len(), 2);
+        assert_eq!(deck.branch_section_lines, 2);
+        assert_eq!(deck.rejected_branch_lines, 0);
+        assert_eq!(deck.status_token_histogram.get(&0), Some(&1));
+        assert_eq!(deck.status_token_histogram.get(&1), Some(&1));
+    }
 
     #[test]
     fn parse_facts_record_extracts_bus_pair_and_params() {

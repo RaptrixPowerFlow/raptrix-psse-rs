@@ -41,7 +41,7 @@ fn has_table(summary: &raptrix_cim_arrow::RpfSummary, table_name: &str) -> bool 
     summary.tables.iter().any(|t| t.table_name == table_name)
 }
 
-fn assert_v090_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
+fn assert_canonical_root_tables_present(summary: &raptrix_cim_arrow::RpfSummary) {
     for table in [
         TABLE_MULTI_SECTION_LINES,
         TABLE_DC_LINES_2W,
@@ -49,7 +49,7 @@ fn assert_v090_required_tables(summary: &raptrix_cim_arrow::RpfSummary) {
     ] {
         assert!(
             has_table(summary, table),
-            "missing v0.9.0 required table: {table}"
+            "missing required interchange root table: {table}"
         );
     }
 }
@@ -145,6 +145,18 @@ fn table_by_name<'a>(
         .find(|(name, _)| name == table_name)
         .map(|(_, batch)| batch)
         .unwrap_or_else(|| panic!("missing table '{table_name}'"))
+}
+
+/// Asserts v0.10.0+ Arrow column surface (values may be null on the PSS/E export path).
+fn assert_rpf_v010_column_surface(tables: &[(String, arrow::record_batch::RecordBatch)]) {
+    let metadata = table_by_name(tables, TABLE_METADATA);
+    metadata
+        .column_by_name("computational_load_mode")
+        .expect("missing metadata.computational_load_mode (v0.10.0 contract)");
+    let dynamics = table_by_name(tables, TABLE_DYNAMICS_MODELS);
+    dynamics
+        .column_by_name("perc1_params")
+        .expect("missing dynamics_models.perc1_params (v0.10.0 contract)");
 }
 
 fn assert_non_null_positive_f64_column(
@@ -451,7 +463,7 @@ fn golden_texas7k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -704,7 +716,7 @@ fn golden_texas7k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -775,7 +787,7 @@ fn golden_texas2k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -836,7 +848,7 @@ fn golden_texas2k_dynamic() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -938,7 +950,7 @@ fn golden_activsg10k_static() {
         summary.has_all_canonical_tables,
         "RPF must contain all canonical tables"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
     assert_eq!(
         root_metadata
             .get("rpf_version")
@@ -963,7 +975,7 @@ fn golden_activsg10k_static() {
 }
 
 #[test]
-fn golden_activsg10k_dynamic_v090_tables_and_metadata() {
+fn golden_activsg10k_dynamic_v010_tables_and_metadata() {
     let Some(dyr_path) = first_existing_path(&[DYR_PATH_ACTIVS10K_DYN, DYR_PATH_ACTIVS10K_DYR])
     else {
         eprintln!(
@@ -989,7 +1001,7 @@ fn golden_activsg10k_dynamic_v090_tables_and_metadata() {
         rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
         "expected DYR payload rows"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_ACTIVS10K_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
@@ -1038,7 +1050,7 @@ fn golden_texas2k_gfm_dynamic_ibr_detection() {
         rows(&summary, TABLE_DYNAMICS_MODELS) > 0,
         "expected DYR payload rows"
     );
-    assert_v090_required_tables(&summary);
+    assert_canonical_root_tables_present(&summary);
 
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_TX2K_GFM_DYNAMIC))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
@@ -1178,6 +1190,7 @@ fn golden_ieee14_static() {
     let tables = raptrix_psse_rs::read_rpf_tables(std::path::Path::new(OUT_IEEE14))
         .unwrap_or_else(|e| panic!("read_rpf_tables failed: {e:#}"));
     assert_required_nominal_kv_fields(&tables);
+    assert_rpf_v010_column_surface(&tables);
     let buses = table_by_name(&tables, TABLE_BUSES);
     let bus_id_col = buses
         .column_by_name("bus_id")

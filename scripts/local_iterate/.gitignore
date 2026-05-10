@@ -1,0 +1,13 @@
+# scripts/local_iterate/ is a gitignored development tree for fast RAW <-> RPF
+# delta iteration against raptrix-core. Do NOT commit anything in here except
+# the loop driver itself.
+
+# Block everything by default...
+*
+
+# ...except the script tree we ship.
+!.gitignore
+!run.ps1
+!parse_log.py
+!robust_harness.py
+!README.md

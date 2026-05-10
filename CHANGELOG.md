@@ -18,6 +18,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No user-facing changes yet._
+
+---
+
+## [0.4.0] - 2026-05-10
+
+### RPF **v0.10.0** (`raptrix-cim-arrow` **0.4.0**)
+
+- **Emit-only v0.10.0**: every `.rpf` from this crate carries `raptrix.version` / contract **v0.10.0** (via `raptrix-cim-arrow::SCHEMA_VERSION`). Older interchange files must be re-emitted with **raptrix-psse-rs ≥ 0.4.0** or **raptrix-cim-rs ≥ 0.4.0**.
+- **`metadata.computational_load_mode`**: nullable Boolean column present; PSS/E exports write **null** (this converter does not author `computational_load_profiles`).
+- **`dynamics_models.perc1_params`**: nullable struct column present; all **null** until PERC1 field mapping exists.
+- **Post-write validation**: unchanged — `write_root_rpf_with_metadata` still runs `raptrix_cim_arrow::validate_rpf_file` before returning.
+- **Dependency**: `raptrix-cim-arrow` **0.4.0** / git **`b08d841a6c731e2df6d56cdff6d06dba8ced4e26`**; remove the sibling `[patch]` entry in `Cargo.toml` when publishing from crates.io only.
+
+### BRANCH deck diagnostics (RAW vs RPF row-count investigations)
+
+- **`parser::parse_raw_with_branch_deck_stats`** returns `(Network, BranchDeckStats)` with BRANCH-section line counts, a histogram of **raw** `ST` integer tokens at the version-aware column (before non-zero values are folded to in-service in the model), and a count of lines where `parse_branch_record` returned `None`.
+- **`branch_deck_scan` binary** (`cargo run --bin branch_deck_scan -- --raw … [--rpf …]`) prints those statistics, optional duplicate in-service `(from,to,ckt)` keys, and an in-service multiset diff between the parsed RAW network and an RPF `branches` table (for reconciling cases like large interconnect models where other tools omit `ST=0` rows).
+- **Unit test** `parser::tests::branch_deck_stats_histogram_matches_branch_lines_v33` locks histogram behaviour on a minimal v33 deck.
+
+### PSS/E `IDE=3` / `IDE=4` mapping correctness fix
+
+Highest-impact correctness fix in this release cycle: the parser had been
+mapping PSS/E IDE codes 3 and 4 with their meanings swapped relative to the
+official PSS®E Program Operation Manual. This silently lost the swing-bus
+designation on every RAW that authored an explicit `IDE=3` and routed
+disconnected/isolated `IDE=4` buses into the slack-candidate pool.
+
+#### Fixed
+
+- **`parser.rs::psse_bus_ide_raw_to_type`** now follows the official PSS/E
+  spec: `IDE=1 → LoadBus`, `IDE=2 → GeneratorPV`, **`IDE=3 → Slack`**, **`IDE=4 → LoadBus`** (folded into PQ to mirror raptrix-core's `psse_parser.cpp` convention `int type = (rb.type == 4) ? 1 : rb.type;`). Previously `IDE=3` was incorrectly mapped to `BusType::GeneratorPQ` (then collapsed to canonical PQ on export) and `IDE=4` was incorrectly mapped to `BusType::Slack`.
+- **`models.rs::BusType`** doc-comments rewritten to reflect the correct PSS/E IDE semantics. The `BusType::GeneratorPQ` enum variant is retained for backward compatibility but is no longer assigned by the parser; canonicalization continues to map it to RPF type=1 (PQ).
+- **Diagnostic message text** updated everywhere `IDE=4` was used as shorthand for the slack bus to instead say `IDE=3` (`lib.rs::enforce_deterministic_slack`, `validation.rs::MMWG-7.3.1/no-slack`, `scripts/local_iterate/parse_log.py` warning patterns).
+
+#### Companion change in `raptrix-core` (`src/model/rpf_reader.cpp`)
+
+- The IBR-aware automatic PV→PQ demoter (which fired when `model.has_ibr=true` and re-typed zero-Q-span PV buses to PQ) is replaced with a **diagnostic-only audit**. The solver already correctly handles zero-Q-span PV buses via the `std::abs(b.q_max) < 1e-9` skip in `solver.cpp` (lines around 1232/1285/2709/2738/4651), so the demoter was preempting work the solver does correctly and silently diverging from RAW import semantics. The structural-validity guard (which only demotes PV buses with no online machines) is unchanged and continues to fire as before.
+
+#### Tests
+
+- `tests/bus_ide_parsing_test.rs::v33_maps_psse_ide_2_to_pv_3_to_slack_and_4_to_load` (renamed): asserts the corrected mapping for IDE 1/2/3/4.
+- `tests/bus_ide_parsing_test.rs::v35_optional_field_after_baskv_keeps_ide_and_vm_aligned`: extended with an `IDE=4` row to cover the disconnected→PQ mapping under the v35 substation-name layout.
+- `tests/rpf_contract_smoke_test.rs::buses_type_exports_canonical_codes_for_pv_and_slack`: rewritten to author the slack bus with `IDE=3` (was `IDE=4`).
+- `tests/rpf_contract_smoke_test.rs::writer_promotes_connected_replacement_for_disconnected_slack`: rewritten to use `IDE=3` for the orphan slack (was `IDE=4`); still asserts that the connected replacement is promoted.
+- `tests/rpf_contract_smoke_test.rs::writer_preserves_psse_ide3_swing_and_demotes_ide4_isolated` (new): explicit regression for the bug — verifies that `IDE=3` round-trips to canonical slack=3 *without* re-picking, that `IDE=4` exports as canonical PQ=1 and is never a slack candidate, and that the file carries exactly one canonical slack.
+
+#### Iterate-loop verification
+
+Local iterate-loop sweep across 13 cases (8 small/medium + 4 Texas7k + Midwest24k + ACTIVSg25k) confirms the fix produces RAW↔RPF parity:
+- **24 RAW runs / 24 RPF runs, 22 converged on each side, 0 convergence asymmetries** (`scripts/local_iterate/out/delta_report.after-ide-fix.md`).
+- Every paired case shows `Δ iters = Δ qswitches = Δ qviolations = 0` between RAW and RPF; tolerances match within one order of magnitude (most are bit-equal).
+- 0 `[converter] auto-assigned bus * as slack` warnings in `convert_stderr.log` (down from 9 in the pre-fix sweep) — every case now finds the RAW's authored `IDE=3` swing bus directly.
+- 0 `RPF import: auto-demoted N zero-Q-span PV buses to PQ` warnings — replaced by 1080 instances of the new `RPF import: detected N zero-Q-span PV buses … kept as type-2` diagnostic from the companion `raptrix-core` change.
+- ACTIVSg25k remains non-converged in both RAW and RPF (`tol = 2.68`); a separate solver-limited case unrelated to writer fidelity.
+- Spot check on `Base_Eastern_Interconnect_515GW.RAW`: previously the converter auto-picked bus 27840 as slack while the RAW authored bus 50320; with the fix bus 50320 is preserved as canonical slack=3, the 6 IDE=4 buses are correctly emitted as PQ, and PV-mode now converges on the RPF (was failing pre-fix).
+
+### RPF generation quality hardening (raptrix-core parity)
+
+This work targets RAW vs RPF convergence parity in raptrix-core and eliminates
+classes of importer warnings that indicate writer-side gaps rather than data
+issues.
+
+#### Added
+
+- **Slack-island awareness in `enforce_deterministic_slack`**: connected-degree check now demotes any RAW-authored **swing** bus (`IDE=3`) that sits on a disconnected island (degree==0) and promotes the largest-generation connected bus instead. Eliminates the importer's "auto-assigned slack" warning class for files where the RAW had a slack but on a dead island. If no connected bus exists at all (degenerate / topology-only fixtures) the existing swing token is preserved so the file still carries an explicit slack.
+- **Voltage-set sanitization on bus export**: `v_mag_set` and `v_ang_set` are now clamped at writer time (`v_mag_set <= 0 || !finite -> 1.0`, `v_ang_set !finite -> 0.0`). A per-file diagnostic counter is logged. Eliminates the importer's "sanitized invalid v_mag" warning class — measured: 8 import-time sanitization warnings (31 invalid VM total across 4 cases) drop to 0 in the local iterate-loop sweep.
+- **Generator Q-limit ledger consistency**: `q_min`/`q_max` are swapped per generator on export when `q_min > q_max`, and non-finite Q-limits are clamped to 0.0. The same swap is propagated into bus-level Q aggregation. Fix improved Midwest24k_20220923 PQ tolerance by 7 orders of magnitude (2.9e-4 → 2.0e-11) in the local iterate-loop sweep.
+
+#### Changed
+
+- Pinned `raptrix-cim-arrow` to **0.4.0** / RPF **v0.10.0** (narrow reader: `SUPPORTED_RPF_VERSIONS` is **only** `v0.10.0` / `0.10.0` in that release). Use **raptrix-core** with `rpf_reader` v0.10.0 support when ingesting new files.
+
+#### Decided not to ship (kept as infrastructure only)
+
+- **Warm-start `buses_solved` seed emission on the PSS/E RAW path**: the cim-rs `seed_only` vocabulary and the writer-side `build_buses_solved_seed_batch` helper landed, but emission is disabled in `write_psse_to_rpf_with_options`. Rationale: the buses table already carries `v_ang_set = bus.va.to_radians()` and `v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack)`, which is exactly the warm-start initial condition. The importer's seed loop unconditionally overwrites `bus.v_mag_set` with the seed `v_mag_pu`, and on PV/Slack buses that replaces the scheduled `gen.vs` target with the operating `bus.vm`. In the local iterate-loop sweep, switching the emission on regressed convergence on 4 RPFs by 1e+1 to 1e+4 in tolerance (Texas7k_20210804 / Texas7k_20220923 / Texas7k_2030_20220923 / NYISO_onpeak2019_v23). Helper retained for future Sentinel-style callers that genuinely have a separately-computed warm-start payload distinct from the planning setpoints.
+
+#### Tests
+
+- New `rpf_contract_smoke_test` cases covering: writer-side voltage sanitization, disconnected-slack promotion, and the negative seed-emission contract (PSS/E RAW path keeps `solved_state_presence = "not_computed"` and does NOT emit a `buses_solved` table even on warm-start RAWs).
+- Local iterate-loop infrastructure under `scripts/local_iterate/` (gitignored): `run.ps1` driver, `robust_harness.py` raptrix-core wrapper that catches per-case parse/solve errors, and `parse_log.py` delta-report formatter. Produces a paired RAW vs RPF convergence table plus importer/converter warning tallies. See `scripts/local_iterate/README.md`.
+
 ---
 
 ## [0.3.10] - 2026-05-08
@@ -354,33 +436,50 @@ See [MIGRATION.md](MIGRATION.md) (RPF v0.8.8 sync section) for full details.
 
 ## Release Instructions
 
-To create and publish a release:
+To create and publish **v0.4.0** (or any **`vX.Y.Z`** aligned with `[package].version` in `Cargo.toml`):
 
 ```bash
-# 1. Update version in Cargo.toml and this CHANGELOG
-#    (following semantic versioning)
+# 1. Bump [package].version in Cargo.toml and add/adjust a "## [X.Y.Z] - YYYY-MM-DD"
+#    section in this CHANGELOG (Keep a Changelog style).
 
-# 2. Commit changes
-git add Cargo.toml CHANGELOG.md
-git commit -m "chore: bump to v0.3.4"
+# 2. Local gates (mirrors CI + release matrix)
+./scripts/sync-versions.ps1 -Check   # PowerShell: Cargo.toml version ↔ CHANGELOG heading
+./scripts/public-safety-check.sh --mode tracked
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+# Or the combined helper (runs fmt, tracked public-safety when bash is available, tests):
+./scripts/pre-release-check.ps1
 
-# 3. Create an annotated tag
-git tag -a v0.3.4 -m "Release v0.3.4: RPF v0.9.1 ZIP fidelity + metadata alignment"
+# 3. Commit
+git add Cargo.toml CHANGELOG.md README.md MIGRATION.md docs/ scripts/ src/ tests/
+git commit -m "chore: release v0.4.0 (RPF v0.10.0 / raptrix-cim-arrow 0.4.0)"
 
-# 4. Push commits and tags
+# 4. Push to main (optional: open PR and merge first)
 git push origin main
-git push origin v0.3.4
+
+# 5a. Manual tag (full control over tag message)
+git tag -a v0.4.0 -m "Release v0.4.0: RPF v0.10.0 interchange (raptrix-cim-arrow 0.4.0)"
+git push origin v0.4.0
+
+# 5b. Or rely on Auto Tag Release: pushing Cargo.toml + CHANGELOG.md to main
+#     creates v${version} if the tag does not already exist (.github/workflows/auto-tag-release.yml).
 ```
 
-The GitHub Actions `release` workflow will automatically:
+The GitHub Actions **`release`** workflow (`.github/workflows/release.yml`) will:
 
-- Trigger on tag push (`v*.*.*` pattern).
-- Run `cargo test --workspace`, then build release binaries for Windows (x86_64), Linux (x86_64), and macOS (arm64).
-- Create a GitHub Release with auto-generated release notes.
-- Attach platform-specific executables and source archives.
+- Trigger on tag push matching **`v*.*.*`** (and via **Auto Tag Release** / `workflow_dispatch`).
+- **Fail fast on tag push** if **`vX.Y.Z`** does not equal **`[package].version`** in `Cargo.toml` (so `raptrix-psse-rs-v0.4.0-*` archives always match the crate you tagged).
+- Resolve the semver from the tag (`v0.4.0` → **`0.4.0`**) or, for non-tag runs, from **`grep '^version = ' Cargo.toml`** — packaging uses that value for **`dist/raptrix-psse-rs-v…`** filenames.
+- Run **`./scripts/pre-release-check.ps1`** on each release-matrix runner (fmt + tracked public-safety when `bash` is on `PATH` + `cargo test --workspace`).
+- Build **`cargo build --release --target <triple>`** and package with **`scripts/package-windows.ps1`** / **`scripts/package-unix.sh`** using the resolved version.
+- Attach **`dist/raptrix-psse-rs-v0.4.0-*`** archives to the GitHub Release when publishing from a version tag.
+
+**Publishing-only note:** remove the sibling **`[patch."https://github.com/RaptrixPowerFlow/raptrix-cim-rs"]`** block in `Cargo.toml` if the release must build from **crates.io** `raptrix-cim-arrow` alone; keep the patch for local / CI checkouts that depend on an unpublished cim-arrow git rev.
 
 ---
 
+[0.4.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.4.0
 [0.3.4]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.4
 [0.3.3]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.3
 [0.3.2]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.2

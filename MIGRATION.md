@@ -18,6 +18,53 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.4.0**: RPF **v0.10.0** (`raptrix-cim-arrow` **0.4.0**) — **Narrow interchange**
+
+`raptrix-psse-rs` **v0.4.0** emits **only** RPF **v0.10.0** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **`raptrix-cim-arrow` 0.4.0** / RPF **v0.10.0**: `SUPPORTED_RPF_VERSIONS` in that crate is **only** `v0.10.0` / `0.10.0`. Re-emit any cached `.rpf` produced with older converters.
+- **`metadata`**: new trailing nullable column **`computational_load_mode`** (Boolean). The PSS/E conversion path writes **null** and does **not** emit the optional **`computational_load_profiles`** root table (computational-load interchange is a CIM / Sentinel path today).
+- **`dynamics_models`**: new trailing nullable struct column **`perc1_params`**. Exports are **all-null** until PERC1 parameters are mapped from DYR.
+
+#### Integrator checklist
+
+- Bump **`raptrix-core`** (or other Arrow readers) to a build whose `rpf_reader` accepts **v0.10.0** before ingesting new PSS/E-derived RPFs.
+- If you validate with `raptrix_cim_arrow::validate_rpf_file`, pass the same **`RootWriteOptions`** flags the writer used (PSS/E exports: defaults — no `include_computational_load_profiles`).
+
+### v0.3.12: PSS/E `IDE=3` / `IDE=4` mapping correctness fix (Behavior-change, non-schema)
+
+`raptrix-psse-rs` v0.3.12 shipped on the **pre-v0.10.0** `raptrix-cim-arrow` line and emitted RPF **v0.9.6** for that pin. This is a high-impact
+correctness fix to the PSS/E `IDE` field interpretation that affects
+`buses.type` and slack designation in *every* converted RPF.
+
+#### What changed
+
+- **PSS/E `IDE` field semantics aligned with the official spec**:
+  - `IDE=1` → `LoadBus` → canonical RPF PQ (`1`)  *(unchanged)*
+  - `IDE=2` → `GeneratorPV` → canonical RPF PV (`2`)  *(unchanged)*
+  - `IDE=3` → **`Slack`** → canonical RPF slack (`3`)  *(was: incorrectly mapped to `GeneratorPQ` → PQ `1`)*
+  - `IDE=4` → **`LoadBus`** → canonical RPF PQ (`1`)  *(was: incorrectly mapped to `Slack` → slack `3`)*
+- The previous mapping was based on a misreading of the RAW spec ("PSS/E: 2 = PV, 3 = PQ generator" — there is no "PQ generator" IDE code in PSS/E). It was internally consistent (the `enforce_deterministic_slack` pass auto-promoted a high-Pg connected bus when it found no `BusType::Slack`), but produced RPFs whose canonical slack identity drifted from the RAW's authored swing bus on cases with explicit `IDE=3` and from the disconnected/isolated bus pool on cases with `IDE=4`.
+- The change matches `raptrix-core`'s RAW parser (`psse_parser.cpp`: `int type = (rb.type == 4) ? 1 : rb.type; if (type == 3) ...`) so RAW vs RPF imports produce identical bus typing.
+
+#### Observable effects on existing RPFs (regenerate to pick up)
+
+- Cases with explicit `IDE=3` swing buses (e.g. `Base_Eastern_Interconnect_515GW`) now carry that exact bus as canonical slack (`type=3`); the converter no longer auto-picks a different (often higher-Pg) bus.
+- Cases with `IDE=4` disconnected buses (e.g. `ACTIVSg70k`, `Base_Eastern_Interconnect_515GW`) no longer surface those buses as orphan-slack candidates that get demoted to PV — they are written as canonical PQ (`type=1`) directly.
+- The `BusType::GeneratorPQ` enum variant is retained for backward compatibility but is no longer assigned by the parser (no PSS/E IDE code maps to it). Downstream callers that pattern-match on it remain valid; canonicalization treats it identically to `LoadBus`.
+
+#### Companion change in `raptrix-core` (`rpf_reader.cpp`)
+
+- The IBR-aware automatic PV→PQ demoter that fired when `model.has_ibr=true` and re-typed zero-Q-span PV buses to PQ has been demoted to a diagnostic-only audit. The solver already skips Q-limit enforcement on these buses (see `solver.cpp` `std::abs(b.q_max) < 1e-9` guards), and the demotion measurably regressed convergence on faithfully-converted RPFs. This change is required for full RAW↔RPF convergence parity.
+
+#### Integrator checklist
+
+- Regenerate any cached RPFs from RAW; previously-emitted RPFs may have an incorrect slack designation and will not match RAW import results.
+- If consumer code asserts on `BusType::GeneratorPQ` for IDE=3 buses, switch to `BusType::Slack` (the correct mapping).
+- Validation expecting "IDE=4" in error / warning text now sees "IDE=3" (e.g. `MMWG-7.3.1/no-slack`).
+
 ### v0.3.10: RPF v0.9.5 export correctness + CI hygiene (Non-breaking)
 
 `raptrix-psse-rs` v0.3.10 keeps emitting RPF **v0.9.5**, with a critical correctness fix to canonical bus-type export.
@@ -26,7 +73,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 - **Canonical `buses.type` mapping fixed at export boundary**:
   - exported values now strictly follow schema contract: `1=PQ`, `2=PV`, `3=slack`.
-  - RAW `IDE=2` maps to canonical PV (`2`), RAW `IDE=4` maps to canonical slack (`3`), and RAW `IDE=1/3` map to canonical PQ (`1`).
+  - RAW `IDE=2` maps to canonical PV (`2`), RAW `IDE=4` maps to canonical slack (`3`), and RAW `IDE=1/3` map to canonical PQ (`1`).  *(Note: the IDE=3/IDE=4 portion of this mapping is incorrect per the PSS/E spec; corrected in v0.3.12 — see entry above.)*
 - Export now guarantees one slack bus in emitted RPFs: when no explicit RAW `IDE=4` survives parsing, converter auto-assigns a deterministic slack (largest connected online generation, then degree, then lowest bus id).
 - Golden conversion scripts now enforce strict one-to-one canonical static outputs (`*_static.rpf`) with no alias duplicates in `tests/golden`.
 

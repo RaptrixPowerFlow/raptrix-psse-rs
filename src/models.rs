@@ -91,19 +91,28 @@ pub struct CaseId {
 
 /// Internal bus categories parsed from PSS/E `IDE`.
 ///
-/// These numeric values intentionally match parsed RAW semantics. Export code
-/// maps them to canonical RPF `buses.type` codes: `1=PQ`, `2=PV`, `3=slack`.
+/// PSS/E `IDE` semantics (per the PSS®E Program Operation Manual, Bus Data):
+///   * `IDE = 1` — Load bus / no generator boundary condition  → [`LoadBus`]
+///   * `IDE = 2` — Voltage-regulating generator (PV)            → [`GeneratorPV`]
+///   * `IDE = 3` — Swing (slack)                                → [`Slack`]
+///   * `IDE = 4` — Disconnected / isolated → [`LoadBus`] (folded into PQ to match raptrix-core RAW import behavior)
+///
+/// Export code maps these to canonical RPF `buses.type` codes via
+/// `canonical_bus_type_code`: `1 = PQ`, `2 = PV`, `3 = slack`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BusType {
-    /// Load bus / isolated (no generation, not a slack).
+    /// Load bus, isolated, or disconnected — exported as canonical RPF PQ (1).
     #[default]
     LoadBus = 1,
-    /// PQ generator bus (PSS/E `IDE` = 3).
+    /// Reserved variant: PSS/E does not have a "PQ generator" IDE code, so the
+    /// parser never assigns this. Kept for backward-compat with any external
+    /// callers that constructed it directly; treated identically to [`LoadBus`]
+    /// during canonicalization (RPF `type = 1`).
     GeneratorPQ = 2,
-    /// PV bus — voltage-regulating generator bus (PSS/E `IDE` = 2).
+    /// PV bus — voltage-regulating generator bus (PSS/E `IDE = 2`).
     GeneratorPV = 3,
-    /// Slack (swing) bus (PSS/E `IDE` = 4).
+    /// Slack / swing bus (PSS/E `IDE = 3`).
     Slack = 4,
 }
 

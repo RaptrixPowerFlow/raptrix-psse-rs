@@ -193,7 +193,7 @@ fn check_system(r: &mut ValidationReport, n: &Network) {
             r,
             Severity::Error,
             "MMWG-7.3.1/no-slack",
-            "No slack (swing) bus found; at least one bus with IDE=4 is required".to_string(),
+            "No slack (swing) bus found; at least one bus with IDE=3 is required".to_string(),
         );
     } else if slack_count > 1 {
         push(

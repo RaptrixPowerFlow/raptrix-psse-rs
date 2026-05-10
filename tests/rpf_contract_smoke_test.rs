@@ -20,8 +20,8 @@ use arrow::array::{
     Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray,
 };
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, TABLE_BRANCHES, TABLE_BUSES,
-    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
+    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, RootWriteOptions,
+    TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
 };
 
 const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
@@ -44,7 +44,7 @@ fn buses_type_exports_canonical_codes_for_pv_and_slack() {
 BUS TYPE
 BUS TYPE
 1,'PVBUS',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
-2,'SWBUS',230.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'SWBUS',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
@@ -89,7 +89,7 @@ BUS TYPE
     assert_eq!(
         bus_type.value(1),
         3,
-        "RAW IDE=4 must export canonical slack=3"
+        "RAW IDE=3 (swing) must export canonical slack=3"
     );
 
     let _ = fs::remove_file(raw_path);
@@ -245,7 +245,7 @@ CONTRACT SMOKE
     assert_eq!(
         bus_type.value(0),
         3,
-        "when no IDE=4 exists, export should auto-assign exactly one canonical slack bus"
+        "RAW IDE=3 (swing) must export canonical slack=3"
     );
     assert_eq!(
         bus_type.value(1),
@@ -659,6 +659,468 @@ NOMINAL KV FAIL
         "required to_nominal_kv must be populated from fallback"
     );
 
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+// ---------------------------------------------------------------------------
+// RPF v0.9.6 quality hardening — Fix A / Fix B / Fix D2 regression coverage.
+// ---------------------------------------------------------------------------
+
+/// Fix A — invalid `bus.vm` values must be sanitized to flat-start defaults
+/// on export so the raptrix-core importer's "sanitized invalid v_mag" warning
+/// class is suppressed.
+///
+/// Bus 1 has `VM=0.0` (PSS/E uninitialized / disconnected sentinel). Bus 2 has
+/// a healthy `VM=1.0`. The exporter must emit `v_mag_set=1.0` for both rows.
+#[test]
+fn writer_clamps_invalid_v_mag_to_flat_start_default() {
+    let raw_path = unique_temp_path("vmag_sanitize", "raw");
+    let out_path = unique_temp_path("vmag_sanitize", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / VMAG_SANITIZE
+VMAG SANITIZE
+VMAG SANITIZE
+1,'BAD',230.0,1,1,1,1,0.00,0.00,1.10,0.90,1.10,0.90
+2,'OK',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write vmag-sanitize raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let buses = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .map(|(_, batch)| batch)
+        .expect("missing buses table");
+    let v_mag_set = buses
+        .column_by_name("v_mag_set")
+        .expect("missing buses.v_mag_set")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("buses.v_mag_set must be Float64");
+    assert!(
+        (v_mag_set.value(0) - 1.0).abs() < 1.0e-12,
+        "VM=0 must be clamped to 1.0 pu on export, got {}",
+        v_mag_set.value(0)
+    );
+    assert!(
+        (v_mag_set.value(1) - 1.0).abs() < 1.0e-12,
+        "valid VM=1.0 must be preserved, got {}",
+        v_mag_set.value(1)
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// Fix B — when the only RAW IDE=3 (swing) bus is on a disconnected island and
+/// a connected replacement candidate exists, the converter must demote the
+/// orphan slack and promote the connected candidate so the .rpf carries
+/// exactly one type-3 bus on a connected island. Suppresses the importer's
+/// "auto-assigned slack" warning class for valid source data.
+#[test]
+fn writer_promotes_connected_replacement_for_disconnected_slack() {
+    let raw_path = unique_temp_path("disconnected_slack", "raw");
+    let out_path = unique_temp_path("disconnected_slack", "rpf");
+    // Bus 1 (IDE=3 swing) is the orphan slack — no branches/transformers reference it.
+    // Bus 2 (IDE=2 PV) and bus 3 (IDE=1 PQ) form a connected island via one branch.
+    // Bus 2 has the only online generator, so it should win the promotion.
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / DISCONNECTED_SLACK
+DISCONNECTED SLACK
+DISCONNECTED SLACK
+1,'ORPHAN',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'PVISLAND',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+3,'PQISLAND',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+3,'1',1,1,1,40.0,15.0,0,0,0,0,1,1,0
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+2,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+2,3,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write disconnected-slack raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let buses = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .map(|(_, batch)| batch)
+        .expect("missing buses table");
+    let bus_type = buses
+        .column_by_name("type")
+        .expect("missing buses.type")
+        .as_any()
+        .downcast_ref::<Int8Array>()
+        .expect("buses.type must be Int8");
+    assert_eq!(
+        bus_type.value(0),
+        2,
+        "orphan IDE=3 (swing) on a disconnected island must be demoted to PV (2), got {}",
+        bus_type.value(0)
+    );
+    assert_eq!(
+        bus_type.value(1),
+        3,
+        "connected PV bus with online generator must be promoted to slack (3), got {}",
+        bus_type.value(1)
+    );
+    assert_eq!(
+        bus_type.value(2),
+        1,
+        "connected PQ bus must stay PQ (1), got {}",
+        bus_type.value(2)
+    );
+
+    let slack_count = (0..bus_type.len())
+        .filter(|&i| bus_type.value(i) == 3)
+        .count();
+    assert_eq!(slack_count, 1, "exactly one canonical slack bus expected");
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// Fix D2 (revised) — even when the RAW carries a non-flat operating point,
+/// the converter must keep `solved_state_presence = "not_computed"` and must
+/// NOT emit a `buses_solved` seed table on the PSS/E RAW path. Rationale: the
+/// importer's seed loop unconditionally overwrites `bus.v_mag_set` with the
+/// seed `v_mag_pu`. For PV/Slack buses, our writer sets `v_mag_set = gen.vs`
+/// (the scheduled target), but `bus.vm` (the operating value) differs by the
+/// machine's reactive trim. Letting the importer overwrite the target with
+/// the operating value measurably regresses convergence on Texas7k / NYISO
+/// planning files. The seed is emitted again only by future Sentinel-style
+/// callers that genuinely have a separately-computed warm-start payload.
+#[test]
+fn writer_keeps_not_computed_for_warm_start_raw_no_seed_emission() {
+    let raw_path = unique_temp_path("seed_only", "raw");
+    let out_path = unique_temp_path("seed_only", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / SEED_ONLY
+SEED ONLY
+SEED ONLY
+1,'B1',230.0,3,1,1,1,1.02,-3.50,1.10,0.90,1.10,0.90
+2,'B2',230.0,2,1,1,1,1.04,1.20,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+1,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write warm-start raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("rpf root metadata");
+    assert_eq!(
+        meta.get(METADATA_KEY_CASE_MODE).map(|s| s.as_str()),
+        Some("warm_start_planning"),
+        "non-flat RAW must still resolve to warm_start_planning"
+    );
+    assert_eq!(
+        meta.get("rpf.solved_state_presence").map(|s| s.as_str()),
+        Some("not_computed"),
+        "PSS/E RAW path must keep solved_state_presence=not_computed",
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let has_buses_solved = tables
+        .iter()
+        .any(|(name, _)| name == raptrix_cim_arrow::TABLE_BUSES_SOLVED);
+    assert!(
+        !has_buses_solved,
+        "PSS/E RAW path must NOT emit a buses_solved seed table"
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// Fix D2 negative — flat-start RAWs must keep the original
+/// `solved_state_presence = "not_computed"` and must NOT emit a buses_solved
+/// payload (the converter would otherwise pollute the file with empty seed data).
+#[test]
+fn writer_does_not_emit_seed_only_for_flat_start_raw() {
+    let raw_path = unique_temp_path("flat_no_seed", "raw");
+    let out_path = unique_temp_path("flat_no_seed", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / FLAT_NO_SEED
+FLAT NO SEED
+FLAT NO SEED
+1,'B1',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'B2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write flat raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("rpf root metadata");
+    assert_eq!(
+        meta.get(METADATA_KEY_CASE_MODE).map(|s| s.as_str()),
+        Some("flat_start_planning"),
+        "flat RAW (VM=1, VA=0) must resolve to flat_start_planning"
+    );
+    assert_eq!(
+        meta.get("rpf.solved_state_presence").map(|s| s.as_str()),
+        Some("not_computed"),
+        "flat-start export must keep solved_state_presence=not_computed"
+    );
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let has_buses_solved = tables
+        .iter()
+        .any(|(name, _)| name == raptrix_cim_arrow::TABLE_BUSES_SOLVED);
+    assert!(
+        !has_buses_solved,
+        "flat-start export must not emit a buses_solved table"
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// Regression for the IDE=3 / IDE=4 mapping bug: previously the parser swapped
+/// the two codes, which silently lost the swing-bus designation on RAW files
+/// authored with IDE=3 and instead promoted IDE=4 (disconnected/isolated) buses
+/// into the slack-candidate pool. After the fix:
+///   * IDE=3 buses must round-trip to canonical RPF `type=3` (slack) — the
+///     converter's deterministic-slack pass should not re-pick a different bus
+///     when the RAW already designates a connected swing bus.
+///   * IDE=4 buses must export as canonical RPF `type=1` (PQ) and never be
+///     considered as slack candidates.
+#[test]
+fn writer_preserves_psse_ide3_swing_and_demotes_ide4_isolated() {
+    let raw_path = unique_temp_path("ide3_ide4_mapping", "raw");
+    let out_path = unique_temp_path("ide3_ide4_mapping", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / IDE3_IDE4_MAPPING
+IDE3 IDE4
+IDE3 IDE4
+1,'SWING ',230.0,3,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+2,'PV    ',230.0,2,1,1,1,1.04,1.50,1.10,0.90,1.10,0.90
+3,'PQ    ',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+4,'ISO   ',230.0,4,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+3,'1',1,1,1,40.0,15.0,0,0,0,0,1,1,0
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+1,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0
+2,'1',60.0,5.0,30.0,-15.0,1.04,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,80.0,5.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+2,3,'1',0.02,0.06,0.0,100.0,110.0,120.0,0,0,0,0,1,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write IDE3/IDE4 raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("failed to read RPF");
+    let buses = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .map(|(_, batch)| batch)
+        .expect("missing buses table");
+    let bus_id = buses
+        .column_by_name("bus_id")
+        .expect("missing buses.bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("buses.bus_id must be Int32");
+    let bus_type = buses
+        .column_by_name("type")
+        .expect("missing buses.type")
+        .as_any()
+        .downcast_ref::<Int8Array>()
+        .expect("buses.type must be Int8");
+
+    let mut by_id: std::collections::HashMap<i32, i8> = std::collections::HashMap::new();
+    for i in 0..bus_id.len() {
+        by_id.insert(bus_id.value(i), bus_type.value(i));
+    }
+    assert_eq!(
+        by_id.get(&1).copied(),
+        Some(3),
+        "RAW IDE=3 (swing) on a connected island must round-trip to canonical slack=3"
+    );
+    assert_eq!(
+        by_id.get(&2).copied(),
+        Some(2),
+        "RAW IDE=2 (PV) must export as canonical PV=2"
+    );
+    assert_eq!(
+        by_id.get(&3).copied(),
+        Some(1),
+        "RAW IDE=1 (PQ) must export as canonical PQ=1"
+    );
+    assert_eq!(
+        by_id.get(&4).copied(),
+        Some(1),
+        "RAW IDE=4 (disconnected/isolated) must export as canonical PQ=1, never slack"
+    );
+
+    let slack_count = (0..bus_type.len())
+        .filter(|&i| bus_type.value(i) == 3)
+        .count();
+    assert_eq!(
+        slack_count, 1,
+        "exactly one canonical slack bus expected when RAW already has IDE=3"
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn written_rpf_passes_validate_rpf_file_default_options() {
+    let raw_path = unique_temp_path("validate_rpf_contract", "raw");
+    let out_path = unique_temp_path("validate_rpf_contract", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / BUS_TYPE_CODES
+BUS TYPE
+BUS TYPE
+1,'PVBUS',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+2,'SWBUS',230.0,3,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write minimal raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+    let validate_opts = RootWriteOptions {
+        contingencies_are_stub: true,
+        dynamics_are_stub: true,
+        include_solved_state: false,
+        ..Default::default()
+    };
+    raptrix_psse_rs::validate_rpf_file(&out_path, &validate_opts).expect(
+        "validate_rpf_file must succeed with the same optional-root flags as the PSS/E writer",
+    );
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
 }

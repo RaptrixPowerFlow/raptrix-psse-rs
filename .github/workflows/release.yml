@@ -67,6 +67,19 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
+      - name: Assert tag matches Cargo.toml (tag builds only)
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CARGO_VER=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
+          if [[ "${TAG_VER}" != "${CARGO_VER}" ]]; then
+            echo "::error::Git tag '${GITHUB_REF_NAME}' (semver ${TAG_VER}) must equal [package].version in Cargo.toml (${CARGO_VER}) so release artifacts match the crate."
+            exit 1
+          fi
+          echo "OK: tag ${GITHUB_REF_NAME} matches Cargo.toml version ${CARGO_VER}"
+
       - name: Install Rust toolchain (test gate)
         uses: dtolnay/rust-toolchain@stable
 
@@ -131,6 +144,18 @@ jobs:
         if: github.event_name == 'workflow_run'
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Assert tag matches Cargo.toml (tag builds only)
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          CARGO_VER=$(grep '^version = ' Cargo.toml | head -n1 | cut -d '"' -f2)
+          if [[ "${TAG_VER}" != "${CARGO_VER}" ]]; then
+            echo "::error::Git tag '${GITHUB_REF_NAME}' (semver ${TAG_VER}) must equal [package].version in Cargo.toml (${CARGO_VER})."
+            exit 1
+          fi
 
       - name: Resolve version
         id: version

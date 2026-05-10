@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.9.5**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.10.0**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,7 +33,7 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.9.5 contract (current)
+### v0.10.0 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
 - `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
@@ -45,7 +45,8 @@ Arrow schema.
 - `metadata` includes modern-grid fields plus additional nullable v0.9.0 columns (typically **null** for PSS/E-only exports):
   - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
-  - **`default_shunt_control_mode`** (v0.9.5+, nullable Dictionary): for typical **planning** exports this converter sets **`planning_full`** when `case_mode` is `flat_start_planning`, `warm_start_planning`, or `hour_ahead_advisory`; optional file-level IPC key **`rpf.default_shunt_control_mode`** mirrors the same string when set.
+  - **`default_shunt_control_mode`** (nullable Dictionary): for typical **planning** exports this converter sets **`planning_full`** when `case_mode` is `flat_start_planning`, `warm_start_planning`, or `hour_ahead_advisory`; optional file-level IPC key **`rpf.default_shunt_control_mode`** mirrors the same string when set.
+  - **`computational_load_mode`** (v0.10.0+, nullable Boolean): always **null** for standard PSS/E exports from this crate; the optional **`computational_load_profiles`** root table is **not** emitted here.
 - Optional **`scenario_context`** table: not emitted by this converter by default; see interchange contract for when writers may populate it.
 
 ---
@@ -113,7 +114,7 @@ several `buses` columns:
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
 | NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
 | BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (required Float64). |
-| IDE | 4 | `ide` | `type` | Int8 canonical: **1=PQ**, **2=PV**, **3=slack**. RAW `IDE=2` maps to canonical PV (`2`), `IDE=4` maps to slack (`3`), and RAW `IDE=1/3` map to canonical PQ (`1`). |
+| IDE | 4 | `ide` | `type` | Int8 canonical: **1=PQ**, **2=PV**, **3=slack**. Per the PSS®E Program Operation Manual: `IDE=1` (load) and `IDE=4` (disconnected/isolated) map to canonical PQ (`1`), `IDE=2` (voltage-regulating generator) maps to canonical PV (`2`), and `IDE=3` (swing) maps to canonical slack (`3`). |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
 | ZONE | 6 | `zone` | `zone` | Foreign key → `zones.zone_id`. |
 | OWNER | 7 | `owner` | `owner` | Foreign key → `owners.owner_id`. |
@@ -129,10 +130,12 @@ several `buses` columns:
 \* GL/BL appear at columns 8–9 in some legacy RAW variants; absent in standard v35 bus records
 where they belong in fixed shunt section 3.
 
-If no explicit RAW `IDE=4` bus is present after parsing, export applies a
-deterministic fallback and marks exactly one connected bus as slack before
+If no explicit RAW `IDE=3` (swing) bus is present after parsing, export applies
+a deterministic fallback and marks exactly one connected bus as slack before
 writing `buses.type` (largest connected online generation, then degree, then
-lowest bus id tie-break).
+lowest bus id tie-break). RAW `IDE=4` (disconnected/isolated) buses are folded
+into the PQ pool to mirror raptrix-core's RAW import convention and are never
+considered as slack candidates.
 
 **Aggregated-only columns** (no direct PSS/E bus field — derived via `BusAggregate`):
 
@@ -229,6 +232,8 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | RATEC | `ratec` | `rate_c` | RATEC / SBASE. |
 | ST | `st` | `status` | Bool. |
 | GI | `gi` | *(bus agg only)* | From-end shunt conductance folded into `buses.g_shunt`. |
+
+**Out-of-service branches (`ST=0`)** are still emitted as normal `branches` rows with `status=false`. The converter does not drop them, so the `branches` table row count matches the non-terminator BRANCH deck line count from the RAW file. Importers or UIs that only list “in-service” or “active topology” equipment therefore report fewer branch rows than an RPF from this crate; the gap is typically the number of `ST=0` lines. For histograms of raw `ST` tokens and multiset diffs against a golden RPF, use `parser::parse_raw_with_branch_deck_stats` or `cargo run --bin branch_deck_scan -- --raw <file.raw> [--rpf <file.rpf>]`.
 | BI | `bi` | *(bus agg only)* | From-end shunt susceptance folded into `buses.b_shunt`. |
 | GJ | `gj` | *(bus agg only)* | To-end shunt conductance folded into `buses.g_shunt`. |
 | BJ | `bj` | *(bus agg only)* | To-end shunt susceptance folded into `buses.b_shunt`. |
@@ -373,6 +378,7 @@ input deck.
 | Machine / device ID | `DyrModelData.id` | `gen_id` | Preserved as the PSS/E ID token; for machine-linked models this matches `generators.id`. |
 | Model name | `DyrModelData.model` | `model_type` | Examples: `"GENROU"`, `"ESST4B"`, `"GGOV1"`, `"PSS2A"`, `"REGCA1"`. |
 | Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. |
+| — | — | `perc1_params` | **v0.10.0+**: nullable struct column required by the interchange contract. This exporter writes **null** on every row until PERC1 parameters are mapped from DYR. |
 
 **Interaction with `generators` table**: a supported synchronous-machine subset
 is lifted into the `generators` table so common machine parameters (`h`, `xd_prime`, `D`) are available on generator rows where DYR data allows.

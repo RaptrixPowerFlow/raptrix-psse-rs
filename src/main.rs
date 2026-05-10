@@ -74,7 +74,7 @@ enum Commands {
         case_mode: Option<String>,
 
         /// Optional `metadata.default_shunt_control_mode` / root `rpf.default_shunt_control_mode`
-        /// (v0.9.5+). When omitted, planning `case_mode` values default to `planning_full`.
+        /// When omitted, planning `case_mode` values default to `planning_full`.
         #[arg(long)]
         default_shunt_control_mode: Option<String>,
     },

@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.9.5 converter.
+//! Raptrix PowerFlow Interchange v0.10.0 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -39,7 +39,9 @@ pub mod parser;
 pub mod validation;
 
 // Re-export reader utilities so tests and tools can use them directly.
-pub use raptrix_cim_arrow::{RpfSummary, TableSummary, read_rpf_tables, summarize_rpf};
+pub use raptrix_cim_arrow::{
+    RpfSummary, TableSummary, read_rpf_tables, summarize_rpf, validate_rpf_file,
+};
 
 use std::{
     collections::{HashMap, HashSet},
@@ -59,13 +61,15 @@ use arrow::{
 };
 use chrono::{SecondsFormat, Utc};
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE,
-    METADATA_KEY_SOLVED_STATE_PRESENCE, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
-    TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_CONTINGENCIES, TABLE_DC_LINES_2W,
-    TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_INTERFACES, TABLE_LOADS,
+    METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_COMPUTATIONAL_LOAD_MODE,
+    METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_SOLVED_STATE_PRESENCE,
+    METADATA_KEY_VALIDATION_MODE, RootWriteOptions, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES,
+    TABLE_BUSES_SOLVED, TABLE_CONTINGENCIES, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS,
+    TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS,
     TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT,
-    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W,
-    TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema, write_root_rpf_with_metadata,
+    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED,
+    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, table_schema,
+    write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -221,6 +225,8 @@ pub fn write_psse_to_rpf_with_options(
 
     let mut table_batches: HashMap<&'static str, RecordBatch> = HashMap::new();
     let bus_aggregates = build_bus_aggregates(&network);
+    let mut bus_voltage_sanitization = BusVoltageSanitizationStats::default();
+    let mut generator_q_sanitization = GeneratorQSanitizationStats::default();
     let bus_nominal_kv = build_bus_nominal_kv_map(&network);
     let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
         network.case_id.sbase
@@ -230,19 +236,47 @@ pub fn write_psse_to_rpf_with_options(
     let case_fingerprint = compute_case_fingerprint(&network);
     let case_mode = resolve_case_mode(&network, options)?;
 
+    // v0.9.6 warm-start seed payload: kept disabled on the PSS/E RAW conversion
+    // path. The buses table already carries v_ang_set = bus.va.to_radians() and
+    // v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack), which is
+    // exactly the warm-start initial condition the importer needs. Emitting
+    // `buses_solved` here would force the importer's seed loop
+    // (rpf_reader.cpp:2693-2725) to OVERWRITE v_mag_set with bus.vm even for
+    // PV/Slack buses where v_mag_set was the scheduled gen.vs target — which
+    // measurably regresses convergence on Texas7k / NYISO planning files
+    // (delta: 4 cases regressed by 1e+1 to 1e+4 in tolerance).
+    //
+    // The cim-rs `seed_only` vocabulary and `build_buses_solved_seed_batch`
+    // helper remain available for callers that genuinely have a separately-
+    // computed warm-start point to inject (e.g. Sentinel hour-ahead advisory
+    // exports where the operating point is not the same as the planning
+    // setpoints).
+    let emit_warm_start_seed: bool = false;
+    let _ = has_warm_start_seed_data(&network); // keep the helper alive for tests
+    let solved_state_presence: &str = if emit_warm_start_seed {
+        "seed_only"
+    } else {
+        "not_computed"
+    };
+
     table_batches.insert(
         TABLE_METADATA,
         build_metadata_batch(
             &network,
             &case_fingerprint,
             case_mode.as_str(),
+            solved_state_presence,
             &ibr_subtype_by_gen,
             options,
         )?,
     );
     table_batches.insert(
         TABLE_BUSES,
-        build_buses_batch(&network.buses, &bus_aggregates)?,
+        build_buses_batch(
+            &network.buses,
+            &bus_aggregates,
+            &mut bus_voltage_sanitization,
+        )?,
     );
     table_batches.insert(
         TABLE_BRANCHES,
@@ -255,7 +289,12 @@ pub fn write_psse_to_rpf_with_options(
     );
     table_batches.insert(
         TABLE_GENERATORS,
-        build_generators_batch(&network.generators, &dyr_lookup, &ibr_subtype_by_gen)?,
+        build_generators_batch(
+            &network.generators,
+            &dyr_lookup,
+            &ibr_subtype_by_gen,
+            &mut generator_q_sanitization,
+        )?,
     );
     table_batches.insert(TABLE_LOADS, build_loads_batch(&network.loads, base_mva)?);
     table_batches.insert(
@@ -298,11 +337,29 @@ pub fn write_psse_to_rpf_with_options(
     };
     table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
 
+    let mut seed_only_bus_count: usize = 0;
+    if emit_warm_start_seed {
+        let buses_solved_batch = build_buses_solved_seed_batch(&network.buses)?;
+        seed_only_bus_count = buses_solved_batch.num_rows();
+        table_batches.insert(TABLE_BUSES_SOLVED, buses_solved_batch);
+        // Companion solved tables are required by the cim-arrow `include_solved_state`
+        // contract; emit zero-row placeholders so the root schema is well-formed.
+        table_batches.insert(
+            TABLE_GENERATORS_SOLVED,
+            empty_table(TABLE_GENERATORS_SOLVED)?,
+        );
+        table_batches.insert(
+            TABLE_SWITCHED_SHUNTS_SOLVED,
+            empty_table(TABLE_SWITCHED_SHUNTS_SOLVED)?,
+        );
+    }
+
     validate_export_invariants(&table_batches, options.transformer_representation_mode)?;
 
     let root_options = RootWriteOptions {
         contingencies_are_stub: true,
         dynamics_are_stub: network.dyr_models.is_empty(),
+        include_solved_state: emit_warm_start_seed,
         ..RootWriteOptions::default()
     };
     let mut additional_root_metadata = HashMap::new();
@@ -325,10 +382,13 @@ pub fn write_psse_to_rpf_with_options(
             mode_str,
         );
     }
-    // v0.8.5: solved_state_presence — this converter never produces solved data.
+    // v0.8.5/v0.9.6: solved_state_presence —
+    //   `not_computed` for flat-start planning (no operating point), or
+    //   `seed_only`   for warm-start planning where `buses_solved` was emitted
+    //                 with VM/VA copied directly from RAW (no solver was run).
     additional_root_metadata.insert(
         METADATA_KEY_SOLVED_STATE_PRESENCE.to_string(),
-        "not_computed".to_string(),
+        solved_state_presence.to_string(),
     );
     additional_root_metadata.insert(
         METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE.to_string(),
@@ -342,6 +402,9 @@ pub fn write_psse_to_rpf_with_options(
         classify_loads_zip_fidelity_presence(&network.loads).to_string(),
     );
 
+    // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
+    // (`SCHEMA_VERSION`, currently v0.10.0) and re-opens the file for `validate_rpf_file`
+    // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
         &table_batches,
@@ -350,6 +413,30 @@ pub fn write_psse_to_rpf_with_options(
     )
     .with_context(|| format!("failed to write RPF file: {output}"))?;
 
+    if !bus_voltage_sanitization.is_empty() {
+        eprintln!(
+            "[converter] sanitized invalid bus voltage setpoints on export: \
+             v_mag_set={} (clamped to 1.0 pu), v_ang_set={} (clamped to 0.0 rad).",
+            bus_voltage_sanitization.sanitized_v_mag_set,
+            bus_voltage_sanitization.sanitized_v_ang_set
+        );
+    }
+    if !generator_q_sanitization.is_empty() {
+        eprintln!(
+            "[converter] sanitized generator Q-limits on export: \
+             swapped (QB > QT)={}, clamped non-finite QB={}, clamped non-finite QT={}.",
+            generator_q_sanitization.swapped_q_limits,
+            generator_q_sanitization.clamped_nonfinite_q_min,
+            generator_q_sanitization.clamped_nonfinite_q_max,
+        );
+    }
+    if emit_warm_start_seed {
+        eprintln!(
+            "[converter] emitted buses_solved warm-start seed (solved_state_presence=seed_only): \
+             {} bus row(s) carrying RAW VM/VA.",
+            seed_only_bus_count
+        );
+    }
     eprintln!("[converter] wrote {output}");
     Ok(())
 }
@@ -391,7 +478,7 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
         .filter(|b| b.ide == models::BusType::Slack)
         .count();
     if slack_count == 0 {
-        warnings.push("no explicit slack bus (IDE=4) found in RAW".to_string());
+        warnings.push("no explicit slack bus (IDE=3) found in RAW".to_string());
     }
 
     let in_service_gen_count = network.generators.iter().filter(|g| g.stat != 0).count();
@@ -504,14 +591,8 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
 }
 
 fn enforce_deterministic_slack(network: &mut Network) {
-    if network
-        .buses
-        .iter()
-        .any(|b| b.ide == models::BusType::Slack)
-    {
-        return;
-    }
-
+    // Topology degree on in-service network elements only. Used both for the
+    // "any connected slack already?" early-out and the auto-assignment fallback.
     let mut degree_by_bus: HashMap<u32, u32> = HashMap::with_capacity(network.buses.len());
     for bus in &network.buses {
         degree_by_bus.insert(bus.i, 0);
@@ -549,6 +630,40 @@ fn enforce_deterministic_slack(network: &mut Network) {
         }
     }
 
+    // Slack-island awareness: an IDE=3 (Swing) bus that ended up on a disconnected
+    // island (degree==0) cannot serve as the angle reference. raptrix-core's
+    // importer rejects it and auto-assigns a fallback (with a warning). Mirror
+    // that contract here so the .rpf carries exactly one connected type-3 bus
+    // and the importer warning class is suppressed.
+    let mut connected_slack_count: usize = 0;
+    let mut orphan_slack_buses: Vec<u32> = Vec::new();
+    for bus in &network.buses {
+        if bus.ide != models::BusType::Slack {
+            continue;
+        }
+        let degree = *degree_by_bus.get(&bus.i).unwrap_or(&0);
+        if degree > 0 {
+            connected_slack_count += 1;
+        } else {
+            orphan_slack_buses.push(bus.i);
+        }
+    }
+    if connected_slack_count > 0 {
+        if !orphan_slack_buses.is_empty() {
+            eprintln!(
+                "[converter] {} explicit slack bus(es) on disconnected islands kept as-is alongside {} connected slack(s); orphan bus ids: {:?}",
+                orphan_slack_buses.len(),
+                connected_slack_count,
+                orphan_slack_buses
+            );
+        }
+        return;
+    }
+
+    // No connected slack — search for a connected replacement candidate before
+    // mutating any orphan IDE=3 buses. If no connected bus exists at all
+    // (e.g., a degenerate / topology-only fixture), leave the network as
+    // parsed so existing explicit slacks remain authoritative.
     let mut pg_by_bus: HashMap<u32, f64> = HashMap::with_capacity(network.generators.len());
     for generator in &network.generators {
         if generator.stat == 0 {
@@ -557,7 +672,7 @@ fn enforce_deterministic_slack(network: &mut Network) {
         *pg_by_bus.entry(generator.i).or_insert(0.0) += generator.pg;
     }
 
-    let mut selected_idx = 0usize;
+    let mut selected_idx: Option<usize> = None;
     let mut best_pg = f64::NEG_INFINITY;
     let mut best_degree = 0u32;
     let mut best_bus_id = u32::MAX;
@@ -583,21 +698,66 @@ fn enforce_deterministic_slack(network: &mut Network) {
         };
 
         if better {
-            selected_idx = idx;
+            selected_idx = Some(idx);
             best_pg = pg;
             best_degree = degree;
             best_bus_id = bus.i;
         }
     }
 
+    let Some(selected_idx) = selected_idx else {
+        // No connected bus exists at all. Leave any orphan IDE=3 buses
+        // untouched so the file still carries an explicit (if disconnected)
+        // slack token; the importer will warn but pick deterministically.
+        if orphan_slack_buses.is_empty() {
+            eprintln!(
+                "[converter] no slack and no connected bus available for auto-assignment; \
+                 leaving network as parsed."
+            );
+        } else {
+            eprintln!(
+                "[converter] no connected bus available for slack auto-assignment; \
+                 keeping {} orphan IDE=3 bus(es) {:?} as authored.",
+                orphan_slack_buses.len(),
+                orphan_slack_buses
+            );
+        }
+        return;
+    };
+
+    // Promote any orphan IDE=3 buses to GeneratorPV BEFORE setting the new slack
+    // so the file carries exactly one type-3 bus.
+    for bus in network.buses.iter_mut() {
+        if bus.ide == models::BusType::Slack {
+            bus.ide = models::BusType::GeneratorPV;
+        }
+    }
     network.buses[selected_idx].ide = models::BusType::Slack;
+
     let selected_bus = network.buses[selected_idx].i;
     let selected_pg = *pg_by_bus.get(&selected_bus).unwrap_or(&0.0);
     let selected_degree = *degree_by_bus.get(&selected_bus).unwrap_or(&0);
-    eprintln!(
-        "[converter] no explicit slack (IDE=4) found in RAW; auto-assigned bus {} as slack (largest connected generation = {:.3} MW, degree = {}).",
-        selected_bus, selected_pg, selected_degree
-    );
+    let reason = if orphan_slack_buses.is_empty() {
+        "no explicit slack (IDE=3) found in RAW"
+    } else {
+        "no connected explicit slack (IDE=3) found in RAW"
+    };
+    if orphan_slack_buses.is_empty() {
+        eprintln!(
+            "[converter] {reason}; auto-assigned bus {} as slack (largest connected generation = {:.3} MW, degree = {}).",
+            selected_bus, selected_pg, selected_degree,
+        );
+    } else {
+        eprintln!(
+            "[converter] {reason}; auto-assigned bus {} as slack (largest connected generation = {:.3} MW, degree = {}). \
+             {} orphan IDE=3 bus(es) demoted to PV: {:?}",
+            selected_bus,
+            selected_pg,
+            selected_degree,
+            orphan_slack_buses.len(),
+            orphan_slack_buses,
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -608,6 +768,78 @@ fn empty_table(name: &'static str) -> Result<RecordBatch> {
     let schema =
         table_schema(name).ok_or_else(|| anyhow::anyhow!("unknown canonical table: {name}"))?;
     Ok(RecordBatch::new_empty(Arc::new(schema)))
+}
+
+/// Returns true when the RAW carries usable warm-start operating-point data
+/// for at least one bus. A bus row qualifies when:
+///  - `bus.vm` is finite and within `[0.5, 1.5]` pu (rejects zero / NaN /
+///    runaway values), and
+///  - `bus.va` is finite (degrees).
+fn has_warm_start_seed_data(network: &Network) -> bool {
+    network
+        .buses
+        .iter()
+        .any(|b| b.vm.is_finite() && (0.5..=1.5).contains(&b.vm) && b.va.is_finite())
+}
+
+/// Builds the optional `buses_solved` table populated with warm-start initial
+/// conditions copied from RAW VM/VA. Emitted under `case_mode =
+/// warm_start_planning` + `solved_state_presence = "seed_only"` (RPF v0.9.6+).
+///
+/// Per-row policy:
+///  - Only buses with `vm` finite in `[0.5, 1.5]` pu and finite `va` (degrees)
+///    are emitted; others are silently skipped (the importer will flat-start
+///    them via the buses-row `v_mag_set` / `v_ang_set` path).
+///  - `v_mag_pu` = `bus.vm`, `v_ang_deg` = `bus.va` (raptrix-core's reader
+///    converts degrees → radians at seed time).
+///  - `p_inj_pu`, `q_inj_pu`, `bus_type_solved` are null (seed payload, no
+///    solver was run).
+///  - `provenance` is `"seed_only"` for every row.
+///
+/// Currently NOT invoked from the PSS/E RAW conversion path — see the rationale
+/// at the `emit_warm_start_seed = false` comment in
+/// `write_psse_to_rpf_with_options`. Retained for tests and future
+/// Sentinel-style callers that genuinely carry a separately-computed warm-start
+/// payload.
+#[allow(dead_code)]
+fn build_buses_solved_seed_batch(buses: &[models::Bus]) -> Result<RecordBatch> {
+    let schema =
+        Arc::new(table_schema(TABLE_BUSES_SOLVED).expect("buses_solved schema must exist"));
+
+    let mut bus_id = Int32Builder::new();
+    let mut v_mag_pu = Float64Builder::new();
+    let mut v_ang_deg = Float64Builder::new();
+    let mut p_inj_pu = Float64Builder::new();
+    let mut q_inj_pu = Float64Builder::new();
+    let mut bus_type_solved = Int8Builder::new();
+    let mut provenance = StringDictionaryBuilder::<Int32Type>::new();
+
+    for bus in buses {
+        if !(bus.vm.is_finite() && (0.5..=1.5).contains(&bus.vm) && bus.va.is_finite()) {
+            continue;
+        }
+        bus_id.append_value(bus.i as i32);
+        v_mag_pu.append_value(bus.vm);
+        v_ang_deg.append_value(bus.va);
+        p_inj_pu.append_null();
+        q_inj_pu.append_null();
+        bus_type_solved.append_null();
+        provenance.append_value("seed_only");
+    }
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(bus_id.finish()),
+            Arc::new(v_mag_pu.finish()),
+            Arc::new(v_ang_deg.finish()),
+            Arc::new(p_inj_pu.finish()),
+            Arc::new(q_inj_pu.finish()),
+            Arc::new(bus_type_solved.finish()),
+            Arc::new(provenance.finish()),
+        ],
+    )
+    .context("building buses_solved seed batch")
 }
 
 fn build_bus_nominal_kv_map(network: &Network) -> HashMap<u32, f64> {
@@ -1347,6 +1579,7 @@ fn build_metadata_batch(
     network: &Network,
     case_fingerprint_value: &str,
     case_mode: &str,
+    solved_state_presence: &str,
     ibr_subtype_by_gen: &HashMap<(u32, String), String>,
     _options: &ExportOptions,
 ) -> Result<RecordBatch> {
@@ -1390,9 +1623,11 @@ fn build_metadata_batch(
     let mut case_mode_arr = StringDictionaryBuilder::<Int32Type>::new();
     case_mode_arr.append_value(case_mode);
 
-    // v0.8.5: solved_state_presence — this converter never produces solved data.
+    // v0.8.5: solved_state_presence — `not_computed` for plain planning exports,
+    // `seed_only` (v0.9.6+) when warm-start RAW VM/VA have been replayed into
+    // `buses_solved`. Solver provenance fields stay null in both cases.
     let mut solved_state_presence_arr = StringDictionaryBuilder::<Int32Type>::new();
-    solved_state_presence_arr.append_value("not_computed");
+    solved_state_presence_arr.append_value(solved_state_presence);
 
     // v0.8.5: solver provenance — all null for planning exports.
     let mut solver_version_arr = StringBuilder::new();
@@ -1497,6 +1732,14 @@ fn build_metadata_batch(
         default_shunt_control_mode.append_null();
     }
 
+    // v0.10.0: nullable interchange flag — PSS/E exports do not populate computational-load profiles.
+    let computational_load_mode_type = schema
+        .field_with_name(METADATA_KEY_COMPUTATIONAL_LOAD_MODE)
+        .expect("metadata schema must include METADATA_KEY_COMPUTATIONAL_LOAD_MODE (v0.10.0+)")
+        .data_type()
+        .clone();
+    let computational_load_mode_col = new_null_array(&computational_load_mode_type, 1);
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -1538,6 +1781,7 @@ fn build_metadata_batch(
             Arc::new(pv_to_pq_switch_count.finish()),
             Arc::new(real_time_discovery.finish()),
             Arc::new(default_shunt_control_mode.finish()),
+            computational_load_mode_col,
         ],
     )
     .context("building metadata batch")
@@ -1609,8 +1853,32 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
             agg.q_sched += generator.qg / base_mva;
             agg.qg_sched_pu += generator.qg / base_mva;
 
-            let qmin = generator.qb / base_mva;
-            let qmax = generator.qt / base_mva;
+            // Mirror the sanitization rule applied to the generators table:
+            // swap inverted (QB > QT) per-machine before aggregating so the
+            // bus-row span matches `Σ max(0, QT − QB)` over online machines
+            // — the same metric raptrix-core's structural-PV guard uses.
+            let (raw_qmin, raw_qmax) = if generator.qb.is_finite() && generator.qt.is_finite() {
+                if generator.qb > generator.qt {
+                    (generator.qt, generator.qb)
+                } else {
+                    (generator.qb, generator.qt)
+                }
+            } else {
+                (
+                    if generator.qb.is_finite() {
+                        generator.qb
+                    } else {
+                        0.0
+                    },
+                    if generator.qt.is_finite() {
+                        generator.qt
+                    } else {
+                        0.0
+                    },
+                )
+            };
+            let qmin = raw_qmin / base_mva;
+            let qmax = raw_qmax / base_mva;
             if agg.has_generator {
                 agg.q_min = agg.q_min.min(qmin);
                 agg.q_max = agg.q_max.max(qmax);
@@ -1623,8 +1891,9 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
             agg.p_min_agg += generator.pb / base_mva;
             agg.p_max_agg += generator.pt / base_mva;
 
-            // `buses.v_mag_set`: last in-service row with finite non-zero VS (PSS/E uses 0 as unset).
-            if generator.vs.is_finite() && generator.vs != 0.0 {
+            // `buses.v_mag_set`: last in-service row with finite, strictly positive VS
+            // (PSS/E uses 0 as unset; rare bad decks carry NaN or negative values).
+            if generator.vs.is_finite() && generator.vs > 0.0 {
                 agg.v_mag_set_override = Some(generator.vs);
             }
         }
@@ -1633,11 +1902,57 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
     agg_by_bus
 }
 
+/// Bus voltage-set export sanitization counters.
+///
+/// Logged once per file from `write_psse_to_rpf_with_options`. Mirrors the
+/// raptrix-core importer's `v_mag_set <= 0 || !finite` and `v_ang_set !finite`
+/// sanitization but applies it at write time so the .rpf payload is already
+/// physically valid and the importer warning is suppressed.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BusVoltageSanitizationStats {
+    pub sanitized_v_mag_set: usize,
+    pub sanitized_v_ang_set: usize,
+}
+
+impl BusVoltageSanitizationStats {
+    pub(crate) fn is_empty(self) -> bool {
+        self.sanitized_v_mag_set == 0 && self.sanitized_v_ang_set == 0
+    }
+}
+
+/// Returns a (v_mag_set, v_ang_set) pair clamped to physically valid values.
+/// `(1.0, 0.0)` is the contract-specified flat-start fallback when source data
+/// is non-finite or non-positive (matches raptrix-core's importer-side guard
+/// at `rpf_reader.cpp` step 1).
+fn sanitize_bus_voltage_setpoint(
+    raw_vm: f64,
+    raw_va_deg: f64,
+    stats: &mut BusVoltageSanitizationStats,
+) -> (f64, f64) {
+    let v_mag = if raw_vm.is_finite() && raw_vm > 0.0 {
+        raw_vm
+    } else {
+        stats.sanitized_v_mag_set += 1;
+        1.0
+    };
+    let v_ang_rad = if raw_va_deg.is_finite() {
+        raw_va_deg.to_radians()
+    } else {
+        stats.sanitized_v_ang_set += 1;
+        0.0
+    };
+    (v_mag, v_ang_rad)
+}
+
 fn canonical_bus_type_code(bus_type: models::BusType) -> i8 {
     match bus_type {
+        // PSS/E IDE=3 (Swing) → canonical RPF slack.
         models::BusType::Slack => 3,
+        // PSS/E IDE=2 (voltage-regulating generator) → canonical RPF PV.
         models::BusType::GeneratorPV => 2,
-        // RAW IDE=1 (load) and IDE=3 (PQ generator) both map to canonical PQ.
+        // PSS/E IDE=1 (load) and IDE=4 (disconnected/isolated) both fold into
+        // canonical RPF PQ. `GeneratorPQ` is a legacy enum variant not assigned
+        // by the parser; treated as PQ for compatibility.
         models::BusType::LoadBus | models::BusType::GeneratorPQ => 1,
     }
 }
@@ -1645,6 +1960,7 @@ fn canonical_bus_type_code(bus_type: models::BusType) -> i8 {
 fn build_buses_batch(
     buses: &[models::Bus],
     agg_by_bus: &HashMap<u32, BusAggregate>,
+    sanitization_stats: &mut BusVoltageSanitizationStats,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BUSES).expect("buses schema must exist"));
 
@@ -1684,18 +2000,24 @@ fn build_buses_batch(
             std::mem::swap(&mut q_min_val, &mut q_max_val);
         }
 
-        let vm_export = agg.v_mag_set_override.unwrap_or(bus.vm);
+        let vm_candidate = agg.v_mag_set_override.unwrap_or(bus.vm);
+        // `v_mag_set` / `v_ang_set`: interchange aggregate sourced from the last
+        // finite, strictly positive in-service `VS` at the bus when present,
+        // else `bus.vm` / `bus.va` from the RAW bus record. Both are clamped to
+        // a valid flat-start fallback (1.0 pu, 0 rad) when the source value is
+        // non-finite, zero, or negative — matches the raptrix-core importer's
+        // `rpf_reader.cpp` step-1 sanitization so the exported .rpf payload is
+        // physically valid and the importer warning is suppressed.
+        let (vm_export, va_export_rad) =
+            sanitize_bus_voltage_setpoint(vm_candidate, bus.va, sanitization_stats);
 
         bus_id.append_value(bus.i as i32);
         name.append_value(bus.name.as_ref());
         bus_type.append_value(canonical_bus_type_code(bus.ide));
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
-        // `v_mag_set`: interchange aggregate — last non-zero finite in-service `VS`
-        // at the bus when present, else `bus.vm` from the RAW bus record (no clamp).
         v_mag_set.append_value(vm_export);
-        // Preserve RAW bus angle (PSS/E degrees → radians for raptrix-core).
-        v_ang_set.append_value(bus.va.to_radians());
+        v_ang_set.append_value(va_export_rad);
         q_min.append_value(q_min_val);
         q_max.append_value(q_max_val);
         g_shunt.append_value(agg.g_shunt);
@@ -1957,10 +2279,60 @@ fn append_psse_generator_raw_params(
     Ok(())
 }
 
+/// Generator-row Q-limit sanitization counters logged once per file.
+///
+/// raptrix-core's importer recomputes bus `q_min/q_max` from generator
+/// records and uses `max(0, q_max_mvar - q_min_mvar)` as the structural-PV
+/// span gate. A machine record with `QB > QT` (inverted ordering) yields a
+/// negative span that clamps to 0 — silently demoting an otherwise valid PV
+/// bus. The bus-level aggregator already swaps inverted ranges at the bus
+/// row, but the per-machine columns in `generators` keep the inverted pair
+/// unless we also swap them here. NaN/infinite values are clamped to 0.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct GeneratorQSanitizationStats {
+    pub swapped_q_limits: usize,
+    pub clamped_nonfinite_q_min: usize,
+    pub clamped_nonfinite_q_max: usize,
+}
+
+impl GeneratorQSanitizationStats {
+    pub(crate) fn is_empty(self) -> bool {
+        self.swapped_q_limits == 0
+            && self.clamped_nonfinite_q_min == 0
+            && self.clamped_nonfinite_q_max == 0
+    }
+}
+
+fn sanitize_generator_q_limits(
+    raw_q_min: f64,
+    raw_q_max: f64,
+    stats: &mut GeneratorQSanitizationStats,
+) -> (f64, f64) {
+    let qmin = if raw_q_min.is_finite() {
+        raw_q_min
+    } else {
+        stats.clamped_nonfinite_q_min += 1;
+        0.0
+    };
+    let qmax = if raw_q_max.is_finite() {
+        raw_q_max
+    } else {
+        stats.clamped_nonfinite_q_max += 1;
+        0.0
+    };
+    if qmin > qmax {
+        stats.swapped_q_limits += 1;
+        (qmax, qmin)
+    } else {
+        (qmin, qmax)
+    }
+}
+
 fn build_generators_batch(
     generators: &[models::Generator],
     dyr_lookup: &HashMap<(u32, String), &models::DyrGeneratorData>,
     ibr_subtype_by_gen: &HashMap<(u32, String), String>,
+    sanitization_stats: &mut GeneratorQSanitizationStats,
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_GENERATORS).expect("generators schema must exist"));
 
@@ -2022,8 +2394,10 @@ fn build_generators_batch(
         q_sched_mvar.append_value(generator.qg);
         p_min_mw.append_value(generator.pb);
         p_max_mw.append_value(generator.pt);
-        q_min_mvar.append_value(generator.qb);
-        q_max_mvar.append_value(generator.qt);
+        let (q_min_export, q_max_export) =
+            sanitize_generator_q_limits(generator.qb, generator.qt, sanitization_stats);
+        q_min_mvar.append_value(q_min_export);
+        q_max_mvar.append_value(q_max_export);
         mbase_mva.append_value(generator.mbase);
         uol_mw.append_null();
         lol_mw.append_null();
@@ -2948,6 +3322,13 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
     let params_cast = arrow::compute::cast(&params_arr, &params_target_type)
         .context("casting dynamics params map")?;
 
+    let perc1_params_type = schema
+        .field_with_name("perc1_params")
+        .expect("dynamics_models schema must include perc1_params (v0.10.0+)")
+        .data_type()
+        .clone();
+    let perc1_params_col = new_null_array(&perc1_params_type, records.len());
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -2955,6 +3336,7 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
             Arc::new(gen_id.finish()),
             Arc::new(model_type.finish()),
             params_cast,
+            perc1_params_col,
         ],
     )
     .context("building dynamics_models batch")
