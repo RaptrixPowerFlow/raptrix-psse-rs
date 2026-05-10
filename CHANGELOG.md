@@ -63,11 +63,12 @@ disconnected/isolated `IDE=4` buses into the slack-candidate pool.
 - `tests/bus_ide_parsing_test.rs::v35_optional_field_after_baskv_keeps_ide_and_vm_aligned`: extended with an `IDE=4` row to cover the disconnected→PQ mapping under the v35 substation-name layout.
 - `tests/rpf_contract_smoke_test.rs::buses_type_exports_canonical_codes_for_pv_and_slack`: rewritten to author the slack bus with `IDE=3` (was `IDE=4`).
 - `tests/rpf_contract_smoke_test.rs::writer_promotes_connected_replacement_for_disconnected_slack`: rewritten to use `IDE=3` for the orphan slack (was `IDE=4`); still asserts that the connected replacement is promoted.
-- `tests/rpf_contract_smoke_test.rs::writer_preserves_psse_ide3_swing_and_demotes_ide4_isolated` (new): explicit regression for the bug — verifies that `IDE=3` round-trips to canonical slack=3 *without* re-picking, that `IDE=4` exports as canonical PQ=1 and is never a slack candidate, and that the file carries exactly one canonical slack.
+- `tests/rpf_contract_smoke_test.rs::writer_preserves_psse_ide3_swing_and_demotes_ide4_isolated` (new): explicit regression for the bug — verifies that `IDE=3` round-trips to canonical slack=3 _without_ re-picking, that `IDE=4` exports as canonical PQ=1 and is never a slack candidate, and that the file carries exactly one canonical slack.
 
 #### Iterate-loop verification
 
 Local iterate-loop sweep across 13 cases (8 small/medium + 4 Texas7k + Midwest24k + ACTIVSg25k) confirms the fix produces RAW↔RPF parity:
+
 - **24 RAW runs / 24 RPF runs, 22 converged on each side, 0 convergence asymmetries** (`scripts/local_iterate/out/delta_report.after-ide-fix.md`).
 - Every paired case shows `Δ iters = Δ qswitches = Δ qviolations = 0` between RAW and RPF; tolerances match within one order of magnitude (most are bit-equal).
 - 0 `[converter] auto-assigned bus * as slack` warnings in `convert_stderr.log` (down from 9 in the pre-fix sweep) — every case now finds the RAW's authored `IDE=3` swing bus directly.

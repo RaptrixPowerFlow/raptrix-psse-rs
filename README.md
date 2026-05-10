@@ -128,7 +128,7 @@ For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transfo
 
 - **RPF v0.10.0 only** (`raptrix.version` / `raptrix-cim-arrow` **0.4.0**): additive `metadata.computational_load_mode`, `dynamics_models.perc1_params`, and the optional `computational_load_profiles` contract (PSS/E path leaves mode **null** and does not emit that table).
 - Every write path still runs **`validate_rpf_file`** post-close (same guarantee as `raptrix-cim-rs`).
-- **`raptrix-cim-arrow`** is pinned to git **`b08d841a6c731e2df6d56cdff6d06dba8ced4e26`** (or **0.4.0** on crates.io); local builds may use the sibling `[patch]` in `Cargo.toml`.
+- **`raptrix-cim-arrow`** is pinned to git **`b08d841a6c731e2df6d56cdff6d06dba8ced4e26`** (or **0.4.0** on crates.io). For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -136,7 +136,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIG
 
 - `./scripts/sync-versions.ps1 -Check` (Cargo.toml version must match `CHANGELOG.md` `## [x.y.z]`).
 - `./scripts/pre-release-check.ps1` (format, optional staged **public-safety** scan via `bash`, full `cargo test`).
-- When publishing from **GitHub-only** dependencies, remove the sibling `[patch."https://github.com/RaptrixPowerFlow/raptrix-cim-rs"]` block in `Cargo.toml` and keep the `raptrix-cim-arrow` git `rev` (or crates.io version) in sync with the released **raptrix-cim-rs** tag.
+- Keep `raptrix-cim-arrow`’s git **`rev`** (or crates.io version) in sync with the released **raptrix-cim-rs** tag; do not commit a path `[patch]` for it in `Cargo.toml` (CI clones this repo alone).
 
 ## Releases & Downloads
 

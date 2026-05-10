@@ -27,16 +27,10 @@ clap = { version = "4", features = ["derive"] }
 # The canonical source is the IEC 61970 CIM implementation at GitHub;
 # depend on the public repository instead of a local path.
 #
-# NOTE: For local development, the `[patch]` section below redirects this git
-# dependency at the local `../raptrix-cim-rs` checkout. For published releases,
-# pin a fresh `rev` (or crates.io version) after each schema bump.
+# NOTE: For local development against an unpublished `raptrix-cim-arrow` checkout,
+# add a `[patch]` table in `.cargo/config.toml` (do not commit) or temporarily patch
+# `Cargo.toml` locally — CI and fresh clones resolve only the git `rev` above.
 raptrix-cim-arrow = { git = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs", rev = "b08d841a6c731e2df6d56cdff6d06dba8ced4e26" }
-
-# Local development override: point `raptrix-cim-arrow` at the sibling repo so
-# in-progress schema work compiles and tests end-to-end without round-tripping
-# through GitHub. Remove this block (or update the git rev above) before publishing.
-[patch."https://github.com/RaptrixPowerFlow/raptrix-cim-rs"]
-raptrix-cim-arrow = { path = "../raptrix-cim-rs/raptrix-cim-arrow" }
 
 [dev-dependencies]
 # Golden-file integration tests depend on the raptrix-cim-arrow reader.
