@@ -213,6 +213,22 @@ fn main() -> Result<()> {
         }
 
         let rpf_all = multiset_all_rpf(rpf_path)?;
+        let tables = read_rpf_tables(rpf_path)?;
+        let batch = tables
+            .iter()
+            .find(|(n, _)| n == TABLE_BRANCHES)
+            .map(|(_, b)| b)
+            .context("missing branches table")?;
+        let status = batch
+            .column_by_name("status")
+            .context("branches.status")?
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .context("branches.status must be Boolean")?;
+        let status_true = (0..batch.num_rows())
+            .filter(|&row| status.value(row))
+            .count();
+        println!("RPF branches status=true: {status_true} / {}", batch.num_rows());
         println!("--- RPF row count sanity ---");
         println!("RPF branches rows: {}", rpf_all.values().sum::<usize>());
     }

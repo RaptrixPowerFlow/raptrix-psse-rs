@@ -172,6 +172,33 @@ fn version_offsets(psse_version: u32) -> VersionOffsets {
     }
 }
 
+/// v34 decks may use the expanded branch layout (NAME + 12 ratings) before v35.
+/// v33 lines can also exceed 24 tokens when tap/owner tail fields are present — those
+/// still use classic STATUS at index 13 (RATEA remains at index 6).
+fn branch_record_uses_v35_expanded_layout(f: &[String], psse_version: u32) -> bool {
+    if psse_version >= 35 {
+        return true;
+    }
+    if psse_version != 34 || f.len() < 24 {
+        return false;
+    }
+    // Expanded v34 inserts a non-numeric NAME at index 6; classic rows have RATEA there.
+    !f.get(6)
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .is_some()
+}
+
+fn branch_offsets_for_record(f: &[String], psse_version: u32) -> VersionOffsets {
+    let mut off = version_offsets(psse_version);
+    if branch_record_uses_v35_expanded_layout(f, psse_version) {
+        let expanded = version_offsets(35);
+        off.branch_status_idx = expanded.branch_status_idx;
+        off.branch_ratea_idx = expanded.branch_ratea_idx;
+        off.branch_gi_idx = expanded.branch_gi_idx;
+    }
+    off
+}
+
 /// Default section ordering, used when the line comment provides no hint.
 fn default_next_state(state: ParseState, version: u32) -> ParseState {
     match state {
@@ -1381,15 +1408,16 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
             // ================================================================
             ParseState::Branch => {
                 let f = tokenize(data);
+                let branch_off = branch_offsets_for_record(&f, psse_version);
                 if let Some(d) = branch_diag.as_mut() {
                     d.branch_section_lines += 1;
-                    if f.len() > off.branch_status_idx {
-                        if let Ok(v) = f[off.branch_status_idx].trim().parse::<i32>() {
+                    if f.len() > branch_off.branch_status_idx {
+                        if let Ok(v) = f[branch_off.branch_status_idx].trim().parse::<i32>() {
                             *d.status_token_histogram.entry(v).or_insert(0) += 1;
                         }
                     }
                 }
-                if let Some(branch) = parse_branch_record(&f, &off) {
+                if let Some(branch) = parse_branch_record(&f, &branch_off) {
                     result.branches.push(branch);
                 } else if let Some(d) = branch_diag.as_mut() {
                     d.rejected_branch_lines += 1;
@@ -1732,6 +1760,91 @@ mod tests {
     use std::io::Write;
 
     use super::{parse_facts_record, parse_raw_with_branch_deck_stats};
+
+    #[test]
+    fn branch_deck_stats_v33_long_tail_uses_status_at_13() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("activsg_branch_v33.raw");
+        // v33 ACTIVSg-style branch row: RATEA at idx 6, ST at idx 13, long tap tail.
+        let raw = r#"0, 100.0, 33, 0, 0, 60.0 / ACTIVSG_BRANCH_V33
+T1
+T2
+10001,'BUS1',138.0,1,1,1,1,1.0,0.0,1.1,0.9,1.1,0.9
+10002,'BUS2',138.0,1,1,1,1,1.0,0.0,1.1,0.9,1.1,0.9
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+10002, 10001,'1 ',5.74738E-2,2.97874E-1,4.55668E-2, 185.33,   0.00,   0.00,  0.00000,  0.00000,  0.00000,  0.00000,1,1,  46.8,   1,1.0000,   0,1.0000,   0,1.0000,   0,1.0000
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let (net, deck) =
+            parse_raw_with_branch_deck_stats(&path).expect("parse with branch deck stats");
+        assert_eq!(net.branches.len(), 1);
+        assert_eq!(net.branches[0].st, 1);
+        assert_eq!(deck.status_token_histogram.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn branch_deck_stats_v34_expanded_layout_uses_status_at_23() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("deck_v34_expanded.raw");
+        // v34 header with expanded branch row (NAME + 12 ratings): STAT at idx 23.
+        let raw = r#"0, 100.0, 34, 0, 0, 60.0 / V34_EXPANDED
+T1
+T2
+1,'BUS1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'BUS2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.01,0.05,0.0,'LINE1',100.0,110.0,120.0,130.0,140.0,150.0,160.0,170.0,180.0,190.0,200.0,210.0,0,0,0,0,1,1,1.0,1
+1,2,'2',0.02,0.06,0.0,'LINE2',100.0,110.0,120.0,130.0,140.0,150.0,160.0,170.0,180.0,190.0,200.0,210.0,0,0,0,0,0,1,1.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let (net, deck) =
+            parse_raw_with_branch_deck_stats(&path).expect("parse with branch deck stats");
+        assert_eq!(net.branches.len(), 2);
+        assert_eq!(net.branches[0].st, 1);
+        assert_eq!(net.branches[1].st, 0);
+        assert_eq!(deck.status_token_histogram.get(&0), Some(&1));
+        assert_eq!(deck.status_token_histogram.get(&1), Some(&1));
+    }
 
     #[test]
     fn branch_deck_stats_histogram_matches_branch_lines_v33() {
