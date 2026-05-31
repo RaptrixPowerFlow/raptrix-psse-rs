@@ -117,8 +117,13 @@ fn find_dynamic_companion(raw: &Path, dynamic_files: &[PathBuf]) -> Option<PathB
         .cloned()
 }
 
-fn run_case(raw: &Path, dynamic_files: &[PathBuf], golden_dir: &Path) -> Result<CaseTiming, String> {
-    let case_name = stem_string(raw).ok_or_else(|| format!("invalid RAW filename: {}", raw.display()))?;
+fn run_case(
+    raw: &Path,
+    dynamic_files: &[PathBuf],
+    golden_dir: &Path,
+) -> Result<CaseTiming, String> {
+    let case_name =
+        stem_string(raw).ok_or_else(|| format!("invalid RAW filename: {}", raw.display()))?;
     let dyn_path = find_dynamic_companion(raw, dynamic_files);
     let out_path = golden_dir.join(format!("{case_name}.rpf"));
 
@@ -139,7 +144,10 @@ fn run_case(raw: &Path, dynamic_files: &[PathBuf], golden_dir: &Path) -> Result<
 
     let metadata = raptrix_cim_arrow::rpf_file_metadata(Path::new(&out_s))
         .map_err(|e| format!("rpf_file_metadata failed: {e:#}"))?;
-    let rpf_version = metadata.get("rpf_version").map(|v| v.as_str()).unwrap_or("");
+    let rpf_version = metadata
+        .get("rpf_version")
+        .map(|v| v.as_str())
+        .unwrap_or("");
     if rpf_version != RPF_VERSION {
         return Err(format!(
             "rpf_version mismatch: expected {RPF_VERSION}, got {rpf_version}"
@@ -196,7 +204,10 @@ fn golden_build_all_external_raw_cases() {
     let t_total = Instant::now();
 
     for raw in &raw_files {
-        let raw_name = raw.file_name().and_then(|n| n.to_str()).unwrap_or("<unknown>");
+        let raw_name = raw
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("<unknown>");
         match run_case(raw, &dynamic_files, Path::new(GOLDEN_DIR)) {
             Ok(t) => {
                 eprintln!(
@@ -205,7 +216,10 @@ fn golden_build_all_external_raw_cases() {
                     t.elapsed_ms,
                     t.dynamics_file
                         .as_deref()
-                        .map(|p| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+                        .map(|p| Path::new(p)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("?"))
                         .unwrap_or("none"),
                     Path::new(&t.output_file)
                         .file_name()
@@ -228,13 +242,7 @@ fn golden_build_all_external_raw_cases() {
     for t in &timings {
         eprintln!(
             "{:40} {:8} ms  buses={:<7} branches={:<7} gens={:<7} loads={:<7} rows={}",
-            t.case_name,
-            t.elapsed_ms,
-            t.buses,
-            t.branches,
-            t.generators,
-            t.loads,
-            t.total_rows
+            t.case_name, t.elapsed_ms, t.buses, t.branches, t.generators, t.loads, t.total_rows
         );
     }
 
@@ -264,7 +272,10 @@ fn golden_build_all_external_raw_cases() {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        assert_eq!(actual_name, expected_name, "unexpected output filename policy");
+        assert_eq!(
+            actual_name, expected_name,
+            "unexpected output filename policy"
+        );
         assert!(Path::new(&t.raw_file).exists(), "source RAW must exist");
     }
 }

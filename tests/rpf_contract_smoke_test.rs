@@ -715,7 +715,10 @@ WMOD IBR
         .as_any()
         .downcast_ref::<BooleanArray>()
         .expect("generators.is_ibr must be Boolean");
-    assert!(is_ibr.value(0), "WMOD=1 at tail must classify as IBR without DYR");
+    assert!(
+        is_ibr.value(0),
+        "WMOD=1 at tail must classify as IBR without DYR"
+    );
 
     let ibr_subtype = generators
         .column_by_name("ibr_subtype")

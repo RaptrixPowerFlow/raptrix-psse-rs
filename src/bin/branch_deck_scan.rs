@@ -228,7 +228,10 @@ fn main() -> Result<()> {
         let status_true = (0..batch.num_rows())
             .filter(|&row| status.value(row))
             .count();
-        println!("RPF branches status=true: {status_true} / {}", batch.num_rows());
+        println!(
+            "RPF branches status=true: {status_true} / {}",
+            batch.num_rows()
+        );
         println!("--- RPF row count sanity ---");
         println!("RPF branches rows: {}", rpf_all.values().sum::<usize>());
     }

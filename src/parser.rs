@@ -1842,7 +1842,10 @@ T2
         let net = parse_raw(&path).expect("parse v35 generator with BASLOD");
         assert_eq!(net.generators.len(), 1);
         let machine = &net.generators[0];
-        assert_eq!(machine.o1, 5, "O1 must follow BASLOD, not read BASLOD as owner");
+        assert_eq!(
+            machine.o1, 5,
+            "O1 must follow BASLOD, not read BASLOD as owner"
+        );
         assert_eq!(machine.wmod, 2);
         assert!((machine.wpf - 0.95).abs() < 1e-9);
     }
