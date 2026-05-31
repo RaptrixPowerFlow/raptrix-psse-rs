@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.10.0**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.11.0**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -31,11 +31,12 @@ Arrow schema.
 | PSS/E RAW revision | Supported | Notes |
 |---|---|---|
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
-| v35 | ✓ | Extra fields (branch NAME, generator NREG, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
+| v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.10.0 contract (current)
+### v0.11.0 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
+- Optional v0.11.0 root tables **`protection_contingencies`** and **`topology_changes`** are **not** emitted by this PSS/E converter (no RAW mapping today).
 - `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
@@ -47,6 +48,7 @@ Arrow schema.
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
   - **`default_shunt_control_mode`** (nullable Dictionary): for typical **planning** exports this converter sets **`planning_full`** when `case_mode` is `flat_start_planning`, `warm_start_planning`, or `hour_ahead_advisory`; optional file-level IPC key **`rpf.default_shunt_control_mode`** mirrors the same string when set.
   - **`computational_load_mode`** (v0.10.0+, nullable Boolean): always **null** for standard PSS/E exports from this crate; the optional **`computational_load_profiles`** root table is **not** emitted here.
+- **`dynamics_models.perc1_params`** (v0.10.0+, nullable struct): all **null** until PERC1 parameters are mapped from DYR.
 - Optional **`scenario_context`** table: not emitted by this converter by default; see interchange contract for when writers may populate it.
 
 ---
@@ -207,9 +209,10 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | QB | `qb` | `q_min_mvar` | MVAr. |
 | STAT | `stat` | `status` | Bool. |
 | MBASE | `mbase` | `mbase_mva` | Machine MVA base in MVA (not normalised). |
-| O1 | `o1` | `owner_id` | Nullable when 0. |
+| O1 | `o1` | `owner_id` | Nullable when 0. v35: follows `BASLOD` (not stored). |
 | IREG | `ireg` | `controlled_bus_id` | v0.9.5+ required column: `0` or same as `bus_id` = local regulation; else remote regulated bus (**dense `bus_id`**). |
-| VS, IREG, ZR, ZX, RT, XT, GTAP, RMPCT, QG, WMOD, WPF | `vs`, `ireg`, … | `params` | Map keys: `vs`, `ireg` (only when IREG > 0 in RAW), `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg` (MVAr), `wmod`, `wpf` — same numeric units as PSS/E RAW. |
+| VS, IREG, ZR, ZX, RT, XT, GTAP, RMPCT, QG | `vs`, `ireg`, … | `params` | Map keys: `vs`, `ireg` (only when IREG > 0 in RAW), `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg` (MVAr) — same numeric units as PSS/E RAW. |
+| WMOD, WPF | `wmod`, `wpf` | `params` | Parsed after owner block `O1,F1,…,O4,F4` (v33: idx 26–27; v35: idx 28–29). DYR-first IBR classification; WMOD is fallback when DYR has no IBR model. |
 | — | DYR (`DyrGeneratorData`) | `params` | Adds `H`, `xd_prime`, `D` when finite (alongside RAW keys above). |
 | VS | `vs` | *(also bus aggregate)* | With other in-service machines at the bus, last **non-zero** finite `VS` sets `buses.v_mag_set` when present; else `buses` uses bus `VM`. |
 | QG | `qg` | `q_sched_mvar` | MVAr schedule per generator; also contributes to `buses.q_sched` aggregate. |

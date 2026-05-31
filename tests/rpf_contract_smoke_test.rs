@@ -663,6 +663,72 @@ NOMINAL KV FAIL
     let _ = fs::remove_file(out_path);
 }
 
+/// WMOD at the correct tail index (not F1) drives IBR classification when no DYR is present.
+#[test]
+fn generator_wmod_fallback_ibr_without_dyr() {
+    let raw_path = unique_temp_path("wmod_ibr", "raw");
+    let out_path = unique_temp_path("wmod_ibr", "rpf");
+    // v33 gen: F1=1 (integer) at idx 19, WMOD=1 at idx 26 — must not mis-read F1 as WMOD.
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / WMOD_IBR
+WMOD IBR
+WMOD IBR
+1,'BUS1',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+1,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0,1,1,0,1.0000,0,1.0000,0,1.0000,1,1.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write wmod-ibr raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("read RPF");
+    let generators = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_GENERATORS)
+        .map(|(_, batch)| batch)
+        .expect("missing generators table");
+
+    let is_ibr = generators
+        .column_by_name("is_ibr")
+        .expect("missing generators.is_ibr")
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("generators.is_ibr must be Boolean");
+    assert!(is_ibr.value(0), "WMOD=1 at tail must classify as IBR without DYR");
+
+    let ibr_subtype = generators
+        .column_by_name("ibr_subtype")
+        .expect("missing generators.ibr_subtype")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("generators.ibr_subtype must be Utf8");
+    assert_eq!(ibr_subtype.value(0), "wind");
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
 // ---------------------------------------------------------------------------
 // RPF v0.9.6 quality hardening — Fix A / Fix B / Fix D2 regression coverage.
 // ---------------------------------------------------------------------------

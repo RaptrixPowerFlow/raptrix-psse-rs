@@ -18,6 +18,21 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.5.0**: RPF **v0.11.0** (`raptrix-cim-arrow` **0.5.0**) — **Additive interchange**
+
+`raptrix-psse-rs` **v0.5.0** emits RPF **v0.11.0** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **`raptrix-cim-arrow` 0.5.0** / RPF **v0.11.0**: optional root tables **`protection_contingencies`** and **`topology_changes`** (enabled via `RootWriteOptions`; not emitted by this PSS/E converter). `SUPPORTED_RPF_VERSIONS` accepts **v0.11.0** and retains **v0.10.0** for reads.
+- **No required table/column changes** — standard PSS/E exports remain the **18** canonical root tables.
+- **Parser fix**: generator **`WMOD`** / **`WPF`** indices corrected after the owner block; v35 **`BASLOD`** shift applied. Re-emit `.rpf` if you rely on `generators.params.wmod` / WMOD-only IBR fallback (no DYR).
+
+#### Integrator checklist
+
+- Bump **`raptrix-core`** (or other Arrow readers) to a build whose `rpf_reader` accepts **v0.11.0** before ingesting new PSS/E-derived RPFs.
+- v0.10.0 files remain valid v0.11.0 inputs; re-export only when you need the updated version stamp or corrected WMOD-derived fields.
+
 ### raptrix-psse-rs **v0.4.0**: RPF **v0.10.0** (`raptrix-cim-arrow` **0.4.0**) — **Narrow interchange**
 
 `raptrix-psse-rs` **v0.4.0** emits **only** RPF **v0.10.0** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).

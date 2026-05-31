@@ -22,6 +22,21 @@ _No user-facing changes yet._
 
 ---
 
+## [0.5.0] - 2026-05-30
+
+### RPF **v0.11.0** (`raptrix-cim-arrow` **0.5.0**)
+
+- **Emit-only v0.11.0**: every `.rpf` from this crate carries `raptrix.version` / contract **v0.11.0** (via `raptrix-cim-arrow::SCHEMA_VERSION`). v0.11.0 is **purely additive** — optional `protection_contingencies` / `topology_changes` root tables are not emitted on the standard PSS/E path.
+- **Dependency**: `raptrix-cim-arrow` **0.5.0** / git **`e172439b96c16c69bdfb4c106bddba23d99e6e60`**.
+
+### Generator WMOD / WPF parser fix
+
+- **`parser.rs`**: `WMOD` and `WPF` are now read after the full owner block (`O1,F1,O2,F2,O3,F3,O4,F4`), not from `F1` / `O2`. Fixes false wind-IBR tagging when owner fraction `F1` is an integer like `1` (C++ `stoi` truncated `"1.0000"` to `1`; Rust `field_u8` silently returned `0`, masking the bug on Texas2k).
+- **v35**: `gen_o1_idx` shifted to **20** (after `BASLOD` @ 19); `WMOD` @ 28, `WPF` @ 29.
+- **Tests**: v33 full-owner-block and v35 BASLOD unit tests in `parser.rs`; `generator_wmod_fallback_ibr_without_dyr` integration test in `rpf_contract_smoke_test.rs`.
+
+---
+
 ## [0.4.0] - 2026-05-10
 
 ### RPF **v0.10.0** (`raptrix-cim-arrow` **0.4.0**)
@@ -480,6 +495,7 @@ The GitHub Actions **`release`** workflow (`.github/workflows/release.yml`) will
 
 ---
 
+[0.5.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.5.0
 [0.4.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.4.0
 [0.3.4]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.4
 [0.3.3]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.3

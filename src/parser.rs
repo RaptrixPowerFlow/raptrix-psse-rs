@@ -94,6 +94,10 @@ struct VersionOffsets {
     pub gen_pb_idx: usize,
     /// Index of O1 in a GENERATOR record.
     pub gen_o1_idx: usize,
+    /// Index of WMOD in a GENERATOR record (after O1,F1,…,O4,F4 owner block).
+    pub gen_wmod_idx: usize,
+    /// Index of WPF in a GENERATOR record.
+    pub gen_wpf_idx: usize,
     // ---- SWITCHED SHUNT ----
     /// Index of MODSW in a SWITCHED SHUNT record.
     pub sw_modsw_idx: usize,
@@ -120,7 +124,7 @@ struct VersionOffsets {
 fn version_offsets(psse_version: u32) -> VersionOffsets {
     if psse_version >= 35 {
         // v35 BRANCH: NAME inserted at idx 6 → RATEA at 7, STATUS at 23
-        // v35 GENERATOR: NREG inserted at idx 8 → MBASE shifts to 9, STAT→15, PT→17, PB→18
+        // v35 GENERATOR: NREG @ 8 → MBASE @ 9; BASLOD @ 19 → O1 @ 20; WMOD @ 28, WPF @ 29
         // v35 SWITCHED SHUNT: NAME at 1 → MODSW→2, ADJM→3, STAT→4, VSWHI→5, VSWLO→6,
         //   SWREG→7, NREG at 8, RMPCT→9, RMIDNT→10, BINIT→11, extra flag at 12, pairs start 13
         VersionOffsets {
@@ -133,7 +137,9 @@ fn version_offsets(psse_version: u32) -> VersionOffsets {
             gen_rmpct_idx: 16,
             gen_pt_idx: 17,
             gen_pb_idx: 18,
-            gen_o1_idx: 19,
+            gen_o1_idx: 20,
+            gen_wmod_idx: 28,
+            gen_wpf_idx: 29,
             sw_modsw_idx: 2,
             sw_adjm_idx: 3,
             sw_stat_idx: 4,
@@ -158,6 +164,8 @@ fn version_offsets(psse_version: u32) -> VersionOffsets {
             gen_pt_idx: 16,
             gen_pb_idx: 17,
             gen_o1_idx: 18,
+            gen_wmod_idx: 26,
+            gen_wpf_idx: 27,
             sw_modsw_idx: 1,
             sw_adjm_idx: 2,
             sw_stat_idx: 3,
@@ -757,7 +765,8 @@ fn parse_fixed_shunt_record(f: &[String]) -> Option<FixedShunt> {
 
 /// Parse one GENERATOR record (version-aware field offsets).
 ///
-/// PSS/E v35 inserts `NREG` at index 8, shifting all subsequent fields by 1.
+/// PSS/E v35 inserts `NREG` at index 8 and `BASLOD` before the owner block.
+/// After PB: `O1,F1,O2,F2,O3,F3,O4,F4,WMOD,WPF` (v33–v35).
 fn parse_generator_record(f: &[String], off: &VersionOffsets) -> Option<Generator> {
     if f.len() < 10 {
         return None;
@@ -799,8 +808,8 @@ fn parse_generator_record(f: &[String], off: &VersionOffsets) -> Option<Generato
         pt,
         pb,
         o1: field_u32(f, off.gen_o1_idx),
-        wmod: field_u8(f, off.gen_o1_idx + 1),
-        wpf: field_f64(f, off.gen_o1_idx + 2),
+        wmod: field_u8(f, off.gen_wmod_idx),
+        wpf: field_f64(f, off.gen_wpf_idx),
     })
 }
 
@@ -1759,7 +1768,84 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
 mod tests {
     use std::io::Write;
 
-    use super::{parse_facts_record, parse_raw_with_branch_deck_stats};
+    use super::{parse_facts_record, parse_raw, parse_raw_with_branch_deck_stats};
+
+    fn minimal_raw_tail() -> &'static str {
+        r#"0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#
+    }
+
+    #[test]
+    fn generator_wmod_wpf_v33_full_owner_block() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gen_wmod_v33.raw");
+        // v33: O1 @ 18, full owner block, WMOD @ 26, WPF @ 27. F1=1 (integer) must not become WMOD.
+        let raw = format!(
+            r#"0, 100.0, 33, 0, 0, 60.0 / GEN_WMOD_V33
+T1
+T2
+100,'BUS1',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+100,'1',75.0,10.0,40.0,-20.0,1.02,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0,5,1,0,1.0000,0,1.0000,0,1.0000,0,0.95
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+{tail}"#,
+            tail = minimal_raw_tail()
+        );
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let net = parse_raw(&path).expect("parse v33 generator with full owner block");
+        assert_eq!(net.generators.len(), 1);
+        let machine = &net.generators[0];
+        assert_eq!(machine.o1, 5);
+        assert_eq!(machine.wmod, 0, "WMOD must not be read from integer F1=1");
+        assert!((machine.wpf - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn generator_wmod_wpf_v35_with_baslod() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("gen_wmod_v35.raw");
+        // v35: NREG @ 8, BASLOD @ 19, O1 @ 20, WMOD @ 28, WPF @ 29.
+        let raw = format!(
+            r#"0, 100.0, 35, 0, 0, 60.0 / GEN_WMOD_V35
+T1
+T2
+100,'BUS1',230.0,2,1,1,1,1.02,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+100,'1',75.0,10.0,40.0,-20.0,1.02,0,0,100.0,0.0,0.2,0.0,0.1,1.0,1,100.0,90.0,10.0,0,5,1,0,1.0000,0,1.0000,0,1.0000,2,0.95
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+{tail}"#,
+            tail = minimal_raw_tail()
+        );
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let net = parse_raw(&path).expect("parse v35 generator with BASLOD");
+        assert_eq!(net.generators.len(), 1);
+        let machine = &net.generators[0];
+        assert_eq!(machine.o1, 5, "O1 must follow BASLOD, not read BASLOD as owner");
+        assert_eq!(machine.wmod, 2);
+        assert!((machine.wpf - 0.95).abs() < 1e-9);
+    }
 
     #[test]
     fn branch_deck_stats_v33_long_tail_uses_status_at_13() {
