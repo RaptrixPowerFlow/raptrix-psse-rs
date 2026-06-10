@@ -904,8 +904,8 @@ DISCONNECTED SLACK
 /// (the scheduled target), but `bus.vm` (the operating value) differs by the
 /// machine's reactive trim. Letting the importer overwrite the target with
 /// the operating value measurably regresses convergence on Texas7k / NYISO
-/// planning files. The seed is emitted again only by future Sentinel-style
-/// callers that genuinely have a separately-computed warm-start payload.
+/// planning files. The seed is emitted again only by callers that genuinely
+/// carry a separately-computed warm-start payload.
 #[test]
 fn writer_keeps_not_computed_for_warm_start_raw_no_seed_emission() {
     let raw_path = unique_temp_path("seed_only", "raw");

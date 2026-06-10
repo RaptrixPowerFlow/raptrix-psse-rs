@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.11.0 converter.
+//! Raptrix PowerFlow Interchange v0.12.1 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -248,9 +248,8 @@ pub fn write_psse_to_rpf_with_options(
     //
     // The cim-rs `seed_only` vocabulary and `build_buses_solved_seed_batch`
     // helper remain available for callers that genuinely have a separately-
-    // computed warm-start point to inject (e.g. Sentinel hour-ahead advisory
-    // exports where the operating point is not the same as the planning
-    // setpoints).
+    // computed warm-start point to inject (e.g. advisory exports where the
+    // operating point is not the same as the planning setpoints).
     let emit_warm_start_seed: bool = false;
     let _ = has_warm_start_seed_data(&network); // keep the helper alive for tests
     let solved_state_presence: &str = if emit_warm_start_seed {
@@ -403,7 +402,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.11.0) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.12.1) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -798,9 +797,8 @@ fn has_warm_start_seed_data(network: &Network) -> bool {
 ///
 /// Currently NOT invoked from the PSS/E RAW conversion path — see the rationale
 /// at the `emit_warm_start_seed = false` comment in
-/// `write_psse_to_rpf_with_options`. Retained for tests and future
-/// Sentinel-style callers that genuinely carry a separately-computed warm-start
-/// payload.
+/// `write_psse_to_rpf_with_options`. Retained for tests and for callers that
+/// genuinely carry a separately-computed warm-start payload.
 #[allow(dead_code)]
 fn build_buses_solved_seed_batch(buses: &[models::Bus]) -> Result<RecordBatch> {
     let schema =

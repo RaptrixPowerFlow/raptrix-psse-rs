@@ -181,6 +181,8 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
+    assert_eq!(RPF_VERSION, "v0.12.1");
+
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {
         eprintln!("[skip] {} not found", external_dir.display());

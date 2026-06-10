@@ -22,6 +22,16 @@ _No user-facing changes yet._
 
 ---
 
+## [0.5.3] - 2026-06-10
+
+### RPF **v0.12.1** (`raptrix-cim-arrow` **0.5.3**)
+
+- **Emit-only v0.12.1**: every `.rpf` from this crate carries `raptrix.version` / contract **v0.12.1** (via `raptrix-cim-arrow::SCHEMA_VERSION`). Optional `remedial_action_schemes` / `contingency_island_analysis` root tables are not emitted on the standard PSS/E path.
+- **`SUPPORTED_RPF_VERSIONS`** in the linked crate accepts **only** **v0.12.1** / **0.12.1** — re-export all cached `.rpf` files.
+- **Dependency**: `raptrix-cim-arrow` **0.5.3** / git **`298f9958cb9a551e273257f045bcadc1c72cf7bb`**.
+
+---
+
 ## [0.5.0] - 2026-05-30
 
 ### RPF **v0.11.0** (`raptrix-cim-arrow` **0.5.0**)
@@ -109,7 +119,7 @@ issues.
 
 #### Decided not to ship (kept as infrastructure only)
 
-- **Warm-start `buses_solved` seed emission on the PSS/E RAW path**: the cim-rs `seed_only` vocabulary and the writer-side `build_buses_solved_seed_batch` helper landed, but emission is disabled in `write_psse_to_rpf_with_options`. Rationale: the buses table already carries `v_ang_set = bus.va.to_radians()` and `v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack)`, which is exactly the warm-start initial condition. The importer's seed loop unconditionally overwrites `bus.v_mag_set` with the seed `v_mag_pu`, and on PV/Slack buses that replaces the scheduled `gen.vs` target with the operating `bus.vm`. In the local iterate-loop sweep, switching the emission on regressed convergence on 4 RPFs by 1e+1 to 1e+4 in tolerance (Texas7k_20210804 / Texas7k_20220923 / Texas7k_2030_20220923 / NYISO_onpeak2019_v23). Helper retained for future Sentinel-style callers that genuinely have a separately-computed warm-start payload distinct from the planning setpoints.
+- **Warm-start `buses_solved` seed emission on the PSS/E RAW path**: the cim-rs `seed_only` vocabulary and the writer-side `build_buses_solved_seed_batch` helper landed, but emission is disabled in `write_psse_to_rpf_with_options`. Rationale: the buses table already carries `v_ang_set = bus.va.to_radians()` and `v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack)`, which is exactly the warm-start initial condition. The importer's seed loop unconditionally overwrites `bus.v_mag_set` with the seed `v_mag_pu`, and on PV/Slack buses that replaces the scheduled `gen.vs` target with the operating `bus.vm`. In the local iterate-loop sweep, switching the emission on regressed convergence on 4 RPFs by 1e+1 to 1e+4 in tolerance (Texas7k_20210804 / Texas7k_20220923 / Texas7k_2030_20220923 / NYISO_onpeak2019_v23). Helper retained for callers that genuinely have a separately-computed warm-start payload distinct from the planning setpoints.
 
 #### Tests
 
@@ -495,6 +505,7 @@ The GitHub Actions **`release`** workflow (`.github/workflows/release.yml`) will
 
 ---
 
+[0.5.3]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.5.3
 [0.5.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.5.0
 [0.4.0]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.4.0
 [0.3.4]: https://github.com/RaptrixPowerFlow/raptrix-psse-rs/releases/tag/v0.3.4

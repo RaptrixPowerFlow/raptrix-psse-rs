@@ -191,9 +191,9 @@ fn branch_record_uses_v35_expanded_layout(f: &[String], psse_version: u32) -> bo
         return false;
     }
     // Expanded v34 inserts a non-numeric NAME at index 6; classic rows have RATEA there.
-    !f.get(6)
+    f.get(6)
         .and_then(|s| s.trim().parse::<f64>().ok())
-        .is_some()
+        .is_none()
 }
 
 fn branch_offsets_for_record(f: &[String], psse_version: u32) -> VersionOffsets {

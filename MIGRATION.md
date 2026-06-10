@@ -18,6 +18,20 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.5.3**: RPF **v0.12.1** (`raptrix-cim-arrow` **0.5.3**) — **Narrow interchange (re-export required)**
+
+`raptrix-psse-rs` **v0.5.3** emits **only** RPF **v0.12.1** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **`raptrix-cim-arrow` 0.5.3** / RPF **v0.12.1**: unified optional root tables **`remedial_action_schemes`** and **`contingency_island_analysis`** (enabled via `RootWriteOptions`; not emitted by this PSS/E converter). `SUPPORTED_RPF_VERSIONS` accepts **only** **v0.12.1** / **0.12.1**.
+- **No required table/column changes** on the standard PSS/E path — exports remain the **18** canonical root tables.
+
+#### Integrator checklist
+
+- Bump **`raptrix-core`** (or other Arrow readers) to a build whose `rpf_reader` accepts **v0.12.1** before ingesting new PSS/E-derived RPFs.
+- **Re-export required.** v0.12.0 and all prior contract files are rejected by the version gate.
+
 ### raptrix-psse-rs **v0.5.0**: RPF **v0.11.0** (`raptrix-cim-arrow` **0.5.0**) — **Additive interchange**
 
 `raptrix-psse-rs` **v0.5.0** emits RPF **v0.11.0** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
@@ -40,7 +54,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 #### What changed
 
 - **`raptrix-cim-arrow` 0.4.0** / RPF **v0.10.0**: `SUPPORTED_RPF_VERSIONS` in that crate is **only** `v0.10.0` / `0.10.0`. Re-emit any cached `.rpf` produced with older converters.
-- **`metadata`**: new trailing nullable column **`computational_load_mode`** (Boolean). The PSS/E conversion path writes **null** and does **not** emit the optional **`computational_load_profiles`** root table (computational-load interchange is a CIM / Sentinel path today).
+- **`metadata`**: new trailing nullable column **`computational_load_mode`** (Boolean). The PSS/E conversion path writes **null** and does **not** emit the optional **`computational_load_profiles`** root table (computational-load interchange is a CIM-only path today).
 - **`dynamics_models`**: new trailing nullable struct column **`perc1_params`**. Exports are **all-null** until PERC1 parameters are mapped from DYR.
 
 #### Integrator checklist
