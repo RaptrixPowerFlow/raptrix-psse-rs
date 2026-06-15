@@ -20,8 +20,9 @@ use arrow::array::{
     Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray,
 };
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, RootWriteOptions,
-    TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS,
+    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_MRID_SUPPORT,
+    RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS,
+    TABLE_METADATA, TABLE_OWNERS, read_rpf_tables, rpf_file_metadata,
 };
 
 const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
@@ -1190,6 +1191,104 @@ BUS TYPE
     raptrix_psse_rs::validate_rpf_file(&out_path, &validate_opts).expect(
         "validate_rpf_file must succeed with the same optional-root flags as the PSS/E writer",
     );
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn exported_equipment_tables_carry_v0122_mrid_columns() {
+    let raw_path = unique_temp_path("mrid_contract", "raw");
+    let out_path = unique_temp_path("mrid_contract", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / MRID_CONTRACT
+BUS TYPE
+BUS TYPE
+1,'BUS1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'BUS2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+1,'1 ',1,1,0.0,0.0,0,0,0,0
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+1,'1 ',100.0,0.0,9999.0,-9999.0,1.0,0,100.0,0.0,1.0,0,1.0,1.0,1.0,1.0,1.0,1,1.0,1.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1 ',0.01,0.10,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0,0,0,0,0,1,1,0.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write minimal raw with branch and generator");
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    assert_eq!(RPF_VERSION, "v0.12.2");
+    let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
+    assert_eq!(
+        metadata
+            .get("rpf_version")
+            .map(|v| v.as_str())
+            .unwrap_or(""),
+        "v0.12.2"
+    );
+    assert_eq!(
+        metadata
+            .get(METADATA_KEY_MRID_SUPPORT)
+            .map(|v| v.as_str())
+            .unwrap_or(""),
+        "v1"
+    );
+
+    let tables = read_rpf_tables(&out_path).expect("read_rpf_tables");
+    let (_, generators) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_GENERATORS)
+        .expect("generators table");
+    assert_eq!(generators.schema().fields().len(), 26);
+    assert_eq!(generators.schema().field(25).name(), "mrid");
+
+    let (_, branches) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BRANCHES)
+        .expect("branches table");
+    let branch_mrid = branches
+        .column_by_name("mrid")
+        .expect("branches.mrid")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("branches.mrid must be Utf8");
+    let gen_mrid = generators
+        .column_by_name("mrid")
+        .expect("generators.mrid")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("generators.mrid must be Utf8");
+
+    assert!(
+        (0..branch_mrid.len()).any(|i| !branch_mrid.is_null(i)),
+        "at least one branch row must carry non-null mrid"
+    );
+    assert!(
+        (0..gen_mrid.len()).any(|i| !gen_mrid.is_null(i)),
+        "at least one generator row must carry non-null mrid"
+    );
+    assert_eq!(branch_mrid.value(0), "BR_1_2_1");
+    assert_eq!(gen_mrid.value(0), "GEN_1_1");
+
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
 }

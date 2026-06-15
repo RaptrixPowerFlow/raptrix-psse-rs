@@ -18,6 +18,31 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.5.4**: RPF **v0.12.2** (`raptrix-cim-arrow` **0.5.4**) — **Additive interchange (no re-export required for v0.12.1 files)**
+
+`raptrix-psse-rs` **v0.5.4** emits RPF **v0.12.2** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **Nullable trailing `mrid` column** on `branches`, `generators`, `transformers_2w`, and `transformers_3w`. PSS/E exports populate synthesized stable tokens when no native CIM mRID exists:
+
+| Equipment | Deterministic `mrid` |
+| --- | --- |
+| Branch | `BR_{from_bus}_{to_bus}_{ckt}` |
+| Generator | `GEN_{bus_id}_{machine_id}` |
+| Transformer 2W | `XF2_{from_bus}_{to_bus}_{ckt}` |
+| Transformer 3W | `XF3_{bus_h}_{bus_m}_{bus_l}_{ckt}` |
+| Star-expanded 3W legs | `{parent_mrid}_H` / `_M` / `_L` |
+
+- **`SUPPORTED_RPF_VERSIONS`** in `raptrix-cim-arrow` 0.5.4 accepts **v0.12.2** and retains **v0.12.1** for reads.
+- Root metadata **`rpf.mrid_support=v1`** indicates equipment `mrid` column support.
+
+#### Integrator checklist
+
+- Bump **`raptrix-core`** (or other Arrow readers) to a build whose `rpf_reader` accepts **v0.12.2** and prefers `mrid` over dense row IDs when present.
+- **No re-export required** for v0.12.1 files. Re-export only if you need populated `mrid` values on vendor-derived equipment.
+- Downstream tools (Sentinel v2.4, Studio, etc.) should prefer **`mrid`** for equipment_id mapping.
+
 ### raptrix-psse-rs **v0.5.3**: RPF **v0.12.1** (`raptrix-cim-arrow` **0.5.3**) — **Narrow interchange (re-export required)**
 
 `raptrix-psse-rs` **v0.5.3** emits **only** RPF **v0.12.1** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).

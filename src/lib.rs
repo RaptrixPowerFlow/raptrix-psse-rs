@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.12.1 converter.
+//! Raptrix PowerFlow Interchange v0.12.2 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -214,6 +214,7 @@ pub fn write_psse_to_rpf_with_options(
     derive_switched_shunt_banks(&mut network);
     let ibr_subtype_by_gen = compute_ibr_subtype_by_generator(&network);
 
+    let star_leg_mrid_lookup = build_star_leg_mrid_lookup(&network);
     normalize_transformer_representation(&mut network, options.transformer_representation_mode)?;
 
     // Build a (bus_id, machine_id) → DyrGeneratorData lookup for the generators table.
@@ -318,7 +319,12 @@ pub fn write_psse_to_rpf_with_options(
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_2W,
-        build_transformers_2w_batch(&network.transformers, &bus_nominal_kv, base_mva)?,
+        build_transformers_2w_batch(
+            &network.transformers,
+            &bus_nominal_kv,
+            base_mva,
+            &star_leg_mrid_lookup,
+        )?,
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_3W,
@@ -2063,6 +2069,59 @@ fn build_buses_batch(
     .context("building buses batch")
 }
 
+fn synthesize_branch_mrid(from: u32, to: u32, ckt: &str) -> String {
+    format!("BR_{from}_{to}_{ckt}")
+}
+
+fn synthesize_generator_mrid(bus_id: u32, machine_id: &str) -> String {
+    format!("GEN_{bus_id}_{machine_id}")
+}
+
+fn synthesize_transformer_2w_mrid(from: u32, to: u32, ckt: &str) -> String {
+    format!("XF2_{from}_{to}_{ckt}")
+}
+
+fn synthesize_transformer_3w_mrid(h: u32, m: u32, l: u32, ckt: &str) -> String {
+    format!("XF3_{h}_{m}_{l}_{ckt}")
+}
+
+/// Star-expanded 3W legs use `{parent_mrid}_H` / `_M` / `_L`. Built before
+/// `normalize_transformer_representation` clears `transformers_3w` in expanded mode.
+fn build_star_leg_mrid_lookup(network: &Network) -> HashMap<(u32, u32, String), String> {
+    let mut out = HashMap::new();
+    for tx3 in &network.transformers_3w {
+        let parent =
+            synthesize_transformer_3w_mrid(tx3.bus_h, tx3.bus_m, tx3.bus_l, tx3.ckt.as_ref());
+        out.insert(
+            (tx3.bus_h, tx3.star_bus_id, "S1".to_string()),
+            format!("{parent}_H"),
+        );
+        out.insert(
+            (tx3.bus_m, tx3.star_bus_id, "S2".to_string()),
+            format!("{parent}_M"),
+        );
+        out.insert(
+            (tx3.bus_l, tx3.star_bus_id, "S3".to_string()),
+            format!("{parent}_L"),
+        );
+    }
+    out
+}
+
+fn resolve_transformer_2w_mrid(
+    transformer: &models::TwoWindingTransformer,
+    star_leg_mrids: &HashMap<(u32, u32, String), String>,
+) -> String {
+    let key = (
+        transformer.i,
+        transformer.j,
+        transformer.ckt.as_ref().to_string(),
+    );
+    star_leg_mrids.get(&key).cloned().unwrap_or_else(|| {
+        synthesize_transformer_2w_mrid(transformer.i, transformer.j, transformer.ckt.as_ref())
+    })
+}
+
 fn build_branches_batch(
     branches: &[models::Branch],
     facts_devices: &[models::FactsDeviceRaw],
@@ -2099,6 +2158,7 @@ fn build_branches_batch(
     let mut injected_voltage_angle_deg = Float64Builder::new();
     let mut parent_line_id = Int32Builder::new();
     let mut section_index = Int32Builder::new();
+    let mut mrid = StringBuilder::new();
     let map_field_names = MapFieldNames {
         entry: "entries".to_string(),
         key: "key".to_string(),
@@ -2154,6 +2214,11 @@ fn build_branches_batch(
         )?);
         parent_line_id.append_null();
         section_index.append_null();
+        mrid.append_value(synthesize_branch_mrid(
+            branch.i,
+            branch.j,
+            branch.ckt.as_ref(),
+        ));
 
         let pair_key = if branch.i <= branch.j {
             (branch.i, branch.j)
@@ -2243,6 +2308,7 @@ fn build_branches_batch(
             facts_params_cast,
             Arc::new(parent_line_id.finish()),
             Arc::new(section_index.finish()),
+            Arc::new(mrid.finish()),
         ],
     )
     .context("building branches batch")
@@ -2364,6 +2430,7 @@ fn build_generators_batch(
     let mut owner_id = Int32Builder::new();
     let mut market_resource_id = StringBuilder::new();
     let mut controlled_bus_id = Int32Builder::new();
+    let mut mrid = StringBuilder::new();
     let mut params = MapBuilder::new(
         Some(map_field_names),
         StringBuilder::new(),
@@ -2408,6 +2475,10 @@ fn build_generators_batch(
         }
         market_resource_id.append_null();
         controlled_bus_id.append_value(generator_controlled_bus_id(generator));
+        mrid.append_value(synthesize_generator_mrid(
+            generator.i,
+            generator.id.as_ref(),
+        ));
 
         append_psse_generator_raw_params(&mut params, generator)
             .context("PSS/E generator params")?;
@@ -2467,6 +2538,7 @@ fn build_generators_batch(
             Arc::new(market_resource_id.finish()),
             params_cast,
             Arc::new(controlled_bus_id.finish()),
+            Arc::new(mrid.finish()),
         ],
     )
     .context("building generators batch")
@@ -2961,6 +3033,7 @@ fn build_transformers_2w_batch(
     transformers: &[models::TwoWindingTransformer],
     bus_nominal_kv: &HashMap<u32, f64>,
     base_mva: f64,
+    star_leg_mrids: &HashMap<(u32, u32, String), String>,
 ) -> Result<RecordBatch> {
     let schema =
         Arc::new(table_schema(TABLE_TRANSFORMERS_2W).expect("transformers_2w schema must exist"));
@@ -2987,6 +3060,7 @@ fn build_transformers_2w_batch(
     let mut name_b = StringDictionaryBuilder::<UInt32Type>::new();
     let mut from_nominal_kv = Float64Builder::new();
     let mut to_nominal_kv = Float64Builder::new();
+    let mut mrid = StringBuilder::new();
 
     for t in transformers {
         from_bus_id.append_value(t.i as i32);
@@ -3025,6 +3099,7 @@ fn build_transformers_2w_batch(
         )?;
         from_nominal_kv.append_value(from_kv);
         to_nominal_kv.append_value(to_kv);
+        mrid.append_value(resolve_transformer_2w_mrid(t, star_leg_mrids));
     }
 
     RecordBatch::try_new(
@@ -3052,6 +3127,7 @@ fn build_transformers_2w_batch(
             Arc::new(name_b.finish()),
             Arc::new(from_nominal_kv.finish()),
             Arc::new(to_nominal_kv.finish()),
+            Arc::new(mrid.finish()),
         ],
     )
     .context("building transformers_2w batch")
@@ -3089,6 +3165,7 @@ fn build_transformers_3w_batch(
     let mut nominal_kv_h = Float64Builder::new();
     let mut nominal_kv_m = Float64Builder::new();
     let mut nominal_kv_l = Float64Builder::new();
+    let mut mrid = StringBuilder::new();
 
     for t in transformers {
         bus_h_id.append_value(t.bus_h as i32);
@@ -3130,6 +3207,12 @@ fn build_transformers_3w_batch(
         nominal_kv_h.append_value(kv_h);
         nominal_kv_m.append_value(kv_m);
         nominal_kv_l.append_value(kv_l);
+        mrid.append_value(synthesize_transformer_3w_mrid(
+            t.bus_h,
+            t.bus_m,
+            t.bus_l,
+            t.ckt.as_ref(),
+        ));
     }
 
     RecordBatch::try_new(
@@ -3159,6 +3242,7 @@ fn build_transformers_3w_batch(
             Arc::new(nominal_kv_h.finish()),
             Arc::new(nominal_kv_m.finish()),
             Arc::new(nominal_kv_l.finish()),
+            Arc::new(mrid.finish()),
         ],
     )
     .context("building transformers_3w batch")

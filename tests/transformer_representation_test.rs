@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int32Array};
+use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
 use raptrix_cim_arrow::{TABLE_BUSES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W};
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
@@ -196,6 +196,28 @@ fn expanded_only_output_contains_no_native_3w_rows() {
     assert_non_null_positive_f64_column(tx2w, "from_nominal_kv", "transformers_2w");
     assert_non_null_positive_f64_column(tx2w, "to_nominal_kv", "transformers_2w");
 
+    let mrid = tx2w
+        .column_by_name("mrid")
+        .expect("transformers_2w.mrid")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("transformers_2w.mrid must be Utf8");
+    let mut star_leg_mrids: Vec<&str> = Vec::new();
+    for row in 0..mrid.len() {
+        if !mrid.is_null(row) {
+            let value = mrid.value(row);
+            if value.ends_with("_H") || value.ends_with("_M") || value.ends_with("_L") {
+                star_leg_mrids.push(value);
+            }
+        }
+    }
+    assert!(
+        star_leg_mrids
+            .iter()
+            .any(|v| v.ends_with("_H") && v.contains("XF3_1_2_3_T3")),
+        "expanded star legs must use parent XF3 mrid with _H/_M/_L suffixes, got {star_leg_mrids:?}"
+    );
+
     let root_metadata = raptrix_cim_arrow::rpf_file_metadata(&out_path)
         .expect("rpf_file_metadata must succeed for expanded output");
     assert_eq!(
@@ -245,6 +267,16 @@ fn native_3w_only_output_contains_no_star_legs() {
     assert_non_null_positive_f64_column(tx3w, "nominal_kv_h", "transformers_3w");
     assert_non_null_positive_f64_column(tx3w, "nominal_kv_m", "transformers_3w");
     assert_non_null_positive_f64_column(tx3w, "nominal_kv_l", "transformers_3w");
+
+    let tx3w_mrid = tx3w
+        .column_by_name("mrid")
+        .expect("transformers_3w.mrid")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("transformers_3w.mrid must be Utf8");
+    assert_eq!(tx3w_mrid.len(), 1);
+    assert!(!tx3w_mrid.is_null(0));
+    assert_eq!(tx3w_mrid.value(0), "XF3_1_2_3_T3");
 
     let root_metadata = raptrix_cim_arrow::rpf_file_metadata(&out_path)
         .expect("rpf_file_metadata must succeed for native output");
