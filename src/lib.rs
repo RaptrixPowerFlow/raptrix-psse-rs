@@ -1530,11 +1530,11 @@ fn compute_ibr_subtype_by_generator(network: &Network) -> HashMap<(u32, String),
             }
         }
 
-        if selected_type.is_none() {
-            if let Some((device_type, control_mode)) = classify_ibr_from_wmod(generator.wmod) {
-                selected_type = Some(device_type);
-                selected_mode = Some(control_mode);
-            }
+        if selected_type.is_none()
+            && let Some((device_type, control_mode)) = classify_ibr_from_wmod(generator.wmod)
+        {
+            selected_type = Some(device_type);
+            selected_mode = Some(control_mode);
         }
 
         if let (Some(device_type), Some(_control_mode)) = (selected_type, selected_mode) {

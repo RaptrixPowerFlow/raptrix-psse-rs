@@ -9,13 +9,20 @@
 name = "raptrix-psse-rs"
 version = "0.5.4"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.96"
 authors = ["Raptrix PowerFlow <dev@raptrix.com>"]
 license = "MPL-2.0"
 description = "High-performance PSS/E (.raw + .dyr) -> Raptrix PowerFlow Interchange v0.12.2 converter"
 repository = "https://github.com/RaptrixPowerFlow/raptrix-psse-rs"
 keywords = ["psse", "power-systems", "converter", "raptrix", "cim"]
 categories = ["command-line-utilities", "parser-implementations"]
+
+[lints.rust]
+rust_2024_compatibility = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+all = "warn"
 
 [dependencies]
 anyhow = "1.0"
@@ -30,7 +37,7 @@ clap = { version = "4", features = ["derive"] }
 # NOTE: For local development against an unpublished `raptrix-cim-arrow` checkout,
 # add a `[patch]` table in `.cargo/config.toml` (do not commit) or temporarily patch
 # `Cargo.toml` locally — CI and fresh clones resolve only the git `rev` above.
-raptrix-cim-arrow = { git = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs", rev = "c45256e" }
+raptrix-cim-arrow = { git = "https://github.com/RaptrixPowerFlow/raptrix-cim-rs", rev = "4be9ccd" }
 
 [dev-dependencies]
 # Golden-file integration tests depend on the raptrix-cim-arrow reader.
@@ -44,3 +51,4 @@ lto = true
 codegen-units = 1
 debug = false
 incremental = false
+strip = true

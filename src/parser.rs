@@ -901,13 +901,13 @@ fn parse_facts_record(f: &[String]) -> Option<FactsDeviceRaw> {
     let mut bus_indices: Vec<usize> = Vec::new();
     let mut buses: Vec<u32> = Vec::new();
     for (idx, token) in f.iter().enumerate() {
-        if let Ok(v) = token.trim().parse::<i64>() {
-            if v > 0 {
-                bus_indices.push(idx);
-                buses.push(v as u32);
-                if buses.len() == 2 {
-                    break;
-                }
+        if let Ok(v) = token.trim().parse::<i64>()
+            && v > 0
+        {
+            bus_indices.push(idx);
+            buses.push(v as u32);
+            if buses.len() == 2 {
+                break;
             }
         }
     }
@@ -1153,22 +1153,22 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
     // Fallback: scan all tokens
     if psse_version < 0 {
         for tok in &f {
-            if let Ok(v) = tok.trim().parse::<i32>() {
-                if (20..=40).contains(&v) {
-                    psse_version = v;
-                    break;
-                }
+            if let Ok(v) = tok.trim().parse::<i32>()
+                && (20..=40).contains(&v)
+            {
+                psse_version = v;
+                break;
             }
         }
     }
 
     // Last resort: infer v33 from base MVA
-    if psse_version < 0 {
-        if let Some(mva) = f.get(1).and_then(|s| s.parse::<f64>().ok()) {
-            if mva > 1.0 && mva < 1.0e6 {
-                psse_version = 33;
-            }
-        }
+    if psse_version < 0
+        && let Some(mva) = f.get(1).and_then(|s| s.parse::<f64>().ok())
+        && mva > 1.0
+        && mva < 1.0e6
+    {
+        psse_version = 33;
     }
     let psse_version = psse_version.max(33) as u32;
 
@@ -1420,10 +1420,10 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                 let branch_off = branch_offsets_for_record(&f, psse_version);
                 if let Some(d) = branch_diag.as_mut() {
                     d.branch_section_lines += 1;
-                    if f.len() > branch_off.branch_status_idx {
-                        if let Ok(v) = f[branch_off.branch_status_idx].trim().parse::<i32>() {
-                            *d.status_token_histogram.entry(v).or_insert(0) += 1;
-                        }
+                    if f.len() > branch_off.branch_status_idx
+                        && let Ok(v) = f[branch_off.branch_status_idx].trim().parse::<i32>()
+                    {
+                        *d.status_token_histogram.entry(v).or_insert(0) += 1;
                     }
                 }
                 if let Some(branch) = parse_branch_record(&f, &branch_off) {
@@ -2068,10 +2068,10 @@ pub fn parse_dyr_records(path: &Path) -> Result<Vec<DyrModelData>> {
     }
 
     // Handle any unterminated trailing record
-    if !pending.is_empty() {
-        if let Some(rec) = try_parse_dyr_record(&pending) {
-            records.push(rec);
-        }
+    if !pending.is_empty()
+        && let Some(rec) = try_parse_dyr_record(&pending)
+    {
+        records.push(rec);
     }
 
     let machine_count = extract_dyr_generators(&records).len();
