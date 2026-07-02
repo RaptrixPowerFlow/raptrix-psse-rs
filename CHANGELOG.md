@@ -22,13 +22,23 @@ _No user-facing changes yet._
 
 ---
 
+## [0.5.6] - 2026-07-02
+
+### RPF **v0.12.4** (`raptrix-cim-arrow` **0.5.6**)
+
+- **Emit RPF v0.12.4**: every `.rpf` carries `raptrix.version` / contract **v0.12.4**. New nullable metadata columns (baseline provenance) and optional solved-state tables introduced by v0.12.3/v0.12.4 remain null / zero-row on the planning export path — the emitted planning payload is unchanged from 0.5.4 apart from the stamped version.
+- **No re-export required** for existing **v0.12.1+** `.rpf` files; the pinned reader accepts v0.12.1 through v0.12.4.
+- **Dependency**: `raptrix-cim-arrow` **0.5.6** / git tag **`v0.5.6`**.
+
+---
+
 ## [0.5.4] - 2026-06-15
 
 ### RPF **v0.12.2** (`raptrix-cim-arrow` **0.5.4**)
 
 - **Emit RPF v0.12.2**: every `.rpf` carries `raptrix.version` / contract **v0.12.2** and root metadata `rpf.mrid_support=v1`.
 - **Additive `mrid` columns** on `branches`, `generators`, `transformers_2w`, and `transformers_3w`: stable CIM-compatible equipment identifiers synthesized on PSS/E export (`BR_*`, `GEN_*`, `XF2_*`, `XF3_*`; star-expanded 3W legs use `{parent}_H` / `_M` / `_L`).
-- **Downstream guidance**: Sentinel v2.4, Studio, and other integrators should prefer `mrid` for equipment_id mapping.
+- **Downstream guidance**: Downstream integrators should prefer `mrid` for equipment_id mapping.
 - **No re-export required** for existing **v0.12.1** `.rpf` files — readers pad missing trailing `mrid` as null.
 - **Dependency**: `raptrix-cim-arrow` **0.5.4** / git **`c45256e`**.
 

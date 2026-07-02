@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.12.2 converter.
+//! Raptrix PowerFlow Interchange v0.12.4 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -408,7 +408,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.12.1) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.12.4) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -1744,9 +1744,7 @@ fn build_metadata_batch(
         .clone();
     let computational_load_mode_col = new_null_array(&computational_load_mode_type, 1);
 
-    RecordBatch::try_new(
-        schema,
-        vec![
+    let mut columns: Vec<arrow::array::ArrayRef> = vec![
             Arc::new(base_mva),
             Arc::new(frequency_hz),
             Arc::new(psse_version),
@@ -1786,9 +1784,21 @@ fn build_metadata_batch(
             Arc::new(real_time_discovery.finish()),
             Arc::new(default_shunt_control_mode.finish()),
             computational_load_mode_col,
-        ],
-    )
-    .context("building metadata batch")
+    ];
+
+    // Additive nullable metadata columns beyond the columns built above
+    // (v0.12.3 baseline-provenance fields and any future additions) are
+    // emitted as single-row nulls: planning exports never populate them.
+    for field in schema.fields().iter().skip(columns.len()) {
+        debug_assert!(
+            field.is_nullable(),
+            "unbuilt metadata column '{}' must be nullable",
+            field.name()
+        );
+        columns.push(new_null_array(field.data_type(), 1));
+    }
+
+    RecordBatch::try_new(schema, columns).context("building metadata batch")
 }
 
 fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {

@@ -18,6 +18,21 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.5.6**: RPF **v0.12.4** (`raptrix-cim-arrow` **0.5.6**) — **Additive interchange (no re-export required for v0.12.1+ files)**
+
+`raptrix-psse-rs` **v0.5.6** emits RPF **v0.12.4** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **Version stamp only on the planning path.** v0.12.3 added ten nullable baseline-provenance metadata columns and nullable `topology_changes` columns; v0.12.4 added optional solved-state tables (`q_limits_solved`, `feasibility_certificate_buses`) and documented solved-snapshot read dialects. None of these are populated by the PSS/E planning converter — new columns are emitted null and optional tables zero-row.
+- **Reader compatibility**: the pinned `raptrix-cim-arrow` 0.5.6 reader accepts **v0.12.1 through v0.12.4**, uses name-based root validation, and tolerates documented snapshot dialects on read.
+
+#### Reader upgrade
+
+- Consumers should upgrade to a reader accepting v0.12.4 (e.g. `raptrix-cim-arrow` 0.5.6) before ingesting new exports.
+
+---
+
 ### raptrix-psse-rs **v0.5.4**: RPF **v0.12.2** (`raptrix-cim-arrow` **0.5.4**) — **Additive interchange (no re-export required for v0.12.1 files)**
 
 `raptrix-psse-rs` **v0.5.4** emits RPF **v0.12.2** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
@@ -41,7 +56,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 - Bump **`raptrix-core`** (or other Arrow readers) to a build whose `rpf_reader` accepts **v0.12.2** and prefers `mrid` over dense row IDs when present.
 - **No re-export required** for v0.12.1 files. Re-export only if you need populated `mrid` values on vendor-derived equipment.
-- Downstream tools (Sentinel v2.4, Studio, etc.) should prefer **`mrid`** for equipment_id mapping.
+- Downstream tools should prefer **`mrid`** for equipment_id mapping.
 
 ### raptrix-psse-rs **v0.5.3**: RPF **v0.12.1** (`raptrix-cim-arrow` **0.5.3**) — **Narrow interchange (re-export required)**
 
