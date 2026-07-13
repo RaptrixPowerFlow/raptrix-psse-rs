@@ -55,11 +55,19 @@ run_static "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" "tests/go
 run_dynamic "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
   "tests/data/external/Texas2k_series25_case1_summerpeak.dyr" "tests/golden/Texas2k_series25_dynamic.rpf"
 
-run_static "tests/data/external/Base_Eastern_Interconnect_515GW.RAW" "tests/golden/Base_Eastern_Interconnect_515GW_static.rpf"
+# Canonical names used by raptrix-core / test-suite (no _static suffix).
+run_static "tests/data/external/Base_Eastern_Interconnect_515GW.RAW" \
+  "tests/golden/Base_Eastern_Interconnect_515GW.rpf"
+# Keep _static alias for older scripts.
+if [[ -f "tests/golden/Base_Eastern_Interconnect_515GW.rpf" ]]; then
+  cp -f "tests/golden/Base_Eastern_Interconnect_515GW.rpf" \
+    "tests/golden/Base_Eastern_Interconnect_515GW_static.rpf"
+fi
 
 RAW_A10="tests/data/external/ACTIVSg10k.RAW"
 if [[ -f "$RAW_A10" ]]; then
-  run_static "$RAW_A10" "tests/golden/ACTIVSg10k_static.rpf"
+  run_static "$RAW_A10" "tests/golden/ACTIVSg10k.rpf"
+  cp -f "tests/golden/ACTIVSg10k.rpf" "tests/golden/ACTIVSg10k_static.rpf" 2>/dev/null || true
   dyr="$(pick_dyn "tests/data/external/ACTIVSg10k")"
   if [[ -n "$dyr" ]]; then
     run_dynamic "$RAW_A10" "$dyr" "tests/golden/ACTIVSg10k_dynamic.rpf"
@@ -80,8 +88,38 @@ run_static "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorl
   "tests/golden/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld_static.rpf"
 run_static "tests/data/external/Texas7k_2030_20220923.RAW" "tests/golden/Texas7k_2030_static.rpf"
 run_static "tests/data/external/Midwest24k_20220923.RAW" "tests/golden/Midwest24k_static.rpf"
-run_static "tests/data/external/ACTIVSg25k.RAW" "tests/golden/ACTIVSg25k_static.rpf"
-run_static "tests/data/external/ACTIVSg70k.RAW" "tests/golden/ACTIVSg70k_static.rpf"
+run_static "tests/data/external/ACTIVSg25k.RAW" "tests/golden/ACTIVSg25k.rpf"
+run_static "tests/data/external/ACTIVSg70k.RAW" "tests/golden/ACTIVSg70k.rpf"
+# Aliases for legacy _static names
+for stem in ACTIVSg25k ACTIVSg70k IEEE_14_bus IEEE_118_Bus NYISO_offpeak2019_v23 \
+            NYISO_onpeak2019_v23 Midwest24k; do
+  if [[ -f "tests/golden/${stem}.rpf" ]]; then
+    cp -f "tests/golden/${stem}.rpf" "tests/golden/${stem}_static.rpf" 2>/dev/null || true
+  elif [[ -f "tests/golden/${stem}_static.rpf" ]]; then
+    cp -f "tests/golden/${stem}_static.rpf" "tests/golden/${stem}.rpf" 2>/dev/null || true
+  fi
+done
+# Align IEEE/NYISO canonical names without _static if only _static exists from earlier lines
+for pair in \
+  "IEEE_14_bus_static.rpf:IEEE_14_bus.rpf" \
+  "IEEE_118_Bus_static.rpf:IEEE_118_Bus.rpf" \
+  "NYISO_offpeak2019_v23_static.rpf:NYISO_offpeak2019_v23.rpf" \
+  "NYISO_onpeak2019_v23_static.rpf:NYISO_onpeak2019_v23.rpf" \
+  "Texas2k_series25_static.rpf:Texas2k_series25_case1_summerpeak.rpf" \
+  "Texas7k_20210804_static.rpf:Texas7k_20210804.rpf" \
+  "Texas7k_2030_static.rpf:Texas7k_2030_20220923.rpf" \
+  "Midwest24k_static.rpf:Midwest24k_20220923.rpf"
+do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if [[ -f "tests/golden/$src" && ! -f "tests/golden/$dst" ]]; then
+    cp -f "tests/golden/$src" "tests/golden/$dst"
+  fi
+done
+
+# Additional goldens matching on-disk corpus names
+run_static "tests/data/external/Texas7k_20220923.RAW" "tests/golden/Texas7k_20220923.rpf"
+run_static "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
+  "tests/golden/Texas2k_series25_case1_summerpeak.rpf"
 
 echo
-echo "[suite] finished"
+echo "[suite] finished — RPF schema stamped by raptrix-cim-arrow (single IPC writer)"

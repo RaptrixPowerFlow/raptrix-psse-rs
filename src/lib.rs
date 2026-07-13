@@ -238,19 +238,13 @@ pub fn write_psse_to_rpf_with_options(
     let case_mode = resolve_case_mode(&network, options)?;
 
     // v0.9.6 warm-start seed payload: kept disabled on the PSS/E RAW conversion
-    // path. The buses table already carries v_ang_set = bus.va.to_radians() and
-    // v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack), which is
-    // exactly the warm-start initial condition the importer needs. Emitting
-    // `buses_solved` here would force the importer's seed loop
-    // (rpf_reader.cpp:2693-2725) to OVERWRITE v_mag_set with bus.vm even for
-    // PV/Slack buses where v_mag_set was the scheduled gen.vs target — which
-    // measurably regresses convergence on Texas7k / NYISO planning files
-    // (delta: 4 cases regressed by 1e+1 to 1e+4 in tolerance).
-    //
-    // The cim-rs `seed_only` vocabulary and `build_buses_solved_seed_batch`
-    // helper remain available for callers that genuinely have a separately-
-    // computed warm-start point to inject (e.g. advisory exports where the
-    // operating point is not the same as the planning setpoints).
+    // path. The buses table already carries v_ang_set = bus.va (radians) and
+    // v_mag_set = bus.vm on solved-looking decks (generator VS is NOT written
+    // into v_mag_set when the RAW carries a published operating point — VS≠VM
+    // on PV buses was an RPF creation bug that produced tens-of-pu Q residuals
+    // on ACTIVSg plant ties). Flat-start decks still allow VS override.
+    // Emitting `buses_solved` remains optional for callers with a separate
+    // advisory operating point.
     let emit_warm_start_seed: bool = false;
     let _ = has_warm_start_seed_data(&network); // keep the helper alive for tests
     let solved_state_presence: &str = if emit_warm_start_seed {
@@ -1978,6 +1972,18 @@ fn build_buses_batch(
 ) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_BUSES).expect("buses schema must exist"));
 
+    // First principles (warm-start seed consistency — must match raptrix-core RAW import):
+    // PSS/E bus VM/VA is the operating-point voltage. Generator VS is an AVR *control*
+    // setpoint (and should live only in generators / params / v_ctrl_set after import).
+    // Writing VS into `v_mag_set` for PV while PQ neighbors keep bus VM fabricates large
+    // ΔV across low-Z plant ties. Even a |VS−VM|≤0.02 hybrid rewrites thousands of
+    // plant terminals on ACTIVSg (RAW max|F| ~38 vs pure-VM ~0.002). When the deck
+    // looks solved, ALWAYS export bus.vm. Flat-start decks may still use VS for PV.
+    let n = buses.len().max(1) as f64;
+    let n_angled = buses.iter().filter(|b| b.va.abs() > 1.0e-4).count() as f64;
+    let n_nonunity = buses.iter().filter(|b| (b.vm - 1.0).abs() > 1.0e-3).count() as f64;
+    let looks_solved_seed = (n_angled / n) > 0.25 || (n_nonunity / n) > 0.25;
+
     let mut bus_id = Int32Builder::new();
     let mut name = StringDictionaryBuilder::<Int32Type>::new();
     let mut bus_type = Int8Builder::new();
@@ -2014,14 +2020,13 @@ fn build_buses_batch(
             std::mem::swap(&mut q_min_val, &mut q_max_val);
         }
 
-        let vm_candidate = agg.v_mag_set_override.unwrap_or(bus.vm);
-        // `v_mag_set` / `v_ang_set`: interchange aggregate sourced from the last
-        // finite, strictly positive in-service `VS` at the bus when present,
-        // else `bus.vm` / `bus.va` from the RAW bus record. Both are clamped to
-        // a valid flat-start fallback (1.0 pu, 0 rad) when the source value is
-        // non-finite, zero, or negative — matches the raptrix-core importer's
-        // `rpf_reader.cpp` step-1 sanitization so the exported .rpf payload is
-        // physically valid and the importer warning is suppressed.
+        // Solved-looking: pure published VM. Flat-start: allow VS override for PV targets.
+        let vm_candidate = match agg.v_mag_set_override {
+            Some(vs) if !looks_solved_seed => vs,
+            _ => bus.vm,
+        };
+        // Clamped to a valid flat-start fallback (1.0 pu, 0 rad) when the source value
+        // is non-finite, zero, or negative — matches raptrix-core importer sanitization.
         let (vm_export, va_export_rad) =
             sanitize_bus_voltage_setpoint(vm_candidate, bus.va, sanitization_stats);
 
@@ -3086,7 +3091,9 @@ fn build_transformers_2w_batch(
         b.append_value(t.mag2);
         tap_ratio.append_value(t.windv1);
         nominal_tap_ratio.append_value(derive_nominal_tap_ratio(t));
-        phase_shift.append_value(t.ang1.to_radians());
+        // RPF schema contract: transformers_2w.phase_shift is degrees (see cim-rs
+        // rpf-field-guide). raptrix-core converts to radians on materialize.
+        phase_shift.append_value(t.ang1);
         append_vector_group(&mut vector_group, t);
         rate_a.append_value(t.rata1 / base_mva);
         rate_b.append_value(t.ratb1 / base_mva);
@@ -3192,7 +3199,8 @@ fn build_transformers_3w_batch(
         tap_h.append_value(t.tap_h);
         tap_m.append_value(t.tap_m);
         tap_l.append_value(t.tap_l);
-        phase_shift.append_value(t.phase_shift_deg.to_radians());
+        // RPF schema contract: transformers_3w.phase_shift is degrees.
+        phase_shift.append_value(t.phase_shift_deg);
         vector_group.append_value("unknown");
         rate_a.append_value(t.rate_a_mva / base_mva);
         rate_b.append_value(t.rate_b_mva / base_mva);
