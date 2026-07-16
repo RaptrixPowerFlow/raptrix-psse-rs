@@ -22,6 +22,17 @@ _No user-facing changes yet._
 
 ---
 
+## [0.5.7] - 2026-07-16
+
+### RPF **v0.12.5** (`raptrix-cim-arrow` **0.5.7**)
+
+- **Emit RPF v0.12.5**: every `.rpf` carries `raptrix.version` / contract **v0.12.5**.
+- **Nullable trailing `buses.latitude` / `buses.longitude`**: emitted as null (PSS/E RAW has no standard WGS84 bus coordinates). Purely additive — electrical payload unchanged from 0.5.6.
+- **No re-export required** for existing **v0.12.1+** `.rpf` files; the pinned reader accepts v0.12.1 through v0.12.5.
+- **Dependency**: `raptrix-cim-arrow` **0.5.7** / git tag **`v0.5.7`**.
+
+---
+
 ## [0.5.6] - 2026-07-02
 
 ### RPF **v0.12.4** (`raptrix-cim-arrow` **0.5.6**)

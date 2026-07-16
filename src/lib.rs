@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.12.4 converter.
+//! Raptrix PowerFlow Interchange v0.12.5 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -402,7 +402,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.12.4) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.12.5) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -2006,6 +2006,9 @@ fn build_buses_batch(
     let mut bus_uuid = StringDictionaryBuilder::<Int32Type>::new();
     let mut qd_load_pu = Float64Builder::new();
     let mut qg_sched_pu = Float64Builder::new();
+    // v0.12.5: optional WGS84 GIS (PSS/E RAW has no standard lat/lon → null).
+    let mut latitude = Float64Builder::new();
+    let mut longitude = Float64Builder::new();
 
     for bus in buses {
         let agg = agg_by_bus.get(&bus.i).cloned().unwrap_or_default();
@@ -2052,6 +2055,8 @@ fn build_buses_batch(
         bus_uuid.append_value(format!("psse:bus:{}", bus.i));
         qd_load_pu.append_value(agg.qd_load_pu);
         qg_sched_pu.append_value(agg.qg_sched_pu);
+        latitude.append_null();
+        longitude.append_null();
     }
 
     RecordBatch::try_new(
@@ -2079,6 +2084,8 @@ fn build_buses_batch(
             Arc::new(bus_uuid.finish()),
             Arc::new(qd_load_pu.finish()),
             Arc::new(qg_sched_pu.finish()),
+            Arc::new(latitude.finish()),
+            Arc::new(longitude.finish()),
         ],
     )
     .context("building buses batch")

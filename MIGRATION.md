@@ -18,6 +18,21 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.5.7**: RPF **v0.12.5** (`raptrix-cim-arrow` **0.5.7**) — **Additive interchange (no re-export required for v0.12.1+ files)**
+
+`raptrix-psse-rs` **v0.5.7** emits RPF **v0.12.5** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
+
+#### What changed
+
+- **Nullable trailing `buses.latitude` / `buses.longitude`** (`Float64`, WGS84 degrees). PSS/E RAW has no standard GIS fields — columns are always **null** on this converter path.
+- **Reader compatibility**: the pinned `raptrix-cim-arrow` 0.5.7 reader accepts **v0.12.1 through v0.12.5**.
+
+#### Reader upgrade
+
+- Consumers should upgrade to a reader accepting v0.12.5 (e.g. `raptrix-cim-arrow` 0.5.7) before ingesting new exports. Treat bus GIS columns as optional nullable trailing fields.
+
+---
+
 ### raptrix-psse-rs **v0.5.6**: RPF **v0.12.4** (`raptrix-cim-arrow` **0.5.6**) — **Additive interchange (no re-export required for v0.12.1+ files)**
 
 `raptrix-psse-rs` **v0.5.6** emits RPF **v0.12.4** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).
