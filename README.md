@@ -37,7 +37,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical required root tables for **RPF v0.12.5** (zero-row where applicable) so downstream pipelines stay deterministic.
+- Always emit the **18** canonical required root tables for **RPF v0.13.0** (zero-row where applicable) so downstream pipelines stay deterministic.
 
 ## CLI Reference
 
@@ -74,9 +74,9 @@ cargo run --bin branch_deck_scan -- --raw <FILE.raw> [--rpf <FILE.rpf>] [--list-
 
 Diagnostics for the PSS/E BRANCH section: raw `ST` token histogram, parsed vs rejected lines, in-service/out-of-service counts, optional duplicate `(from_bus,to_bus,ckt)` keys, and (with `--rpf`) an in-service multiset diff between the parsed RAW network and the RPF `branches` table. Use this when reconciling branch row counts against tools that omit `ST=0` lines.
 
-## RPF v0.12.5 coverage
+## RPF v0.13.0 coverage
 
-The converter emits the **18** required root tables from the locked **v0.12.5** contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked **v0.13.0** contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -115,21 +115,24 @@ Metadata includes modern-grid fields plus v0.9.0/0.9.1 **additional nullable col
 - real_time_discovery
 - default_shunt_control_mode (nullable — typical planning exports use `planning_full`)
 - computational_load_mode (v0.10.0+; nullable Boolean — **null** on the standard PSS/E path; optional `computational_load_profiles` is not emitted here)
+- source_format / source_format_version / source_identity_scheme (v0.13.0; PSS/E path uses `psse_raw`, RAW rev string, `dense_bus_id`)
+- baseline_source_case_id and other baseline-provenance columns (nullable; null on standard PSS/E planning exports)
 
-**v0.9.5+** also carries **`generators.controlled_bus_id`** (PSS/E **IREG** / remote voltage regulation target; `0` = local).
+**v0.13.0** maps PSS/E **IREG** to nullable **`generators.controlled_bus_id`** (`null` = local regulation; remote dense `bus_id` otherwise). Bus types are dictionary tokens `PQ` / `PV` / `Slack`. Timestamps are Arrow `Timestamp(Microsecond, UTC)`.
 
-**v0.10.0** also carries nullable **`dynamics_models.perc1_params`** (PERC1 baseline struct; all-null until mapped from DYR).
+**v0.10.0** also carries nullable **`dynamics_models.perc1_params`** (PERC1 baseline struct; all-null until mapped from DYR). **v0.13.0** adds nullable **`dynamics_models.classical_params`** when DYR params supply classical first-swing fields.
 
-**v0.12.2** added trailing nullable **`mrid`** columns on equipment tables (`branches`, `generators`, `transformers_2w`, `transformers_3w`); **v0.12.3**/**v0.12.4** add nullable baseline-provenance metadata columns and optional solved-state tables; **v0.12.5** adds nullable `buses.latitude` / `buses.longitude` (always null from PSS/E — no standard GIS in RAW). Optional **`remedial_action_schemes`** / **`contingency_island_analysis`** root tables (v0.12.1) are not emitted on the standard PSS/E path.
+Trailing nullable **`mrid`** columns exist on equipment tables (`branches`, `generators`, `transformers_2w`, `transformers_3w`) plus loads/fixed/switched shunts (null from PSS/E when unknown). Nullable `buses.latitude` / `buses.longitude` are always null from PSS/E (no standard GIS in RAW). Optional **`remedial_action_schemes`** / **`contingency_island_analysis`** root tables are not emitted on the standard PSS/E path.
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.5.7)
+## Recent release (v0.6.0)
 
-- **RPF v0.12.5** (`raptrix.version` / `raptrix-cim-arrow` **0.5.7**): emits the current contract; `buses.latitude` / `buses.longitude` are null (PSS/E has no WGS84). **No re-export required** for v0.12.1+ files — re-export to stamp the current contract version.
-- **`raptrix-cim-arrow`** is pinned to git tag **`v0.5.7`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
+- **RPF v0.13.0** (`raptrix.version` / `raptrix-cim-arrow` **0.6.0**): clean-cut contract — **re-export required** for all pre-0.13 `.rpf` files (no dual-read of v0.12.x).
+- Provenance, dictionary bus types, nullable local `controlled_bus_id`, native UTC timestamps, optional load/shunt `mrid`, and `classical_params` on dynamics when available.
+- **`raptrix-cim-arrow`** is pinned to git tag **`v0.6.0`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -172,7 +175,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.12.5** `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.13.0** `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
 
 ### Windows, OneDrive, and WSL
 
@@ -235,7 +238,7 @@ Golden tests (with local external inputs) help catch regressions; they are not a
 
 ## Versioning & Schema Contract
 
-This crate is pinned to **`raptrix-cim-arrow` 0.5.7** (git tag `v0.5.7`). Every emitted `.rpf` is validated against the locked **v0.12.5** contract before returning. v0.12.1+ files remain readable; re-export through this converter to emit the current contract.
+This crate is pinned to **`raptrix-cim-arrow` 0.6.0** (git tag `v0.6.0`). Every emitted `.rpf` is validated against the locked **v0.13.0** contract before returning. Readers accept **only** v0.13.0 — re-export all older `.rpf` files through this converter.
 
 See [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md) for the full RPF specification.
 

@@ -18,6 +18,29 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.6.0**: RPF **v0.13.0** (`raptrix-cim-arrow` **0.6.0**) — **Breaking clean cut (re-export required)**
+
+`raptrix-psse-rs` **v0.6.0** emits RPF **v0.13.0** only.
+
+#### What changed
+
+- Dropped required `psse_version`; RAW revision is `source_format_version` with `source_format=psse_raw` and `source_identity_scheme=dense_bus_id`.
+- `buses.type` dictionary tokens `PQ`/`PV`/`Slack`; `controlled_bus_id` **null** = local regulation (do not write `0`).
+- Native UTC timestamps; optional load/shunt `mrid`; dynamics `classical_params` when DYR supplies H/D/xd'/mbase.
+- Root metadata stamps `rpf.identity.model=hybrid_solver_flat_v1`.
+- **`baseline_source_case_id`** replaces any prior `original_sentinel_case_id` wire name (null on standard PSS/E planning exports).
+- **Reader compatibility**: only v0.13.0 / `0.13.0`. **Re-export all goldens and case libraries.** No upgrade CLI for old `.rpf` files.
+- **Dependency**: `raptrix-cim-arrow` **0.6.0** / git tag **`v0.6.0`**.
+
+#### Consumer checklist
+
+1. Reject any file with `raptrix.version` ≠ v0.13.0.
+2. Stop reading `psse_version` / `original_sentinel_case_id` / Int8 bus types / `controlled_bus_id == 0`.
+3. Parse native UTC timestamps (or convert via Arrow).
+4. Prefer `classical_params` when present for first-swing machines.
+
+---
+
 ### raptrix-psse-rs **v0.5.7**: RPF **v0.12.5** (`raptrix-cim-arrow` **0.5.7**) — **Additive interchange (no re-export required for v0.12.1+ files)**
 
 `raptrix-psse-rs` **v0.5.7** emits RPF **v0.12.5** (root metadata `raptrix.version` matches `raptrix-cim-arrow::SCHEMA_VERSION`).

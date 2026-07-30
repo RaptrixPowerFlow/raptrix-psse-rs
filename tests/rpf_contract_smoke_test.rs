@@ -17,13 +17,30 @@ use std::{
 };
 
 use arrow::array::{
-    Array, BooleanArray, Float64Array, Int8Array, Int32Array, MapArray, StringArray,
+    Array, BooleanArray, DictionaryArray, Float64Array, Int32Array, MapArray, StringArray,
 };
+use arrow::datatypes::Int32Type;
 use raptrix_cim_arrow::{
-    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_MRID_SUPPORT,
-    RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_METADATA, TABLE_OWNERS, read_rpf_tables, rpf_file_metadata,
+    BUS_TYPE_PQ, BUS_TYPE_PV, BUS_TYPE_SLACK, IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1,
+    METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
+    METADATA_KEY_MRID_SUPPORT, RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES,
+    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, read_rpf_tables,
+    rpf_file_metadata,
 };
+
+fn dict_utf8_at(col: &dyn Array, i: usize) -> &str {
+    let dict = col
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .expect("expected Dictionary<Int32, Utf8>");
+    assert!(!dict.is_null(i), "dictionary entry {i} must be non-null");
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("dictionary values must be Utf8");
+    values.value(dict.key(i).expect("dictionary key"))
+}
 
 const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
 
@@ -80,17 +97,16 @@ BUS TYPE
         .find(|(name, _)| name == TABLE_BUSES)
         .map(|(_, batch)| batch)
         .expect("missing buses table");
-    let bus_type = buses
-        .column_by_name("type")
-        .expect("missing buses.type")
-        .as_any()
-        .downcast_ref::<Int8Array>()
-        .expect("buses.type must be Int8");
-    assert_eq!(bus_type.value(0), 2, "RAW IDE=2 must export canonical PV=2");
+    let bus_type = buses.column_by_name("type").expect("missing buses.type");
     assert_eq!(
-        bus_type.value(1),
-        3,
-        "RAW IDE=3 (swing) must export canonical slack=3"
+        dict_utf8_at(bus_type.as_ref(), 0),
+        BUS_TYPE_PV,
+        "RAW IDE=2 must export canonical PV"
+    );
+    assert_eq!(
+        dict_utf8_at(bus_type.as_ref(), 1),
+        BUS_TYPE_SLACK,
+        "RAW IDE=3 (swing) must export canonical Slack"
     );
 
     let _ = fs::remove_file(raw_path);
@@ -200,6 +216,10 @@ CONTRACT SMOKE
         .as_any()
         .downcast_ref::<Int32Array>()
         .expect("generators.controlled_bus_id must be Int32");
+    assert!(
+        !controlled_bus_id.is_null(0),
+        "IREG=2 must map to non-null controlled_bus_id"
+    );
     assert_eq!(
         controlled_bus_id.value(0),
         2,
@@ -207,6 +227,13 @@ CONTRACT SMOKE
     );
 
     let root_meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("rpf root metadata");
+    assert_eq!(
+        root_meta
+            .get(METADATA_KEY_IDENTITY_MODEL)
+            .map(|s| s.as_str()),
+        Some(IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1),
+        "planning export must stamp rpf.identity.model=hybrid_solver_flat_v1"
+    );
     assert_eq!(
         root_meta
             .get(METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE)
@@ -237,21 +264,16 @@ CONTRACT SMOKE
         .find(|(name, _)| name == TABLE_BUSES)
         .map(|(_, batch)| batch)
         .expect("missing buses table");
-    let bus_type = buses
-        .column_by_name("type")
-        .expect("missing buses.type")
-        .as_any()
-        .downcast_ref::<Int8Array>()
-        .expect("buses.type must be Int8");
+    let bus_type = buses.column_by_name("type").expect("missing buses.type");
     assert_eq!(
-        bus_type.value(0),
-        3,
-        "RAW IDE=3 (swing) must export canonical slack=3"
+        dict_utf8_at(bus_type.as_ref(), 0),
+        BUS_TYPE_SLACK,
+        "RAW IDE=3 (swing) must export canonical Slack"
     );
     assert_eq!(
-        bus_type.value(1),
-        1,
-        "RAW IDE=1 must export canonical buses.type=1 (PQ)"
+        dict_utf8_at(bus_type.as_ref(), 1),
+        BUS_TYPE_PQ,
+        "RAW IDE=1 must export canonical buses.type=PQ"
     );
     let bus_owner = buses
         .column_by_name("owner_id")
@@ -863,35 +885,30 @@ DISCONNECTED SLACK
         .find(|(name, _)| name == TABLE_BUSES)
         .map(|(_, batch)| batch)
         .expect("missing buses table");
-    let bus_type = buses
-        .column_by_name("type")
-        .expect("missing buses.type")
-        .as_any()
-        .downcast_ref::<Int8Array>()
-        .expect("buses.type must be Int8");
+    let bus_type = buses.column_by_name("type").expect("missing buses.type");
     assert_eq!(
-        bus_type.value(0),
-        2,
-        "orphan IDE=3 (swing) on a disconnected island must be demoted to PV (2), got {}",
-        bus_type.value(0)
+        dict_utf8_at(bus_type.as_ref(), 0),
+        BUS_TYPE_PV,
+        "orphan IDE=3 (swing) on a disconnected island must be demoted to PV, got {}",
+        dict_utf8_at(bus_type.as_ref(), 0)
     );
     assert_eq!(
-        bus_type.value(1),
-        3,
-        "connected PV bus with online generator must be promoted to slack (3), got {}",
-        bus_type.value(1)
+        dict_utf8_at(bus_type.as_ref(), 1),
+        BUS_TYPE_SLACK,
+        "connected PV bus with online generator must be promoted to Slack, got {}",
+        dict_utf8_at(bus_type.as_ref(), 1)
     );
     assert_eq!(
-        bus_type.value(2),
-        1,
-        "connected PQ bus must stay PQ (1), got {}",
-        bus_type.value(2)
+        dict_utf8_at(bus_type.as_ref(), 2),
+        BUS_TYPE_PQ,
+        "connected PQ bus must stay PQ, got {}",
+        dict_utf8_at(bus_type.as_ref(), 2)
     );
 
     let slack_count = (0..bus_type.len())
-        .filter(|&i| bus_type.value(i) == 3)
+        .filter(|&i| dict_utf8_at(bus_type.as_ref(), i) == BUS_TYPE_SLACK)
         .count();
-    assert_eq!(slack_count, 1, "exactly one canonical slack bus expected");
+    assert_eq!(slack_count, 1, "exactly one canonical Slack bus expected");
 
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
@@ -965,6 +982,22 @@ SEED ONLY
     assert!(
         !has_buses_solved,
         "PSS/E RAW path must NOT emit a buses_solved seed table"
+    );
+
+    let generators = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_GENERATORS)
+        .map(|(_, batch)| batch)
+        .expect("missing generators table");
+    let controlled_bus_id = generators
+        .column_by_name("controlled_bus_id")
+        .expect("missing generators.controlled_bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("generators.controlled_bus_id must be Int32");
+    assert!(
+        controlled_bus_id.is_null(0),
+        "IREG=0 must export controlled_bus_id=null (local regulation), not 0"
     );
 
     let _ = fs::remove_file(raw_path);
@@ -1102,44 +1135,42 @@ IDE3 IDE4
         .as_any()
         .downcast_ref::<Int32Array>()
         .expect("buses.bus_id must be Int32");
-    let bus_type = buses
-        .column_by_name("type")
-        .expect("missing buses.type")
-        .as_any()
-        .downcast_ref::<Int8Array>()
-        .expect("buses.type must be Int8");
+    let bus_type = buses.column_by_name("type").expect("missing buses.type");
 
-    let mut by_id: std::collections::HashMap<i32, i8> = std::collections::HashMap::new();
+    let mut by_id: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
     for i in 0..bus_id.len() {
-        by_id.insert(bus_id.value(i), bus_type.value(i));
+        by_id.insert(
+            bus_id.value(i),
+            dict_utf8_at(bus_type.as_ref(), i).to_string(),
+        );
     }
     assert_eq!(
-        by_id.get(&1).copied(),
-        Some(3),
-        "RAW IDE=3 (swing) on a connected island must round-trip to canonical slack=3"
+        by_id.get(&1).map(|s| s.as_str()),
+        Some(BUS_TYPE_SLACK),
+        "RAW IDE=3 (swing) on a connected island must round-trip to canonical Slack"
     );
     assert_eq!(
-        by_id.get(&2).copied(),
-        Some(2),
-        "RAW IDE=2 (PV) must export as canonical PV=2"
+        by_id.get(&2).map(|s| s.as_str()),
+        Some(BUS_TYPE_PV),
+        "RAW IDE=2 (PV) must export as canonical PV"
     );
     assert_eq!(
-        by_id.get(&3).copied(),
-        Some(1),
-        "RAW IDE=1 (PQ) must export as canonical PQ=1"
+        by_id.get(&3).map(|s| s.as_str()),
+        Some(BUS_TYPE_PQ),
+        "RAW IDE=1 (PQ) must export as canonical PQ"
     );
     assert_eq!(
-        by_id.get(&4).copied(),
-        Some(1),
-        "RAW IDE=4 (disconnected/isolated) must export as canonical PQ=1, never slack"
+        by_id.get(&4).map(|s| s.as_str()),
+        Some(BUS_TYPE_PQ),
+        "RAW IDE=4 (disconnected/isolated) must export as canonical PQ, never Slack"
     );
 
     let slack_count = (0..bus_type.len())
-        .filter(|&i| bus_type.value(i) == 3)
+        .filter(|&i| dict_utf8_at(bus_type.as_ref(), i) == BUS_TYPE_SLACK)
         .count();
     assert_eq!(
         slack_count, 1,
-        "exactly one canonical slack bus expected when RAW already has IDE=3"
+        "exactly one canonical Slack bus expected when RAW already has IDE=3"
     );
 
     let _ = fs::remove_file(raw_path);
@@ -1236,14 +1267,21 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.12.5");
+    assert_eq!(RPF_VERSION, "v0.13.0");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
             .get("rpf_version")
             .map(|v| v.as_str())
             .unwrap_or(""),
-        "v0.12.5"
+        "v0.13.0"
+    );
+    assert_eq!(
+        metadata
+            .get(METADATA_KEY_IDENTITY_MODEL)
+            .map(|v| v.as_str())
+            .unwrap_or(""),
+        IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1
     );
     assert_eq!(
         metadata

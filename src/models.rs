@@ -97,18 +97,18 @@ pub struct CaseId {
 ///   * `IDE = 3` — Swing (slack)                                → [`Slack`]
 ///   * `IDE = 4` — Disconnected / isolated → [`LoadBus`] (folded into PQ to match raptrix-core RAW import behavior)
 ///
-/// Export code maps these to canonical RPF `buses.type` codes via
-/// `canonical_bus_type_code`: `1 = PQ`, `2 = PV`, `3 = slack`.
+/// Export code maps these to canonical RPF `buses.type` dictionary tokens via
+/// `canonical_bus_type_token`: `PQ` / `PV` / `Slack`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BusType {
-    /// Load bus, isolated, or disconnected — exported as canonical RPF PQ (1).
+    /// Load bus, isolated, or disconnected — exported as canonical RPF `PQ`.
     #[default]
     LoadBus = 1,
     /// Reserved variant: PSS/E does not have a "PQ generator" IDE code, so the
     /// parser never assigns this. Kept for backward-compat with any external
     /// callers that constructed it directly; treated identically to [`LoadBus`]
-    /// during canonicalization (RPF `type = 1`).
+    /// during canonicalization (RPF `type = PQ`).
     GeneratorPQ = 2,
     /// PV bus — voltage-regulating generator bus (PSS/E `IDE = 2`).
     GeneratorPV = 3,

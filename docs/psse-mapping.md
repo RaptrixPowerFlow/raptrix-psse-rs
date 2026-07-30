@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.12.1**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.13.0**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,22 +33,28 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.12.1 contract (current)
+### v0.13.0 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- Optional v0.12.1 root tables **`remedial_action_schemes`** and **`contingency_island_analysis`** are **not** emitted by this PSS/E converter (no RAW mapping today).
-- `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`.
+- **Clean cut**: writers emit **only** v0.13.0; readers accept **only** v0.13.0 / `0.13.0`. Re-export all pre-0.13 `.rpf` files.
+- Optional root tables **`remedial_action_schemes`** and **`contingency_island_analysis`** are **not** emitted by this PSS/E converter (no RAW mapping today).
+- `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`, plus trailing nullable **`mrid`** (null from PSS/E).
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
 - `branches.from_nominal_kv` / `to_nominal_kv`, `transformers_2w.from_nominal_kv` / `to_nominal_kv`, and `transformers_3w.nominal_kv_h/m/l` are required non-null in v0.9.3+. Export uses RAW values when valid and falls back to connected bus nominal-kV.
-- `buses` includes v0.9.4+ aggregates **`qd_load_pu`** and **`qg_sched_pu`** (required non-null); `q_sched` remains the net bus injection.
-- **`generators.controlled_bus_id`** (v0.9.5+, required Int32): PSS/E **IREG** as dense `bus_id` (`0` = local regulation — IREG unset or same as machine bus).
-- `metadata` includes modern-grid fields plus additional nullable v0.9.0 columns (typically **null** for PSS/E-only exports):
+- `buses` includes v0.9.4+ aggregates **`qd_load_pu`** and **`qg_sched_pu`** (required non-null); `q_sched` remains the net bus injection. **`buses.type`** is Dictionary tokens `PQ` / `PV` / `Slack`.
+- **`generators.controlled_bus_id`** (nullable Int32): PSS/E **IREG** as dense `bus_id`; **`null` = local regulation** (IREG unset or same as machine bus). Do not write `0` for local.
+- `metadata` includes modern-grid fields plus nullable provenance / readiness columns:
+  - **`source_format`** = `psse_raw`, **`source_format_version`** = RAW REV string, **`source_identity_scheme`** = `dense_bus_id`
+  - native UTC timestamps (`timestamp_utc`, `snapshot_timestamp_utc`; `sal_enhancement_timestamp` null on this path)
+  - `baseline_source_case_id` and other baseline-provenance columns (null on standard planning exports)
   - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
   - **`default_shunt_control_mode`** (nullable Dictionary): for typical **planning** exports this converter sets **`planning_full`** when `case_mode` is `flat_start_planning`, `warm_start_planning`, or `hour_ahead_advisory`; optional file-level IPC key **`rpf.default_shunt_control_mode`** mirrors the same string when set.
   - **`computational_load_mode`** (v0.10.0+, nullable Boolean): always **null** for standard PSS/E exports from this crate; the optional **`computational_load_profiles`** root table is **not** emitted here.
-- **`dynamics_models.perc1_params`** (v0.10.0+, nullable struct): all **null** until PERC1 parameters are mapped from DYR.
+- Root metadata stamps **`rpf.identity.model=hybrid_solver_flat_v1`**.
+- **`dynamics_models.perc1_params`** (nullable struct): all **null** until PERC1 parameters are mapped from DYR.
+- **`dynamics_models.classical_params`** (v0.13.0+, nullable struct `{H,D,xd_prime,mbase_mva}`): populated when DYR params supply classical first-swing fields.
 - Optional **`scenario_context`** table: not emitted by this converter by default; see interchange contract for when writers may populate it.
 
 ---
@@ -99,13 +105,15 @@ several `buses` columns:
 | PSS/E field | Rust `CaseId` field | RPF `metadata` column | Notes |
 |---|---|---|---|
 | SBASE | `sbase` | `base_mva` | System MVA base; default 100 MVA if absent. |
-| REV | `rev` | `psse_version` | RAW file revision integer (e.g. 33, 35). |
+| REV | `rev` | `source_format_version` | RAW revision as Utf8 (e.g. `"33"`, `"35"`); paired with `source_format=psse_raw`. |
 | BASFRQ | `basfrq` | `frequency_hz` | Nominal system frequency (Hz). |
 | `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. |
+| — | — | `source_format` | Always `psse_raw` for this converter. |
+| — | — | `source_identity_scheme` | Always `dense_bus_id` for this converter. |
 | — | — | `raptrix_version` | Always crate package version written by this converter. |
 | — | — | `is_planning_case` | Always `true` for PSS/E RAW imports. |
 | — | — | `case_mode` | `"flat_start_planning"` when all RAW bus voltages are approximately flat (`VM≈1.0`, `VA≈0`); otherwise `"warm_start_planning"`. |
-| — | — | `timestamp_utc` | UTC wall-clock time of conversion (RFC3339, seconds precision, `Z`). |
+| — | — | `timestamp_utc` | UTC wall-clock time of conversion as Arrow `Timestamp(Microsecond, UTC)`. |
 
 ---
 
@@ -116,7 +124,7 @@ several `buses` columns:
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
 | NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
 | BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (required Float64). |
-| IDE | 4 | `ide` | `type` | Int8 canonical: **1=PQ**, **2=PV**, **3=slack**. Per the PSS®E Program Operation Manual: `IDE=1` (load) and `IDE=4` (disconnected/isolated) map to canonical PQ (`1`), `IDE=2` (voltage-regulating generator) maps to canonical PV (`2`), and `IDE=3` (swing) maps to canonical slack (`3`). |
+| IDE | 4 | `ide` | `type` | Dictionary tokens: **`PQ`**, **`PV`**, **`Slack`**. Per the PSS®E Program Operation Manual: `IDE=1` (load) and `IDE=4` (disconnected/isolated) map to `PQ`, `IDE=2` (voltage-regulating generator) maps to `PV`, and `IDE=3` (swing) maps to `Slack`. |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
 | ZONE | 6 | `zone` | `zone` | Foreign key → `zones.zone_id`. |
 | OWNER | 7 | `owner` | `owner` | Foreign key → `owners.owner_id`. |
@@ -210,7 +218,7 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | STAT | `stat` | `status` | Bool. |
 | MBASE | `mbase` | `mbase_mva` | Machine MVA base in MVA (not normalised). |
 | O1 | `o1` | `owner_id` | Nullable when 0. v35: follows `BASLOD` (not stored). |
-| IREG | `ireg` | `controlled_bus_id` | v0.9.5+ required column: `0` or same as `bus_id` = local regulation; else remote regulated bus (**dense `bus_id`**). |
+| IREG | `ireg` | `controlled_bus_id` | Nullable: `null` when IREG unset/`0` or same as machine `bus_id` (local regulation); else remote regulated bus (**dense `bus_id`**). |
 | VS, IREG, ZR, ZX, RT, XT, GTAP, RMPCT, QG | `vs`, `ireg`, … | `params` | Map keys: `vs`, `ireg` (only when IREG > 0 in RAW), `zr`, `zx`, `rt`, `xt`, `gtap`, `rmpct`, `qg` (MVAr) — same numeric units as PSS/E RAW. |
 | WMOD, WPF | `wmod`, `wpf` | `params` | Parsed after owner block `O1,F1,…,O4,F4` (v33: idx 26–27; v35: idx 28–29). DYR-first IBR classification; WMOD is fallback when DYR has no IBR model. |
 | — | DYR (`DyrGeneratorData`) | `params` | Adds `H`, `xd_prime`, `D` when finite (alongside RAW keys above). |
