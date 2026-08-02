@@ -1,6 +1,14 @@
 /target
 Cargo.lock
 
+# Local secrets (never commit)
+.env
+.env.local
+.env.*.local
+
+# Machine-local Cargo overrides (e.g. Windows target-dir paths) — never commit.
+.cargo/
+
 # Test data may contain confidential or licensed PSS/E case files — never commit them.
 tests/data/external/
 
