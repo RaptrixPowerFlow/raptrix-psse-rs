@@ -303,20 +303,49 @@ pub fn parse_fortran_double(raw: &str) -> f64 {
 /// Quote-aware comma tokeniser.  Strips surrounding single quotes from each
 /// token and trims leading/trailing whitespace.  Does NOT split at commas
 /// that appear inside a quoted string.
+///
+/// PSS/E decks commonly embed apostrophes inside bus names without doubling
+/// them (`'O'Neil Bus 1'`). A naive toggle on every `'` swallows the rest of
+/// the line into one token. Closing a quoted field only when the next
+/// significant character is `,` (or EOS), and treating `''` as an escaped
+/// apostrophe, preserves both well-formed and legacy undoubled names.
 fn tokenize(line: &str) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut token = String::new();
     let mut in_quotes = false;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0usize;
 
-    for ch in line.chars() {
+    while i < chars.len() {
+        let ch = chars[i];
         match ch {
-            '\'' => in_quotes = !in_quotes,
+            '\'' => {
+                if !in_quotes {
+                    in_quotes = true;
+                } else if i + 1 < chars.len() && chars[i + 1] == '\'' {
+                    // PSS/E escaped apostrophe inside a quoted field.
+                    token.push('\'');
+                    i += 1;
+                } else {
+                    let mut j = i + 1;
+                    while j < chars.len() && chars[j].is_whitespace() {
+                        j += 1;
+                    }
+                    if j >= chars.len() || chars[j] == ',' {
+                        in_quotes = false;
+                    } else {
+                        // Embedded apostrophe (e.g. O'Neil) — keep literally.
+                        token.push('\'');
+                    }
+                }
+            }
             ',' if !in_quotes => {
                 tokens.push(token.trim().to_string());
-                token = String::new();
+                token.clear();
             }
             _ => token.push(ch),
         }
+        i += 1;
     }
     // Push the last token (may be empty for trailing comma)
     let t = token.trim().to_string();
@@ -1787,6 +1816,51 @@ mod tests {
 0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
 0 / END OF INDUCTION MACHINE DATA
 "#
+    }
+
+    #[test]
+    fn bus_name_with_embedded_apostrophe_preserves_vm_va() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("apostrophe_bus.raw");
+        // Legacy undoubled quote inside a PSS/E name field.
+        let raw = format!(
+            r#"0, 100.0, 33, 0, 0, 60.0 / APOSTROPHE_BUS
+T1
+T2
+101,'O'Neil Bus 1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
+102,'Normal Bus  ',  22.0000,2,   1,   1,   1,1.01000000,  10.000000, 1.10000, 0.90000, 1.10000, 0.90000
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+{tail}"#,
+            tail = minimal_raw_tail()
+        );
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let net = parse_raw(&path).expect("parse bus with embedded apostrophe");
+        let b = net
+            .buses
+            .iter()
+            .find(|b| b.i == 101)
+            .expect("apostrophe bus retained");
+        assert!(
+            b.name.starts_with("O'Neil"),
+            "name should keep embedded apostrophe, got {:?}",
+            b.name
+        );
+        assert!(
+            (b.vm - 1.02).abs() < 1e-8,
+            "VM must not collapse to default; got {}",
+            b.vm
+        );
+        assert!(
+            (b.va - 12.5).abs() < 1e-6,
+            "VA must not collapse to 0; got {}",
+            b.va
+        );
+        assert!((b.baskv - 69.0).abs() < 1e-9);
     }
 
     #[test]

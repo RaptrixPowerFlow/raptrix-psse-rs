@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Embedded apostrophes in PSS/E quoted fields**: `tokenize` no longer closes a quoted field on every `'`. A quote closes only when the next significant character is `,` or end-of-string; `''` remains an escaped apostrophe. Bus records such as `'O'Neil Bus 1'` now keep published VM/VA/BASKV instead of collapsing to a flat seed. Regenerate affected local goldens after upgrading.
+
 ### Golden corpus — dynamic is canonical
 
 - When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion (DYR attached). `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR companion for explicit A/B.

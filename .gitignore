@@ -33,6 +33,9 @@ tests/golden/*.rpf
 INTERNAL-MARKETING-GUIDE.md
 INTERNAL-PSSE-RPF-ROADMAP.md
 
+# Private issue drafts / cross-repo notes — keep out of the public tree.
+docs/issue_drafts/
+
 # Cursor AI project rules — internal agent guidance; not committed on public repo.
 .cursor/rules/
 
