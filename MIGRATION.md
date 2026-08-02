@@ -18,6 +18,10 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### Unreleased: golden corpus prefers dynamic
+
+When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion. `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR A/B twin. Downstream (raptrix-core) indexes prefer `_dynamic` over plain over `_static`. Regenerate with `cargo test --release --test golden_test`.
+
 ### raptrix-psse-rs **v0.6.0**: RPF **v0.13.0** (`raptrix-cim-arrow` **0.6.0**) — **Breaking clean cut (re-export required)**
 
 `raptrix-psse-rs` **v0.6.0** emits RPF **v0.13.0** only.

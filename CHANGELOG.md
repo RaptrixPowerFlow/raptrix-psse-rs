@@ -18,7 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No additional unreleased items._
+### Golden corpus — dynamic is canonical
+
+- When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion (DYR attached). `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR companion for explicit A/B.
+- `golden_test` asserts `dynamics_models` is non-empty whenever a DYR companion was paired.
+- `verify-external-golden.sh` / `generate_all_rpfs.sh` follow the same policy and pick `*_dynamics.dyr` prefix companions (ACTIVSg).
 
 ---
 

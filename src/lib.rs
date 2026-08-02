@@ -3457,6 +3457,15 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
         Float64Builder::new(),
     );
 
+    // Single extract: GENROU/GENSAL/GENCLS index map lives in parser.rs.
+    // Key includes model so exciters/govs sharing (bus, id) do not inherit
+    // machine classical fields.
+    let machine_classical: HashMap<(u32, String, String), models::DyrGeneratorData> =
+        parser::extract_dyr_generators(records)
+            .into_iter()
+            .map(|m| ((m.bus_id, m.id.to_string(), m.model.to_string()), m))
+            .collect();
+
     for rec in records {
         bus_id.append_value(rec.bus_id as i32);
         gen_id.append_value(rec.id.as_ref());
@@ -3465,6 +3474,24 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
         for (key, value) in &rec.params {
             params.keys().append_value(key.as_ref());
             params.values().append_value(*value);
+        }
+        // Also emit named classical keys so consumers that only read `params`
+        // (and not classical_params) still get H / D / xd_prime.
+        if let Some(mach) =
+            machine_classical.get(&(rec.bus_id, rec.id.to_string(), rec.model.to_string()))
+        {
+            if mach.h.is_finite() && mach.h > 0.0 {
+                params.keys().append_value("H");
+                params.values().append_value(mach.h);
+            }
+            if mach.d.is_finite() {
+                params.keys().append_value("D");
+                params.values().append_value(mach.d);
+            }
+            if mach.xd_prime.is_finite() && mach.xd_prime > 0.0 {
+                params.keys().append_value("xd_prime");
+                params.values().append_value(mach.xd_prime);
+            }
         }
         params
             .append(true)
@@ -3500,9 +3527,22 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
                 .map(|(_, v)| *v)
                 .filter(|v| v.is_finite())
         };
-        let h = param(&["H", "h"]).filter(|v| *v > 0.0);
-        let d = param(&["D", "d"]);
-        let xd = param(&["xd_prime", "Xd_prime", "xdprime", "Xdprime"]).filter(|v| *v > 0.0);
+        let mach =
+            machine_classical.get(&(rec.bus_id, rec.id.to_string(), rec.model.to_string()));
+        let h = mach
+            .map(|m| m.h)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .or_else(|| param(&["H", "h"]).filter(|v| *v > 0.0));
+        let d = mach
+            .map(|m| m.d)
+            .filter(|v| v.is_finite())
+            .or_else(|| param(&["D", "d"]));
+        let xd = mach
+            .map(|m| m.xd_prime)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .or_else(|| {
+                param(&["xd_prime", "Xd_prime", "xdprime", "Xdprime"]).filter(|v| *v > 0.0)
+            });
         let mbase = param(&["mbase", "mbase_mva", "MBASE"]).filter(|v| *v > 0.0);
         classical_b
             .field_builder::<Float64Builder>(0)
@@ -3542,6 +3582,7 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
 mod tests {
     use super::*;
     use crate::models::{Bus, ThreeWindingTransformer, TwoWindingTransformer};
+    use arrow::array::Array;
 
     fn sample_3w() -> ThreeWindingTransformer {
         ThreeWindingTransformer {
@@ -3696,5 +3737,86 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("ambiguous 3-winding overlap"));
         assert!(message.contains("star_bus_id=10000001"));
+    }
+
+    #[test]
+    fn genrou_dyr_fills_classical_params_h_and_xd_prime() {
+        // PSS/E GENROU: p5=H, p6=D, p9=X'd (see parser::try_extract_dyr_machine).
+        let genrou = models::DyrModelData {
+            bus_id: 111180,
+            id: "1".into(),
+            model: "GENROU".into(),
+            params: vec![
+                ("p1".into(), 7.85),
+                ("p2".into(), 0.0667),
+                ("p3".into(), 0.5014),
+                ("p4".into(), 0.0667),
+                ("p5".into(), 5.0),
+                ("p6".into(), 0.0),
+                ("p7".into(), 2.0),
+                ("p8".into(), 1.8853),
+                ("p9".into(), 0.4305),
+                ("p10".into(), 0.7082),
+                ("p11".into(), 0.3736),
+                ("p12".into(), 0.2934),
+                ("p13".into(), 0.1505),
+                ("p14".into(), 0.4464),
+            ],
+        };
+        // Co-located exciter must not inherit classical_params.
+        let exciter = models::DyrModelData {
+            bus_id: 111180,
+            id: "1".into(),
+            model: "ESST4B".into(),
+            params: vec![("p1".into(), 0.0), ("p2".into(), 3.9769)],
+        };
+
+        let batch = build_dynamics_models_batch(&[genrou, exciter])
+            .expect("dynamics_models batch should build");
+        assert_eq!(batch.num_rows(), 2);
+
+        let classical = batch
+            .column_by_name("classical_params")
+            .expect("classical_params column")
+            .as_any()
+            .downcast_ref::<arrow::array::StructArray>()
+            .expect("classical_params must be Struct");
+        assert!(
+            !classical.is_null(0),
+            "GENROU row must have non-null classical_params"
+        );
+        assert!(
+            classical.is_null(1),
+            "exciter row must not inherit GENROU classical_params"
+        );
+
+        let h = classical
+            .column_by_name("H")
+            .expect("H")
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("H Float64");
+        let xd = classical
+            .column_by_name("xd_prime")
+            .expect("xd_prime")
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("xd_prime Float64");
+        assert!(h.value(0) > 0.0, "GENROU H must be > 0, got {}", h.value(0));
+        assert!(
+            (h.value(0) - 5.0).abs() < 1e-9,
+            "GENROU H should be p5=5.0, got {}",
+            h.value(0)
+        );
+        assert!(
+            xd.value(0) > 0.0,
+            "GENROU xd_prime must be > 0, got {}",
+            xd.value(0)
+        );
+        assert!(
+            (xd.value(0) - 0.4305).abs() < 1e-9,
+            "GENROU xd_prime should be p9=0.4305, got {}",
+            xd.value(0)
+        );
     }
 }

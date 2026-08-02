@@ -15,7 +15,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use raptrix_cim_arrow::{RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_GENERATORS, TABLE_LOADS};
+use raptrix_cim_arrow::{
+    RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS,
+};
 
 const EXTERNAL_DIR: &str = "tests/data/external";
 const GOLDEN_DIR: &str = "tests/golden";
@@ -125,6 +127,10 @@ fn run_case(
     let case_name =
         stem_string(raw).ok_or_else(|| format!("invalid RAW filename: {}", raw.display()))?;
     let dyn_path = find_dynamic_companion(raw, dynamic_files);
+
+    // Canonical output is always tests/golden/<raw-stem>.rpf.
+    // When a DYR/DYN companion exists it is attached (dynamic is the default).
+    // Also emit <stem>_dynamic.rpf and a no-DYR <stem>_static.rpf for explicit A/B.
     let out_path = golden_dir.join(format!("{case_name}.rpf"));
 
     let raw_s = raw.to_string_lossy().to_string();
@@ -135,6 +141,30 @@ fn run_case(
     raptrix_psse_rs::write_psse_to_rpf(&raw_s, dyn_s.as_deref(), &out_s)
         .map_err(|e| format!("conversion failed: {e:#}"))?;
     let elapsed_ms = t0.elapsed().as_millis();
+
+    if dyn_s.is_some() {
+        let dyn_alias = golden_dir.join(format!("{case_name}_dynamic.rpf"));
+        fs::copy(&out_s, &dyn_alias).map_err(|e| {
+            format!(
+                "failed to write dynamic alias {}: {e}",
+                dyn_alias.display()
+            )
+        })?;
+        let static_out = golden_dir.join(format!("{case_name}_static.rpf"));
+        let static_s = static_out.to_string_lossy().to_string();
+        raptrix_psse_rs::write_psse_to_rpf(&raw_s, None, &static_s).map_err(|e| {
+            format!("static companion conversion failed for {case_name}: {e:#}")
+        })?;
+    } else {
+        // No DYR — keep a `_static` alias for scripts that still look for that suffix.
+        let static_alias = golden_dir.join(format!("{case_name}_static.rpf"));
+        fs::copy(&out_s, &static_alias).map_err(|e| {
+            format!(
+                "failed to write static alias {}: {e}",
+                static_alias.display()
+            )
+        })?;
+    }
 
     let summary = raptrix_cim_arrow::summarize_rpf(Path::new(&out_s))
         .map_err(|e| format!("summarize_rpf failed: {e:#}"))?;
@@ -158,10 +188,16 @@ fn run_case(
     let branches = rows(&summary, TABLE_BRANCHES);
     let generators = rows(&summary, TABLE_GENERATORS);
     let loads = rows(&summary, TABLE_LOADS);
+    let dynamics = rows(&summary, TABLE_DYNAMICS_MODELS);
 
     if buses == 0 || branches == 0 || generators == 0 || loads == 0 {
         return Err(format!(
             "unexpected empty core table(s): buses={buses} branches={branches} generators={generators} loads={loads}"
+        ));
+    }
+    if dyn_s.is_some() && dynamics == 0 {
+        return Err(format!(
+            "DYR companion was attached but dynamics_models has 0 rows for {case_name}"
         ));
     }
 
@@ -213,7 +249,7 @@ fn golden_build_all_external_raw_cases() {
         match run_case(raw, &dynamic_files, Path::new(GOLDEN_DIR)) {
             Ok(t) => {
                 eprintln!(
-                    "[ok] {:45} {:8} ms  dyn={}  out={}",
+                    "[ok] {:45} {:8} ms  dyn={}  out={} (+_dynamic/_static aliases)",
                     raw_name,
                     t.elapsed_ms,
                     t.dynamics_file
@@ -279,5 +315,39 @@ fn golden_build_all_external_raw_cases() {
             "unexpected output filename policy"
         );
         assert!(Path::new(&t.raw_file).exists(), "source RAW must exist");
+    }
+
+    // Legacy short-stem aliases still referenced by older core/scripts paths.
+    let golden = Path::new(GOLDEN_DIR);
+    let aliases = [
+        (
+            "Texas2k_series25_case1_summerpeak.rpf",
+            "Texas2k_series25.rpf",
+        ),
+        (
+            "Texas2k_series25_case1_summerpeak_dynamic.rpf",
+            "Texas2k_series25_dynamic.rpf",
+        ),
+        (
+            "Texas2k_series25_case1_summerpeak_static.rpf",
+            "Texas2k_series25_static.rpf",
+        ),
+        (
+            "Texas2k_series24_case6_2024lowloadwithgfm_dynamic.rpf",
+            "Texas2k_series24_gfm_dynamic.rpf",
+        ),
+        ("Texas7k_2030_20220923.rpf", "Texas7k_2030.rpf"),
+        ("Texas7k_2030_20220923_static.rpf", "Texas7k_2030_static.rpf"),
+        ("Midwest24k_20220923.rpf", "Midwest24k.rpf"),
+        ("Midwest24k_20220923_static.rpf", "Midwest24k_static.rpf"),
+    ];
+    for (src_name, dst_name) in aliases {
+        let src = golden.join(src_name);
+        let dst = golden.join(dst_name);
+        if src.exists() {
+            fs::copy(&src, &dst).unwrap_or_else(|e| {
+                panic!("failed to write alias {} -> {}: {e}", src_name, dst_name)
+            });
+        }
     }
 }

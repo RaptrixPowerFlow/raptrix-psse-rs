@@ -175,7 +175,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.13.0** `.rpf` under `tests/golden/` (static where no dynamics deck exists; static **and** dynamic where `.dyr` / `.dyn` is present). Paths are fixed in the test source so CI can skip missing inputs without failing.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.13.0** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
 
 ### Windows, OneDrive, and WSL
 
