@@ -144,17 +144,12 @@ fn run_case(
 
     if dyn_s.is_some() {
         let dyn_alias = golden_dir.join(format!("{case_name}_dynamic.rpf"));
-        fs::copy(&out_s, &dyn_alias).map_err(|e| {
-            format!(
-                "failed to write dynamic alias {}: {e}",
-                dyn_alias.display()
-            )
-        })?;
+        fs::copy(&out_s, &dyn_alias)
+            .map_err(|e| format!("failed to write dynamic alias {}: {e}", dyn_alias.display()))?;
         let static_out = golden_dir.join(format!("{case_name}_static.rpf"));
         let static_s = static_out.to_string_lossy().to_string();
-        raptrix_psse_rs::write_psse_to_rpf(&raw_s, None, &static_s).map_err(|e| {
-            format!("static companion conversion failed for {case_name}: {e:#}")
-        })?;
+        raptrix_psse_rs::write_psse_to_rpf(&raw_s, None, &static_s)
+            .map_err(|e| format!("static companion conversion failed for {case_name}: {e:#}"))?;
     } else {
         // No DYR — keep a `_static` alias for scripts that still look for that suffix.
         let static_alias = golden_dir.join(format!("{case_name}_static.rpf"));
@@ -217,7 +212,7 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
-    assert_eq!(RPF_VERSION, "v0.13.0");
+    assert_eq!(RPF_VERSION, "v0.14.0");
 
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {
@@ -337,7 +332,10 @@ fn golden_build_all_external_raw_cases() {
             "Texas2k_series24_gfm_dynamic.rpf",
         ),
         ("Texas7k_2030_20220923.rpf", "Texas7k_2030.rpf"),
-        ("Texas7k_2030_20220923_static.rpf", "Texas7k_2030_static.rpf"),
+        (
+            "Texas7k_2030_20220923_static.rpf",
+            "Texas7k_2030_static.rpf",
+        ),
         ("Midwest24k_20220923.rpf", "Midwest24k.rpf"),
         ("Midwest24k_20220923_static.rpf", "Midwest24k_static.rpf"),
     ];

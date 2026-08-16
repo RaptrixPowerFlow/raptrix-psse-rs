@@ -37,7 +37,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical required root tables for **RPF v0.13.0** (zero-row where applicable) so downstream pipelines stay deterministic.
+- Always emit the **18** canonical required root tables for **RPF v0.14.0** (zero-row where applicable) so downstream solver / RPF consumer pipelines stay deterministic.
 
 ## CLI Reference
 
@@ -74,9 +74,9 @@ cargo run --bin branch_deck_scan -- --raw <FILE.raw> [--rpf <FILE.rpf>] [--list-
 
 Diagnostics for the PSS/E BRANCH section: raw `ST` token histogram, parsed vs rejected lines, in-service/out-of-service counts, optional duplicate `(from_bus,to_bus,ckt)` keys, and (with `--rpf`) an in-service multiset diff between the parsed RAW network and the RPF `branches` table. Use this when reconciling branch row counts against tools that omit `ST=0` lines.
 
-## RPF v0.13.0 coverage
+## RPF v0.14.0 coverage
 
-The converter emits the **18** required root tables from the locked **v0.13.0** contract (see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked **v0.14.0** contract (dual-read v0.13.1 / v0.13.0; see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -128,11 +128,11 @@ The optional **`scenario_context`** root table is **not** written by default. Th
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.6.0)
+## Recent release (v0.7.0)
 
-- **RPF v0.13.0** (`raptrix.version` / `raptrix-cim-arrow` **0.6.0**): clean-cut contract — **re-export required** for all pre-0.13 `.rpf` files (no dual-read of v0.12.x).
-- Provenance, dictionary bus types, nullable local `controlled_bus_id`, native UTC timestamps, optional load/shunt `mrid`, and `classical_params` on dynamics when available.
-- **`raptrix-cim-arrow`** is pinned to git tag **`v0.6.0`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
+- **RPF v0.14.0** (`raptrix.version` / `raptrix-cim-arrow` **0.7.0**): additive MINOR; dual-read **v0.13.1** and **v0.13.0**. Pre-0.13 still requires re-export.
+- No RAW semantic change. `contingencies` remains a zero-row stub (`tpl_category` / `reserved` null). `contingency_sequences` is omitted.
+- **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.0`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -175,7 +175,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.13.0** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.14.0** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
 
 ### Windows, OneDrive, and WSL
 
@@ -213,7 +213,7 @@ End-to-end timings are **parse RAW (+ optional DYR) + build Arrow tables + write
 | IEEE 118-bus | static | ~28 ms |
 | Texas2k (2.7k buses) | static | ~45 ms |
 | Texas2k (2.7k buses) | + DYR | ~190 ms |
-| NYISO ~1.5k-bus snapshots | static | ~70–85 ms |
+| ~1.5k-bus snapshots | static | ~70–85 ms |
 | Texas7k (~6.7k buses) | static | ~170 ms |
 | Texas7k 2030 | static | ~190 ms |
 | Texas7k | + DYR | ~210 ms |
@@ -221,7 +221,7 @@ End-to-end timings are **parse RAW (+ optional DYR) + build Arrow tables + write
 | ACTIVSg25k | static | ~410 ms |
 | Midwest24k | static | ~490 ms |
 | ACTIVSg70k | static | ~990 ms |
-| Eastern Interconnect 515GW | static | ~1.1 s |
+| 515GW interconnect research case | static | ~1.1 s |
 
 These are **local engineering reference numbers**, not vendor benchmarks. Use them to spot regressions between commits; re-run `cargo test --release --test golden_test -- --nocapture` or `./scripts/verify-external-golden.sh` on your host to refresh.
 
@@ -238,7 +238,7 @@ Golden tests (with local external inputs) help catch regressions; they are not a
 
 ## Versioning & Schema Contract
 
-This crate is pinned to **`raptrix-cim-arrow` 0.6.0** (git tag `v0.6.0`). Every emitted `.rpf` is validated against the locked **v0.13.0** contract before returning. Readers accept **only** v0.13.0 — re-export all older `.rpf` files through this converter.
+This crate is pinned to **`raptrix-cim-arrow` 0.7.0** (RPF **v0.14.0**). Every emitted `.rpf` is validated against the locked contract before returning. Readers accept **v0.14.0, v0.13.1, and v0.13.0** — re-export only pre-0.13 `.rpf` files through this converter.
 
 See [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md) for the full RPF specification.
 
