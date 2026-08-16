@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.7.0] - 2026-08-16
+
+### RPF v0.14.0 (raptrix-cim-arrow 0.7.0) — additive MINOR
+
+- Bump to `raptrix-cim-arrow` **0.7.0** / RPF **v0.14.0**. No RAW/EPC semantic change.
+- `contingencies` uses the shared 10-column schema; `tpl_category` and `reserved` stay null (zero-row stub).
+- `contingency_sequences` is omitted (`include_contingency_sequences = false`).
+- Readers accept v0.14.0, v0.13.1, and v0.13.0. Pre-0.13 still requires re-export.
+- Dependency: git tag `v0.7.0`.
+
 ### Fixed
 
 - **Embedded apostrophes in PSS/E quoted fields**: `tokenize` no longer closes a quoted field on every `'`. A quote closes only when the next significant character is `,` or end-of-string; `''` remains an escaped apostrophe. Bus records such as `'O'Neil Bus 1'` now keep published VM/VA/BASKV instead of collapsing to a flat seed. Regenerate affected local goldens after upgrading.

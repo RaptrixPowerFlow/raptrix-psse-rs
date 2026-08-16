@@ -24,8 +24,8 @@ use raptrix_cim_arrow::{
     BUS_TYPE_PQ, BUS_TYPE_PV, BUS_TYPE_SLACK, IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1,
     METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_MRID_SUPPORT, RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES,
-    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, read_rpf_tables,
-    rpf_file_metadata,
+    TABLE_CONTINGENCIES, TABLE_CONTINGENCY_SEQUENCES, TABLE_GENERATORS, TABLE_LOADS,
+    TABLE_METADATA, TABLE_OWNERS, read_rpf_tables, rpf_file_metadata,
 };
 
 fn dict_utf8_at(col: &dyn Array, i: usize) -> &str {
@@ -921,7 +921,7 @@ DISCONNECTED SLACK
 /// seed `v_mag_pu`. For PV/Slack buses, our writer sets `v_mag_set = gen.vs`
 /// (the scheduled target), but `bus.vm` (the operating value) differs by the
 /// machine's reactive trim. Letting the importer overwrite the target with
-/// the operating value measurably regresses convergence on Texas7k / NYISO
+/// the operating value measurably regresses convergence on Texas7k / 1.5k-bus snapshots
 /// planning files. The seed is emitted again only by callers that genuinely
 /// carry a separately-computed warm-start payload.
 #[test]
@@ -1267,14 +1267,14 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.13.0");
+    assert_eq!(RPF_VERSION, "v0.14.0");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
             .get("rpf_version")
             .map(|v| v.as_str())
             .unwrap_or(""),
-        "v0.13.0"
+        RPF_VERSION
     );
     assert_eq!(
         metadata
@@ -1326,6 +1326,21 @@ BUS TYPE
     );
     assert_eq!(branch_mrid.value(0), "BR_1_2_1");
     assert_eq!(gen_mrid.value(0), "GEN_1_1");
+
+    let (_, contingencies) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_CONTINGENCIES)
+        .expect("contingencies table");
+    assert_eq!(contingencies.schema().fields().len(), 10);
+    assert_eq!(contingencies.schema().field(8).name(), "tpl_category");
+    assert_eq!(contingencies.schema().field(9).name(), "reserved");
+    assert_eq!(contingencies.num_rows(), 0);
+    assert!(
+        tables
+            .iter()
+            .all(|(name, _)| name != TABLE_CONTINGENCY_SEQUENCES),
+        "PSS/E path must omit contingency_sequences"
+    );
 
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);

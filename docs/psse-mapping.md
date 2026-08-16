@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.13.0**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.0**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,11 +33,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.13.0 contract (current)
+### v0.14.0 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Clean cut**: writers emit **only** v0.13.0; readers accept **only** v0.13.0 / `0.13.0`. Re-export all pre-0.13 `.rpf` files.
-- Optional root tables **`remedial_action_schemes`** and **`contingency_island_analysis`** are **not** emitted by this PSS/E converter (no RAW mapping today).
+- **Emit v0.14.0**; readers accept **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- Optional root tables **`remedial_action_schemes`**, **`contingency_island_analysis`**, and **`contingency_sequences`** are **not** emitted by this PSS/E converter (no RAW mapping today). `contingencies` is a zero-row stub on the shared 10-column schema (`tpl_category` / `reserved` null).
 - `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`, plus trailing nullable **`mrid`** (null from PSS/E).
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
 - `branches` includes nullable linkage fields `parent_line_id` and `section_index`.
@@ -51,7 +51,7 @@ Arrow schema.
   - `modern_grid_profile`, `ibr_penetration_pct`, `has_ibr`, `has_smart_valve`, `has_multi_terminal_dc`, `study_purpose`, `scenario_tags`
   - `hour_ahead_uncertainty_band`, `commitment_source`, `solver_q_limit_infeasible_count`, `pv_to_pq_switch_count`, `real_time_discovery`
   - **`default_shunt_control_mode`** (nullable Dictionary): for typical **planning** exports this converter sets **`planning_full`** when `case_mode` is `flat_start_planning`, `warm_start_planning`, or `hour_ahead_advisory`; optional file-level IPC key **`rpf.default_shunt_control_mode`** mirrors the same string when set.
-  - **`computational_load_mode`** (v0.10.0+, nullable Boolean): always **null** for standard PSS/E exports from this crate; the optional **`computational_load_profiles`** root table is **not** emitted here.
+  - **`computational_load_mode`** (v0.10.0+, nullable Boolean): always **null** for standard PSS/E exports from this crate; the optional **`computational_load_profiles`** root table is **not** emitted here (optional CLP columns therefore absent / would be null if authored elsewhere).
 - Root metadata stamps **`rpf.identity.model=hybrid_solver_flat_v1`**.
 - **`dynamics_models.perc1_params`** (nullable struct): all **null** until PERC1 parameters are mapped from DYR.
 - **`dynamics_models.classical_params`** (v0.13.0+, nullable struct `{H,D,xd_prime,mbase_mva}`): populated when DYR params supply classical first-swing fields.
@@ -386,7 +386,7 @@ input deck.
 | DYR record field | Rust field | RPF column | Notes |
 |---|---|---|---|
 | Bus number | `DyrModelData.bus_id` | `bus_id` | Model attachment bus. |
-| Machine / device ID | `DyrModelData.id` | `gen_id` | Preserved as the PSS/E ID token; for machine-linked models this matches `generators.id`. |
+| Machine / device ID | `DyrModelData.id` | `gen_id` | Preserved as the PSS/E ID token; machine-linked models join via `generators.mrid` / `generators.generator_id` (there is no `generators.id`). |
 | Model name | `DyrModelData.model` | `model_type` | Examples: `"GENROU"`, `"ESST4B"`, `"GGOV1"`, `"PSS2A"`, `"REGCA1"`. |
 | Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. |
 | — | — | `perc1_params` | **v0.10.0+**: nullable struct column required by the interchange contract. This exporter writes **null** on every row until PERC1 parameters are mapped from DYR. |

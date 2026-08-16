@@ -20,7 +20,25 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ### Unreleased: golden corpus prefers dynamic
 
-When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion. `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR A/B twin. Downstream (raptrix-core) indexes prefer `_dynamic` over plain over `_static`. Regenerate with `cargo test --release --test golden_test`.
+When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion. `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR A/B twin. Downstream solver / RPF consumer indexes prefer `_dynamic` over plain over `_static`. Regenerate with `cargo test --release --test golden_test`.
+
+### raptrix-psse-rs **v0.7.0**: RPF **v0.14.0** (`raptrix-cim-arrow` **0.7.0**) — **Additive MINOR (dual-read v0.13.1 / v0.13.0)**
+
+`raptrix-psse-rs` **v0.7.0** emits RPF **v0.14.0**.
+
+#### What changed
+
+- Writer stamps `v0.14.0`; `SUPPORTED_RPF_VERSIONS` accepts **v0.14.0**, **v0.13.1**, and **v0.13.0**.
+- **No re-export required** for existing v0.13.x `.rpf` files.
+- No RAW semantic change. `contingencies` is still a zero-row stub on the shared 10-column schema; `tpl_category` and `reserved` stay null. `contingency_sequences` is omitted.
+- PSS/E path still omits `computational_load_profiles` and writes `computational_load_mode = null` (optional CLP columns stay null/absent).
+- **Dependency**: `raptrix-cim-arrow` **0.7.0** / git tag **`v0.7.0`**.
+
+#### Consumer checklist
+
+1. Accept `raptrix.version` ∈ {`v0.14.0`, `v0.13.1`, `v0.13.0`} (and bare `0.14.0` / `0.13.x` aliases).
+2. Treat `contingencies.tpl_category` / `reserved` as nullable when present; ignore when absent.
+3. Do not require a `contingency_sequences` table on PSS/E exports.
 
 ### raptrix-psse-rs **v0.6.0**: RPF **v0.13.0** (`raptrix-cim-arrow` **0.6.0**) — **Breaking clean cut (re-export required)**
 
@@ -32,7 +50,7 @@ When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dyna
 - `buses.type` dictionary tokens `PQ`/`PV`/`Slack`; `controlled_bus_id` **null** = local regulation (do not write `0`).
 - Native UTC timestamps; optional load/shunt `mrid`; dynamics `classical_params` when DYR supplies H/D/xd'/mbase.
 - Root metadata stamps `rpf.identity.model=hybrid_solver_flat_v1`.
-- **`baseline_source_case_id`** replaces any prior `original_sentinel_case_id` wire name (null on standard PSS/E planning exports).
+- **`baseline_source_case_id`** replaces the prior `original_sentinel_case_id` wire name (null on standard PSS/E planning exports).
 - **Reader compatibility**: only v0.13.0 / `0.13.0`. **Re-export all goldens and case libraries.** No upgrade CLI for old `.rpf` files.
 - **Dependency**: `raptrix-cim-arrow` **0.6.0** / git tag **`v0.6.0`**.
 
