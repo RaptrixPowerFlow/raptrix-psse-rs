@@ -16,4 +16,4 @@ Notes:
 
 - Hooks set via `core.hooksPath` are local to your clone and are not pushed to remotes; this protects developer privacy and allows each maintainer to opt in.
 - To bypass the hook for a single commit (advanced): `git commit --no-verify`.
-- If you want repository-enforced checks for all contributors, consider adding a CI check that rejects PRs containing secrets or proprietary formats.
+- If you want repository-enforced checks for all contributors, consider adding a CI check that rejects PRs containing secrets or licensed input formats.
