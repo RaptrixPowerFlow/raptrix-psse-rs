@@ -20,7 +20,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ### Unreleased: RPF **v0.14.2** tap / PST control (`raptrix-cim-arrow` **0.7.2**)
 
-Writer stamps `v0.14.2`. Maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto the eight trailing transformer tap-control columns. 3W is winding H / COD1 only (M/L LTC is out of scope). **This writer's default** sets `tap_limit_unit=degrees` when `|COD|=3`, else `ratio` — a PSS/E heuristic, not a physics law. Readers trust `tap_limit_unit` and must not re-derive units from COD. `operation_time_min` stays null. Path-depend on sibling `raptrix-cim-rs` until git tag `v0.7.2` is published.
+Writer stamps `v0.14.2`. Maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto the eight trailing transformer tap-control columns. 3W is winding H / COD1 only (M/L LTC is out of scope). **This writer's default** sets `tap_limit_unit=degrees` when `|COD|=3`, else `ratio` — a PSS/E heuristic, not a physics law. Readers trust `tap_limit_unit` and must not re-derive units from COD. `operation_time_min` stays null. Pin `raptrix-cim-arrow` to git tag **`v0.7.2`**.
 
 ### Unreleased: golden corpus prefers dynamic
 

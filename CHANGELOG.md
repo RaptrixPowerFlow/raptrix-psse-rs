@@ -25,8 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tap_limit_unit` / `n_positions` / `tap_step`. COD=0 or an incomplete grid
   writes all eight columns null. **Writer default:** `|COD|=3` stamps
   `tap_limit_unit=degrees`, else `ratio` (heuristic, not physics; readers
-  trust the unit column). `operation_time_min` stays null. Path-depends on
-  sibling `raptrix-cim-rs` (crate 0.7.2).
+  trust the unit column). `operation_time_min` stays null. Pins
+  `raptrix-cim-arrow` to git tag `v0.7.2`.
 
 ---
 

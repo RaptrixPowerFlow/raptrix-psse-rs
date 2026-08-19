@@ -137,7 +137,7 @@ For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transfo
 - **RPF v0.14.2** (`raptrix.version` / `raptrix-cim-arrow` **0.7.2**): transformer tap/PST control columns; dual-read **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 still requires re-export.
 - Facility-membership flags on circuits and transformers are **null**. Do not invent BES from kV.
 - No RAW semantic change. `contingencies` remains a zero-row stub (`tpl_category` / `reserved` null). `contingency_sequences` is omitted.
-- **`raptrix-cim-arrow`** currently path-depends on sibling `../raptrix-cim-rs`. Restore git tag **`v0.7.2`** after that crate is published.
+- **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.2`**.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -243,7 +243,7 @@ Golden tests (with local external inputs) help catch regressions; they are not a
 
 ## Versioning & Schema Contract
 
-This crate path-depends on sibling **`raptrix-cim-arrow` 0.7.2** (RPF **v0.14.2**). Every emitted `.rpf` is validated against the locked contract before returning. Facility-membership flags and `operation_time_min` are emitted null. Readers accept **v0.14.2, v0.14.1, v0.14.0, v0.13.1, and v0.13.0** — re-export only pre-0.13 `.rpf` files through this converter.
+This crate pins **`raptrix-cim-arrow` 0.7.2** (RPF **v0.14.2**, git tag **`v0.7.2`**). Every emitted `.rpf` is validated against the locked contract before returning. Facility-membership flags and `operation_time_min` are emitted null. Readers accept **v0.14.2, v0.14.1, v0.14.0, v0.13.1, and v0.13.0** — re-export only pre-0.13 `.rpf` files through this converter.
 
 See [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md) for the full RPF specification.
 
