@@ -364,6 +364,16 @@ pub struct TwoWindingTransformer {
     pub windv2: f64,
     /// Nominal voltage of winding 2 in kV (NOMV2).
     pub nomv2: f64,
+    /// Transformer control mode (COD1). 0 = fixed / missing.
+    pub cod1: i32,
+    /// Controlled bus (CONT1). 0 = local / missing.
+    pub cont1: i32,
+    /// Max tap ratio or phase angle (RMA1).
+    pub rma1: f64,
+    /// Min tap ratio or phase angle (RMI1).
+    pub rmi1: f64,
+    /// Number of tap positions (NTP1).
+    pub ntp1: i32,
 }
 
 /// PSS/E three-winding transformer data record (K != 0 on line 1).
@@ -416,6 +426,16 @@ pub struct ThreeWindingTransformer {
     pub nominal_kv_m: f64,
     /// Nominal voltage of winding L in kV (NOMV3).
     pub nominal_kv_l: f64,
+    /// Winding-H control mode (COD1).
+    pub cod1: i32,
+    /// Winding-H controlled bus (CONT1).
+    pub cont1: i32,
+    /// Winding-H max tap / angle (RMA1).
+    pub rma1: f64,
+    /// Winding-H min tap / angle (RMI1).
+    pub rmi1: f64,
+    /// Winding-H tap positions (NTP1).
+    pub ntp1: i32,
 }
 
 // ---------------------------------------------------------------------------

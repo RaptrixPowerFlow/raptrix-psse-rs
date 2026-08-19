@@ -11,8 +11,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
-use raptrix_cim_arrow::{TABLE_BUSES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W};
+use arrow::array::{Array, BooleanArray, DictionaryArray, Float64Array, Int32Array, StringArray};
+use arrow::datatypes::Int32Type;
+use raptrix_cim_arrow::{
+    TABLE_BUSES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TAP_CONTROL_COLUMNS,
+};
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
 
@@ -322,6 +325,134 @@ fn mixed_input_normalizes_to_single_mode_default_native_3w() {
     assert_no_dual_materialization(&tables);
     assert_no_synthetic_star_buses_in_buses_table(&tables);
 
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+/// Winding-1 record 3: WINDV1,NOMV1,ANG1,RATA1,RATB1,RATC1,COD1,CONT1,RMA1,RMI1,VMA1,VMI1,NTP1
+fn write_two_winding_raw(path: &std::path::Path, winding3: &str) {
+    let raw = format!(
+        r#"0, 100.0, 33, 0, 0, 60.0 / TAP_CONTROL
+TAP CONTROL
+TAP CONTROL
+40,'BUS40',230.0,1,1,1,1,0.0,0.0,1.00,0.0,1.10,0.90,1.10,0.90
+50,'BUS50',230.0,1,1,1,1,0.0,0.0,1.00,0.0,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+40,50,0,'R1',1,1,1,0.0,0.0,1,'',1
+0.01,0.10,100.0
+{winding3}
+1.0,230.0
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+"#
+    );
+    fs::write(path, raw).expect("write tap-control RAW");
+}
+
+fn dict_utf8_at(col: &dyn Array, i: usize) -> &str {
+    let dict = col
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .expect("tap_limit_unit must be Dictionary<Int32, Utf8>");
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("dictionary values must be Utf8");
+    values.value(dict.key(i).expect("dictionary key"))
+}
+
+#[test]
+fn tap_control_cod_zero_writes_all_eight_null() {
+    let raw_path = unique_temp_path("tap_cod0", "raw");
+    let out_path = unique_temp_path("tap_cod0", "rpf");
+    write_two_winding_raw(
+        &raw_path,
+        "1.0,230.0,0.0,100.0,110.0,120.0,0,0,1.1,0.9,1.1,0.9,33",
+    );
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("COD=0 conversion");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("read");
+    let xfmr = table_by_name(&tables, TABLE_TRANSFORMERS_2W);
+    assert_eq!(xfmr.num_rows(), 1);
+    for name in TAP_CONTROL_COLUMNS {
+        let col = xfmr
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("missing {name}"));
+        assert_eq!(col.null_count(), 1, "{name} must be null when COD=0");
+    }
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn tap_control_cod3_stamps_degrees_as_writer_default() {
+    let raw_path = unique_temp_path("tap_cod3", "raw");
+    let out_path = unique_temp_path("tap_cod3", "rpf");
+    write_two_winding_raw(
+        &raw_path,
+        "1.0,230.0,0.0,100.0,110.0,120.0,3,0,30.0,-30.0,0.0,0.0,61",
+    );
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("COD=3 conversion");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("read");
+    let xfmr = table_by_name(&tables, TABLE_TRANSFORMERS_2W);
+    let mode = xfmr
+        .column_by_name("tap_control_mode")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    assert_eq!(mode.value(0), 3);
+    let unit = xfmr.column_by_name("tap_limit_unit").unwrap();
+    assert_eq!(dict_utf8_at(unit.as_ref(), 0), "degrees");
+    let step = xfmr
+        .column_by_name("tap_step")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!((step.value(0) - 1.0).abs() < 1e-12);
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn tap_control_voltage_cod_stamps_ratio() {
+    let raw_path = unique_temp_path("tap_cod1", "raw");
+    let out_path = unique_temp_path("tap_cod1", "rpf");
+    write_two_winding_raw(
+        &raw_path,
+        "1.0,230.0,0.0,100.0,110.0,120.0,1,40,1.1,0.9,1.1,0.9,33",
+    );
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("COD=1 conversion");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("read");
+    let xfmr = table_by_name(&tables, TABLE_TRANSFORMERS_2W);
+    let unit = xfmr.column_by_name("tap_limit_unit").unwrap();
+    assert_eq!(dict_utf8_at(unit.as_ref(), 0), "ratio");
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
 }

@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.1 converter.
+//! Raptrix PowerFlow Interchange v0.14.2 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -71,8 +71,8 @@ use raptrix_cim_arrow::{
     TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
     TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS,
     TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W,
-    TABLE_TRANSFORMERS_3W, TABLE_ZONES, classical_params_struct_fields, table_schema,
-    write_root_rpf_with_metadata,
+    TABLE_TRANSFORMERS_3W, TABLE_ZONES, classical_params_struct_fields, normalize_tap_control,
+    table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -777,6 +777,75 @@ fn null_bool_column(n: usize) -> Arc<dyn arrow::array::Array> {
         b.append_null();
     }
     Arc::new(b.finish())
+}
+
+/// Emit v0.14.2 tap-control columns via the shared cim-arrow normalizer.
+///
+/// COD=0 / incomplete grid → all eight columns null (never `tap_control_mode=0`
+/// alone). **This writer's default** stamps `tap_limit_unit = degrees` when
+/// `|COD| == 3`, else `ratio`. That is a PSS/E mapping heuristic, not a
+/// physics law — other decks can use degrees on other CODs. Readers must
+/// trust the on-wire `tap_limit_unit` column and must not re-derive it from
+/// COD. 3W uses winding-H / COD1 only; M/L tap control is out of scope.
+fn append_tap_control_columns(
+    cod: i32,
+    cont: i32,
+    rmi: f64,
+    rma: f64,
+    ntp: i32,
+    tap_min: &mut Float64Builder,
+    tap_max: &mut Float64Builder,
+    tap_limit_unit: &mut StringDictionaryBuilder<Int32Type>,
+    n_positions: &mut Int32Builder,
+    tap_step: &mut Float64Builder,
+    tap_control_mode: &mut Int32Builder,
+    regulated_bus_id: &mut Int32Builder,
+    operation_time_min: &mut Float64Builder,
+) {
+    let mode = (cod != 0).then_some(cod);
+    let unit = mode.map(tap_limit_unit_from_cod);
+    let block = normalize_tap_control(
+        mode,
+        rmi.is_finite().then_some(rmi),
+        rma.is_finite().then_some(rma),
+        (ntp > 0).then_some(ntp),
+        None,
+        unit,
+        (cont != 0).then_some(cont),
+        None,
+    );
+    match block.tap_min {
+        Some(v) => tap_min.append_value(v),
+        None => tap_min.append_null(),
+    }
+    match block.tap_max {
+        Some(v) => tap_max.append_value(v),
+        None => tap_max.append_null(),
+    }
+    match block.tap_limit_unit {
+        Some(u) => tap_limit_unit.append_value(u.as_str()),
+        None => tap_limit_unit.append_null(),
+    }
+    match block.n_positions {
+        Some(v) => n_positions.append_value(v),
+        None => n_positions.append_null(),
+    }
+    match block.tap_step {
+        Some(v) => tap_step.append_value(v),
+        None => tap_step.append_null(),
+    }
+    match block.tap_control_mode {
+        Some(v) => tap_control_mode.append_value(v),
+        None => tap_control_mode.append_null(),
+    }
+    match block.regulated_bus_id {
+        Some(v) => regulated_bus_id.append_value(v),
+        None => regulated_bus_id.append_null(),
+    }
+    match block.operation_time_min {
+        Some(v) => operation_time_min.append_value(v),
+        None => operation_time_min.append_null(),
+    }
 }
 
 fn empty_table(name: &'static str) -> Result<RecordBatch> {
@@ -3155,6 +3224,14 @@ fn build_transformers_2w_batch(
     let mut from_nominal_kv = Float64Builder::new();
     let mut to_nominal_kv = Float64Builder::new();
     let mut mrid = StringBuilder::new();
+    let mut tap_min = Float64Builder::new();
+    let mut tap_max = Float64Builder::new();
+    let mut tap_limit_unit = StringDictionaryBuilder::<Int32Type>::new();
+    let mut n_positions = Int32Builder::new();
+    let mut tap_step = Float64Builder::new();
+    let mut tap_control_mode = Int32Builder::new();
+    let mut regulated_bus_id = Int32Builder::new();
+    let mut operation_time_min = Float64Builder::new();
 
     for t in transformers {
         from_bus_id.append_value(t.i as i32);
@@ -3196,6 +3273,21 @@ fn build_transformers_2w_batch(
         from_nominal_kv.append_value(from_kv);
         to_nominal_kv.append_value(to_kv);
         mrid.append_value(resolve_transformer_2w_mrid(t, star_leg_mrids));
+        append_tap_control_columns(
+            t.cod1,
+            t.cont1,
+            t.rmi1,
+            t.rma1,
+            t.ntp1,
+            &mut tap_min,
+            &mut tap_max,
+            &mut tap_limit_unit,
+            &mut n_positions,
+            &mut tap_step,
+            &mut tap_control_mode,
+            &mut regulated_bus_id,
+            &mut operation_time_min,
+        );
     }
 
     RecordBatch::try_new(
@@ -3228,6 +3320,14 @@ fn build_transformers_2w_batch(
             null_bool_column(transformers.len()),
             null_bool_column(transformers.len()),
             null_bool_column(transformers.len()),
+            Arc::new(tap_min.finish()),
+            Arc::new(tap_max.finish()),
+            Arc::new(tap_limit_unit.finish()),
+            Arc::new(n_positions.finish()),
+            Arc::new(tap_step.finish()),
+            Arc::new(tap_control_mode.finish()),
+            Arc::new(regulated_bus_id.finish()),
+            Arc::new(operation_time_min.finish()),
         ],
     )
     .context("building transformers_2w batch")
@@ -3266,6 +3366,14 @@ fn build_transformers_3w_batch(
     let mut nominal_kv_m = Float64Builder::new();
     let mut nominal_kv_l = Float64Builder::new();
     let mut mrid = StringBuilder::new();
+    let mut tap_min = Float64Builder::new();
+    let mut tap_max = Float64Builder::new();
+    let mut tap_limit_unit = StringDictionaryBuilder::<Int32Type>::new();
+    let mut n_positions = Int32Builder::new();
+    let mut tap_step = Float64Builder::new();
+    let mut tap_control_mode = Int32Builder::new();
+    let mut regulated_bus_id = Int32Builder::new();
+    let mut operation_time_min = Float64Builder::new();
 
     for t in transformers {
         bus_h_id.append_value(t.bus_h as i32);
@@ -3314,6 +3422,21 @@ fn build_transformers_3w_batch(
             t.bus_l,
             t.ckt.as_ref(),
         ));
+        append_tap_control_columns(
+            t.cod1,
+            t.cont1,
+            t.rmi1,
+            t.rma1,
+            t.ntp1,
+            &mut tap_min,
+            &mut tap_max,
+            &mut tap_limit_unit,
+            &mut n_positions,
+            &mut tap_step,
+            &mut tap_control_mode,
+            &mut regulated_bus_id,
+            &mut operation_time_min,
+        );
     }
 
     RecordBatch::try_new(
@@ -3348,6 +3471,14 @@ fn build_transformers_3w_batch(
             null_bool_column(transformers.len()),
             null_bool_column(transformers.len()),
             null_bool_column(transformers.len()),
+            Arc::new(tap_min.finish()),
+            Arc::new(tap_max.finish()),
+            Arc::new(tap_limit_unit.finish()),
+            Arc::new(n_positions.finish()),
+            Arc::new(tap_step.finish()),
+            Arc::new(tap_control_mode.finish()),
+            Arc::new(regulated_bus_id.finish()),
+            Arc::new(operation_time_min.finish()),
         ],
     )
     .context("building transformers_3w batch")
@@ -3634,6 +3765,11 @@ mod tests {
             nominal_kv_h: 230.0,
             nominal_kv_m: 115.0,
             nominal_kv_l: 13.8,
+            cod1: 0,
+            cont1: 0,
+            rma1: 0.0,
+            rmi1: 0.0,
+            ntp1: 0,
         }
     }
 

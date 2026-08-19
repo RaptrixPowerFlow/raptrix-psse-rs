@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Map RAW transformer control block `COD1` / `CONT1` / `RMA1` / `RMI1` / `NTP1`
+  into RPF v0.14.2 `tap_control_mode` / `regulated_bus_id` / `tap_max` / `tap_min` /
+  `tap_limit_unit` / `n_positions` / `tap_step`. COD=0 or an incomplete grid
+  writes all eight columns null. **Writer default:** `|COD|=3` stamps
+  `tap_limit_unit=degrees`, else `ratio` (heuristic, not physics; readers
+  trust the unit column). `operation_time_min` stays null. Path-depends on
+  sibling `raptrix-cim-rs` (crate 0.7.2).
+
 ---
 
 ## [0.7.1] - 2026-08-19

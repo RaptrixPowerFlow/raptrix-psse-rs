@@ -18,6 +18,10 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### Unreleased: RPF **v0.14.2** tap / PST control (`raptrix-cim-arrow` **0.7.2**)
+
+Writer stamps `v0.14.2`. Maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto the eight trailing transformer tap-control columns. 3W is winding H / COD1 only (M/L LTC is out of scope). **This writer's default** sets `tap_limit_unit=degrees` when `|COD|=3`, else `ratio` — a PSS/E heuristic, not a physics law. Readers trust `tap_limit_unit` and must not re-derive units from COD. `operation_time_min` stays null. Path-depend on sibling `raptrix-cim-rs` until git tag `v0.7.2` is published.
+
 ### Unreleased: golden corpus prefers dynamic
 
 When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion. `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR A/B twin. Downstream solver / RPF consumer indexes prefer `_dynamic` over plain over `_static`. Regenerate with `cargo test --release --test golden_test`.

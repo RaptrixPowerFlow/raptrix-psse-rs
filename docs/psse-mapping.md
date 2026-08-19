@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.1**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.2**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,10 +33,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.1 contract (current)
+### v0.14.2 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.1**; readers accept **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- **Emit v0.14.2**; readers accept **v0.14.2**, **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- Trailing nullable transformer tap / PST control (`tap_min` / `tap_max` / `tap_limit_unit` / `n_positions` / `tap_step` / `tap_control_mode` / `regulated_bus_id` / `operation_time_min`) is mapped from RAW COD1/CONT1/RMA1/RMI1/NTP1. **3W is winding H / COD1 only** (M/L LTC is out of scope). `operation_time_min` is always null from RAW.
 - Trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines` are **null**. Do not invent BES from kV.
 - Optional root tables **`remedial_action_schemes`**, **`contingency_island_analysis`**, and **`contingency_sequences`** are **not** emitted by this PSS/E converter (no RAW mapping today). `contingencies` is a zero-row stub on the shared 10-column schema (`tpl_category` / `reserved` null).
 - `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`, plus trailing nullable **`mrid`** (null from PSS/E).
@@ -301,10 +302,18 @@ At export time the converter enforces one representation policy per file:
 | SBASE1-2 | 2 | `sbase12` | *(not stored)* | Winding MVA base; used during parse only. |
 | WINDV1 | 3 | `windv1` | `tap_ratio` | Off-nominal turns ratio, winding 1. |
 | NOMV1 | 3 | `nomv1` | `from_nominal_kv` | Required. Uses `NOMV1` when positive, else falls back to connected bus nominal-kV. |
-| ANG1 | 3 | `ang1` | `phase_shift` | ANG1 × π/180 → radians. |
+| ANG1 | 3 | `ang1` | `phase_shift` | Degrees on the wire (core converts to radians on materialize). |
 | RATA1 | 3 | `rata1` | `rate_a` | RATA1 / SBASE (pu). |
 | RATB1 | 3 | `ratb1` | `rate_b` | RATB1 / SBASE. |
 | RATC1 | 3 | `ratc1` | `rate_c` | RATC1 / SBASE. |
+| COD1 | 3 | `cod1` | `tap_control_mode` | RAW COD. All eight tap-control columns null when COD=0 or the discrete grid is incomplete. Not `branches.control_mode`. |
+| CONT1 | 3 | `cont1` | `regulated_bus_id` | Null when CONT=0. Dense bus_id. |
+| RMA1 | 3 | `rma1` | `tap_max` | Null unless `usable_tap_control`. |
+| RMI1 | 3 | `rmi1` | `tap_min` | Null unless `usable_tap_control`. |
+| — | — | — | `tap_limit_unit` | **This writer's default:** `degrees` when `|COD|=3`, else `ratio`. Not a physics law — other decks may use degrees on other CODs. On-wire authority is this column; readers must not re-derive from COD. Null with the rest when fixed. |
+| NTP1 | 3 | `ntp1` | `n_positions` | Null unless NTP>1 and RMA>RMI. |
+| — | — | — | `tap_step` | `(RMA-RMI)/(NTP-1)` when NTP>1. Never inferred from WINDV1. |
+| — | — | — | `operation_time_min` | Always null from RAW (not in PSS/E). |
 | WINDV2 | 4 | `windv2` | *(not stored)* | Used only during 3W star expansion. |
 | NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Required. Uses `NOMV2` when positive, else falls back to connected bus nominal-kV (or opposite-side bus for synthetic star-leg rows). |
 | — | — | — | `nominal_tap_ratio` | Derived as `NOMV1 / NOMV2` when both rated voltages are present; falls back to `1.0` otherwise. |
@@ -312,6 +321,8 @@ At export time the converter enforces one representation policy per file:
 | — | — | — | `winding1_r` / `winding1_x` | Placeholder 0.0 in this exporter; series branch R/X carry the modeled impedance. |
 | — | — | — | `winding2_r` / `winding2_x` | Always 0.0. |
 | — | — | — | `name` | Always null. |
+
+**3W tap control:** only winding-H / COD1 is mapped onto the shared eight-column block. M/L LTC is out of scope for v0.14.2 and is not a converter bug.
 
 **3-winding representation policy**: PSS/E 3W transformers produce both native
 and star-expanded forms during parsing, but exporter normalization guarantees

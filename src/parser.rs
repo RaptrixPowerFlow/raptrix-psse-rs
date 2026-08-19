@@ -1259,6 +1259,11 @@ fn star_leg_transformer(
         ratc1: 0.0,
         windv2: 1.0,
         nomv2: 0.0,
+        cod1: 0,
+        cont1: 0,
+        rma1: 0.0,
+        rmi1: 0.0,
+        ntp1: 0,
     }
 }
 
@@ -1552,6 +1557,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         ratc1,
                         windv2,
                         nomv2,
+                        cod1: field_i32(&f3, 6),
+                        cont1: field_i32(&f3, 7),
+                        rma1: field_f64(&f3, 8),
+                        rmi1: field_f64(&f3, 9),
+                        ntp1: field_i32(&f3, 12),
                     });
                 } else {
                     // ---- 3-winding transformer → star equivalent ----
@@ -1617,6 +1627,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         nominal_kv_h: nomv1,
                         nominal_kv_m: nomv2,
                         nominal_kv_l: nomv3,
+                        cod1: field_i32(&f3, 6),
+                        cont1: field_i32(&f3, 7),
+                        rma1: field_f64(&f3, 8),
+                        rmi1: field_f64(&f3, 9),
+                        ntp1: field_i32(&f3, 12),
                     });
 
                     // Determine area/zone/owner from bus i (must be in bus list already
