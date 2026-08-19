@@ -310,7 +310,7 @@ At export time the converter enforces one representation policy per file:
 | CONT1 | 3 | `cont1` | `regulated_bus_id` | Null when CONT=0. Dense bus_id. |
 | RMA1 | 3 | `rma1` | `tap_max` | Null unless `usable_tap_control`. |
 | RMI1 | 3 | `rmi1` | `tap_min` | Null unless `usable_tap_control`. |
-| — | — | — | `tap_limit_unit` | **This writer's default:** `degrees` when `|COD|=3`, else `ratio`. Not a physics law — other decks may use degrees on other CODs. On-wire authority is this column; readers must not re-derive from COD. Null with the rest when fixed. |
+| — | — | — | `tap_limit_unit` | **This writer's default:** `degrees` when `abs(COD)==3`, else `ratio`. Not a physics law — other decks may use degrees on other CODs. On-wire authority is this column; readers must not re-derive from COD. Null with the rest when fixed. |
 | NTP1 | 3 | `ntp1` | `n_positions` | Null unless NTP>1 and RMA>RMI. |
 | — | — | — | `tap_step` | `(RMA-RMI)/(NTP-1)` when NTP>1. Never inferred from WINDV1. |
 | — | — | — | `operation_time_min` | Always null from RAW (not in PSS/E). |

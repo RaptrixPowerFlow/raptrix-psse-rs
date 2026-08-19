@@ -126,17 +126,17 @@ Trailing nullable **`mrid`** columns exist on equipment tables (`branches`, `gen
 
 **v0.14.1** adds trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines`. This converter emits them as **null** (do not invent BES from kV).
 
-**v0.14.2** maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto transformer tap / PST control. 3W is H / COD1 only. This writer's default stamps `tap_limit_unit=degrees` when `|COD|=3` (else `ratio`); readers must trust `tap_limit_unit`, not re-derive from COD. `operation_time_min` stays null.
+**v0.14.2** maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto transformer tap / PST control. 3W is H / COD1 only. This writer's default stamps `tap_limit_unit=degrees` when `abs(COD)==3` (else `ratio`); readers must trust `tap_limit_unit`, not re-derive from COD. `operation_time_min` stays null.
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.7.1)
+## Recent release (v0.7.2)
 
 - **RPF v0.14.2** (`raptrix.version` / `raptrix-cim-arrow` **0.7.2**): transformer tap/PST control columns; dual-read **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 still requires re-export.
 - Facility-membership flags on circuits and transformers are **null**. Do not invent BES from kV.
-- No RAW semantic change. `contingencies` remains a zero-row stub (`tpl_category` / `reserved` null). `contingency_sequences` is omitted.
+- 3W tap control is winding H / COD1 only. `operation_time_min` stays null.
 - **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.2`**.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.

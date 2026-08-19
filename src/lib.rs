@@ -410,7 +410,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.1) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.2) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -783,7 +783,7 @@ fn null_bool_column(n: usize) -> Arc<dyn arrow::array::Array> {
 ///
 /// COD=0 / incomplete grid → all eight columns null (never `tap_control_mode=0`
 /// alone). **This writer's default** stamps `tap_limit_unit = degrees` when
-/// `|COD| == 3`, else `ratio`. That is a PSS/E mapping heuristic, not a
+/// `abs(COD) == 3`, else `ratio`. That is a PSS/E mapping heuristic, not a
 /// physics law — other decks can use degrees on other CODs. Readers must
 /// trust the on-wire `tap_limit_unit` column and must not re-derive it from
 /// COD. 3W uses winding-H / COD1 only; M/L tap control is out of scope.

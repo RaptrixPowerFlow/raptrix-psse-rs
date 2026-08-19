@@ -18,15 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+---
+
+## [0.7.2] - 2026-08-19
+
+### RPF v0.14.2 (raptrix-cim-arrow 0.7.2) — transformer tap / PST control
 
 - Map RAW transformer control block `COD1` / `CONT1` / `RMA1` / `RMI1` / `NTP1`
-  into RPF v0.14.2 `tap_control_mode` / `regulated_bus_id` / `tap_max` / `tap_min` /
-  `tap_limit_unit` / `n_positions` / `tap_step`. COD=0 or an incomplete grid
-  writes all eight columns null. **Writer default:** `|COD|=3` stamps
-  `tap_limit_unit=degrees`, else `ratio` (heuristic, not physics; readers
-  trust the unit column). `operation_time_min` stays null. Pins
-  `raptrix-cim-arrow` to git tag `v0.7.2`.
+  into trailing `tap_control_mode` / `regulated_bus_id` / `tap_max` / `tap_min` /
+  `tap_limit_unit` / `n_positions` / `tap_step` / `operation_time_min`.
+  COD=0 or an incomplete grid writes all eight columns null.
+- **Writer default:** `abs(COD)==3` stamps `tap_limit_unit=degrees`, else
+  `ratio` (heuristic, not physics; readers trust the unit column).
+- 3W is winding H / COD1 only. `operation_time_min` stays null.
+- Pin `raptrix-cim-arrow` to published git tag `v0.7.2`.
 
 ---
 

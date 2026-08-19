@@ -30,6 +30,42 @@ const MEMBERSHIP_TABLES: &[&str] = &[
     TABLE_MULTI_SECTION_LINES,
 ];
 
+const TAP_CONTROL_TABLES: &[&str] = &[TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W];
+const TAP_CONTROL_COLUMNS: &[&str] = &[
+    "tap_min",
+    "tap_max",
+    "tap_limit_unit",
+    "n_positions",
+    "tap_step",
+    "tap_control_mode",
+    "regulated_bus_id",
+    "operation_time_min",
+];
+
+fn assert_tap_control_contract(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    for table_name in TAP_CONTROL_TABLES {
+        let batch = tables
+            .iter()
+            .find(|(n, _)| n == table_name)
+            .map(|(_, b)| b)
+            .unwrap_or_else(|| panic!("{path} missing {table_name}"));
+        for name in TAP_CONTROL_COLUMNS {
+            let col = batch
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{path} {table_name} missing {name}"));
+            assert_eq!(col.len(), batch.num_rows());
+            if *name == "operation_time_min" {
+                assert_eq!(
+                    col.null_count(),
+                    col.len(),
+                    "{path} {table_name}.operation_time_min must stay null from RAW"
+                );
+            }
+        }
+    }
+}
+
 fn assert_membership_flags_all_null(path: &str) {
     let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
     for table_name in MEMBERSHIP_TABLES {
@@ -343,6 +379,7 @@ fn golden_build_all_external_raw_cases() {
 
     for t in &timings {
         assert_membership_flags_all_null(&t.output_file);
+        assert_tap_control_contract(&t.output_file);
     }
 
     // Legacy short-stem aliases still referenced by older core/scripts paths.

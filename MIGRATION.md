@@ -18,9 +18,24 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
-### Unreleased: RPF **v0.14.2** tap / PST control (`raptrix-cim-arrow` **0.7.2**)
+### raptrix-psse-rs **v0.7.2**: RPF **v0.14.2** (`raptrix-cim-arrow` **0.7.2**) — **Tap / PST control (dual-read v0.14.1 / v0.14.0 / v0.13.x)**
 
-Writer stamps `v0.14.2`. Maps RAW COD1/CONT1/RMA1/RMI1/NTP1 onto the eight trailing transformer tap-control columns. 3W is winding H / COD1 only (M/L LTC is out of scope). **This writer's default** sets `tap_limit_unit=degrees` when `|COD|=3`, else `ratio` — a PSS/E heuristic, not a physics law. Readers trust `tap_limit_unit` and must not re-derive units from COD. `operation_time_min` stays null. Pin `raptrix-cim-arrow` to git tag **`v0.7.2`**.
+`raptrix-psse-rs` **v0.7.2** emits RPF **v0.14.2**.
+
+#### What changed
+
+- Writer stamps `v0.14.2`; `SUPPORTED_RPF_VERSIONS` accepts **v0.14.2** and retains **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**.
+- Trailing nullable tap-control block on `transformers_2w` / `transformers_3w` is mapped from RAW COD1/CONT1/RMA1/RMI1/NTP1 via `normalize_tap_control`.
+- **This writer's default** sets `tap_limit_unit=degrees` when `abs(COD)==3`, else `ratio` — a PSS/E heuristic, not a physics law. Readers trust `tap_limit_unit`.
+- 3W is winding H / COD1 only (M/L LTC is out of scope). `operation_time_min` stays null.
+- **No re-export required** for existing v0.14.1 / v0.14.0 / v0.13.x `.rpf` files.
+- **Dependency**: `raptrix-cim-arrow` **0.7.2** / git tag **`v0.7.2`**.
+
+#### Consumer checklist
+
+1. Accept `raptrix.version` ∈ {`v0.14.2`, `v0.14.1`, `v0.14.0`, `v0.13.1`, `v0.13.0`} (and bare aliases).
+2. Treat the eight tap-control columns as an all-or-nothing block; null means fixed / unknown.
+3. Do not re-derive units from COD. On-wire authority is `tap_limit_unit` (`ratio` / `degrees`).
 
 ### Unreleased: golden corpus prefers dynamic
 
