@@ -22,6 +22,23 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 When a `.dyr` / `.dyn` companion exists, `tests/golden/<stem>.rpf` is the **dynamic** conversion. `_dynamic.rpf` is an alias; `_static.rpf` is the no-DYR A/B twin. Downstream solver / RPF consumer indexes prefer `_dynamic` over plain over `_static`. Regenerate with `cargo test --release --test golden_test`.
 
+### raptrix-psse-rs **v0.7.1**: RPF **v0.14.1** (`raptrix-cim-arrow` **0.7.1**) — **Additive membership flags (dual-read v0.14.0 / v0.13.x)**
+
+`raptrix-psse-rs` **v0.7.1** emits RPF **v0.14.1**.
+
+#### What changed
+
+- Writer stamps `v0.14.1`; `SUPPORTED_RPF_VERSIONS` accepts **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**.
+- Trailing nullable `is_secured` / `is_bes` / `is_bps` / `is_bptf` on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines` are **null**. Do not invent BES from kV. Stamp via `raptrix-cim-rs enhance facility_membership`.
+- **No re-export required** for existing v0.14.0 / v0.13.x `.rpf` files.
+- **Dependency**: `raptrix-cim-arrow` **0.7.1** / git tag **`v0.7.1`**.
+
+#### Consumer checklist
+
+1. Accept `raptrix.version` ∈ {`v0.14.1`, `v0.14.0`, `v0.13.1`, `v0.13.0`} (and bare `0.14.1` / `0.14.0` / `0.13.x` aliases).
+2. Treat the four membership flags as nullable; **null** means unknown.
+3. Do not infer `is_bes` from nominal kV.
+
 ### raptrix-psse-rs **v0.7.0**: RPF **v0.14.0** (`raptrix-cim-arrow` **0.7.0**) — **Additive MINOR (dual-read v0.13.1 / v0.13.0)**
 
 `raptrix-psse-rs` **v0.7.0** emits RPF **v0.14.0**.

@@ -17,10 +17,39 @@ use std::time::Instant;
 
 use raptrix_cim_arrow::{
     RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS,
+    TABLE_MULTI_SECTION_LINES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
 };
 
 const EXTERNAL_DIR: &str = "tests/data/external";
 const GOLDEN_DIR: &str = "tests/golden";
+
+const MEMBERSHIP_TABLES: &[&str] = &[
+    TABLE_BRANCHES,
+    TABLE_TRANSFORMERS_2W,
+    TABLE_TRANSFORMERS_3W,
+    TABLE_MULTI_SECTION_LINES,
+];
+
+fn assert_membership_flags_all_null(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    for table_name in MEMBERSHIP_TABLES {
+        let batch = tables
+            .iter()
+            .find(|(n, _)| n == table_name)
+            .map(|(_, b)| b)
+            .unwrap_or_else(|| panic!("{path} missing {table_name}"));
+        for name in ["is_secured", "is_bes", "is_bps", "is_bptf"] {
+            let col = batch
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{path} {table_name} missing {name}"));
+            assert_eq!(
+                col.null_count(),
+                col.len(),
+                "{path} {table_name}.{name} must be all-null (converters do not invent BES/secured)"
+            );
+        }
+    }
+}
 
 #[derive(Debug)]
 struct CaseTiming {
@@ -212,7 +241,7 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
-    assert_eq!(RPF_VERSION, "v0.14.0");
+    assert_eq!(RPF_VERSION, "v0.14.1");
 
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {
@@ -310,6 +339,10 @@ fn golden_build_all_external_raw_cases() {
             "unexpected output filename policy"
         );
         assert!(Path::new(&t.raw_file).exists(), "source RAW must exist");
+    }
+
+    for t in &timings {
+        assert_membership_flags_all_null(&t.output_file);
     }
 
     // Legacy short-stem aliases still referenced by older core/scripts paths.

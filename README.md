@@ -37,7 +37,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical required root tables for **RPF v0.14.0** (zero-row where applicable) so downstream solver / RPF consumer pipelines stay deterministic.
+- Always emit the **18** canonical required root tables for **RPF v0.14.1** (zero-row where applicable) so downstream solver / RPF consumer pipelines stay deterministic.
 
 ## CLI Reference
 
@@ -74,9 +74,9 @@ cargo run --bin branch_deck_scan -- --raw <FILE.raw> [--rpf <FILE.rpf>] [--list-
 
 Diagnostics for the PSS/E BRANCH section: raw `ST` token histogram, parsed vs rejected lines, in-service/out-of-service counts, optional duplicate `(from_bus,to_bus,ckt)` keys, and (with `--rpf`) an in-service multiset diff between the parsed RAW network and the RPF `branches` table. Use this when reconciling branch row counts against tools that omit `ST=0` lines.
 
-## RPF v0.14.0 coverage
+## RPF v0.14.1 coverage
 
-The converter emits the **18** required root tables from the locked **v0.14.0** contract (dual-read v0.13.1 / v0.13.0; see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked **v0.14.1** contract (dual-read v0.14.0 / v0.13.1 / v0.13.0; see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -124,15 +124,18 @@ Metadata includes modern-grid fields plus v0.9.0/0.9.1 **additional nullable col
 
 Trailing nullable **`mrid`** columns exist on equipment tables (`branches`, `generators`, `transformers_2w`, `transformers_3w`) plus loads/fixed/switched shunts (null from PSS/E when unknown). Nullable `buses.latitude` / `buses.longitude` are always null from PSS/E (no standard GIS in RAW). Optional **`remedial_action_schemes`** / **`contingency_island_analysis`** root tables are not emitted on the standard PSS/E path.
 
+**v0.14.1** adds trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines`. This converter emits them as **null** (do not invent BES from kV).
+
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.7.0)
+## Recent release (v0.7.1)
 
-- **RPF v0.14.0** (`raptrix.version` / `raptrix-cim-arrow` **0.7.0**): additive MINOR; dual-read **v0.13.1** and **v0.13.0**. Pre-0.13 still requires re-export.
+- **RPF v0.14.1** (`raptrix.version` / `raptrix-cim-arrow` **0.7.1**): additive membership flags; dual-read **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 still requires re-export.
+- Facility-membership flags on circuits and transformers are **null**. Do not invent BES from kV.
 - No RAW semantic change. `contingencies` remains a zero-row stub (`tpl_category` / `reserved` null). `contingency_sequences` is omitted.
-- **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.0`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
+- **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.1`**. For a sibling `raptrix-cim-rs` checkout, use a **local** `[patch]` in `.cargo/config.toml` (not committed) so CI and fresh clones keep building from GitHub.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 
@@ -158,7 +161,7 @@ To use a release binary, extract the archive and run:
 
 ## Build From Source
 
-Rust 1.85+ is required.
+Rust 1.96+ is required.
 
 ```bash
 git clone https://github.com/RaptrixPowerFlow/raptrix-cim-rs.git
@@ -175,7 +178,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.14.0** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.14.1** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
 
 ### Windows, OneDrive, and WSL
 
@@ -238,7 +241,7 @@ Golden tests (with local external inputs) help catch regressions; they are not a
 
 ## Versioning & Schema Contract
 
-This crate is pinned to **`raptrix-cim-arrow` 0.7.0** (RPF **v0.14.0**). Every emitted `.rpf` is validated against the locked contract before returning. Readers accept **v0.14.0, v0.13.1, and v0.13.0** — re-export only pre-0.13 `.rpf` files through this converter.
+This crate is pinned to **`raptrix-cim-arrow` 0.7.1** (RPF **v0.14.1**). Every emitted `.rpf` is validated against the locked contract before returning. Facility-membership flags are emitted null (do not invent BES from kV). Readers accept **v0.14.1, v0.14.0, v0.13.1, and v0.13.0** — re-export only pre-0.13 `.rpf` files through this converter.
 
 See [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md) for the full RPF specification.
 

@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.0 converter.
+//! Raptrix PowerFlow Interchange v0.14.1 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -410,7 +410,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.0) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.1) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -770,6 +770,14 @@ fn enforce_deterministic_slack(network: &mut Network) {
 // ---------------------------------------------------------------------------
 // Helper: empty 0-row table
 // ---------------------------------------------------------------------------
+
+fn null_bool_column(n: usize) -> Arc<dyn arrow::array::Array> {
+    let mut b = BooleanBuilder::with_capacity(n);
+    for _ in 0..n {
+        b.append_null();
+    }
+    Arc::new(b.finish())
+}
 
 fn empty_table(name: &'static str) -> Result<RecordBatch> {
     let schema =
@@ -2326,6 +2334,7 @@ fn build_branches_batch(
         }
     }
 
+    let n = branches.len();
     let facts_params_arr = facts_params.finish();
     let facts_params_target_type = schema
         .field_with_name("facts_params")
@@ -2366,6 +2375,11 @@ fn build_branches_batch(
             Arc::new(parent_line_id.finish()),
             Arc::new(section_index.finish()),
             Arc::new(mrid.finish()),
+            // v0.14.1: converters leave facility membership unknown.
+            null_bool_column(n),
+            null_bool_column(n),
+            null_bool_column(n),
+            null_bool_column(n),
         ],
     )
     .context("building branches batch")
@@ -2941,6 +2955,10 @@ fn build_multi_section_lines_batch(rows: &[models::MultiSectionLine]) -> Result<
             Arc::new(rate_b_mva.finish()),
             Arc::new(status.finish()),
             Arc::new(name_b.finish()),
+            null_bool_column(rows.len()),
+            null_bool_column(rows.len()),
+            null_bool_column(rows.len()),
+            null_bool_column(rows.len()),
         ],
     )
     .context("building multi_section_lines batch")
@@ -3206,6 +3224,10 @@ fn build_transformers_2w_batch(
             Arc::new(from_nominal_kv.finish()),
             Arc::new(to_nominal_kv.finish()),
             Arc::new(mrid.finish()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
         ],
     )
     .context("building transformers_2w batch")
@@ -3322,6 +3344,10 @@ fn build_transformers_3w_batch(
             Arc::new(nominal_kv_m.finish()),
             Arc::new(nominal_kv_l.finish()),
             Arc::new(mrid.finish()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
+            null_bool_column(transformers.len()),
         ],
     )
     .context("building transformers_3w batch")

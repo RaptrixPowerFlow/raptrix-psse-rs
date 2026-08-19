@@ -1267,7 +1267,7 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.14.0");
+    assert_eq!(RPF_VERSION, "v0.14.1");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
@@ -1303,6 +1303,21 @@ BUS TYPE
         .iter()
         .find(|(name, _)| name == TABLE_BRANCHES)
         .expect("branches table");
+    assert_eq!(branches.schema().fields().len(), 32);
+    assert_eq!(branches.schema().field(28).name(), "is_secured");
+    assert_eq!(branches.schema().field(29).name(), "is_bes");
+    assert_eq!(branches.schema().field(30).name(), "is_bps");
+    assert_eq!(branches.schema().field(31).name(), "is_bptf");
+    for name in ["is_secured", "is_bes", "is_bps", "is_bptf"] {
+        let col = branches
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("branches.{name}"));
+        assert_eq!(
+            col.null_count(),
+            col.len(),
+            "branches.{name} must be all-null (converters do not invent BES/secured)"
+        );
+    }
     let branch_mrid = branches
         .column_by_name("mrid")
         .expect("branches.mrid")

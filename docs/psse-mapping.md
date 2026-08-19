@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.0**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.1**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -33,10 +33,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.0 contract (current)
+### v0.14.1 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.0**; readers accept **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- **Emit v0.14.1**; readers accept **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- Trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines` are **null**. Do not invent BES from kV.
 - Optional root tables **`remedial_action_schemes`**, **`contingency_island_analysis`**, and **`contingency_sequences`** are **not** emitted by this PSS/E converter (no RAW mapping today). `contingencies` is a zero-row stub on the shared 10-column schema (`tpl_category` / `reserved` null).
 - `loads` includes additive ZIP fidelity columns in v0.9.1+: `p_i_pu`, `q_i_pu`, `p_y_pu`, `q_y_pu`, plus trailing nullable **`mrid`** (null from PSS/E).
 - Required tables include `multi_section_lines`, `dc_lines_2w`, and `switched_shunt_banks`.
