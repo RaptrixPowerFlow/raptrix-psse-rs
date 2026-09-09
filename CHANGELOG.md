@@ -286,7 +286,7 @@ issues.
 - **`generators.controlled_bus_id`**: required Int32 trailing column — PSS/E **IREG** mapped to dense `bus_id` space (`0` when IREG is unset or equals the machine bus; otherwise the remote regulated bus).
 - **`metadata.default_shunt_control_mode`** (nullable Dictionary) and file-level **`rpf.default_shunt_control_mode`**: planning exports (`flat_start_planning`, `warm_start_planning`, `hour_ahead_advisory`) default to `planning_full`, matching `raptrix-cim-rs` planning writers; `solved_snapshot` omits unless overridden.
 - **`ExportOptions::default_shunt_control_mode_override`** and CLI **`--default-shunt-control-mode`** for explicit control of the v0.9.5 shunt-mode stamp.
-- Golden integration test **`golden_texas7k_updated_saint_static`** and matching **`verify-external-golden.sh`** entry for `tests/data/external/Texas7k_20210804_updated_SAInt.RAW`.
+- Golden integration test **`golden_texas7k_updated_static`** and matching **`verify-external-golden.sh`** entry for `tests/data/external/Texas7k_20210804_updated.RAW`.
 
 ### Changed
 

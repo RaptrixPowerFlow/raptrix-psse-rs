@@ -118,8 +118,8 @@ echo "[verify-external-golden] RELAX_MISSING=$RELAX_MISSING"
 convert_case "Texas7k 2022" "tests/data/external/Texas7k_20220923.RAW" "Texas7k_20220923"
 convert_case "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" "Texas7k_20210804" \
   "$(pick_dyn tests/data/external/Texas7k_20210804)"
-convert_case "Texas7k 2021 SAInt update" "tests/data/external/Texas7k_20210804_updated_SAInt.RAW" \
-  "Texas7k_20210804_updated_SAInt"
+convert_case "Texas7k 2021 updated" "tests/data/external/Texas7k_20210804_updated.RAW" \
+  "Texas7k_20210804_updated"
 
 convert_case "Texas2k summerpeak" "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
   "Texas2k_series25_case1_summerpeak" \
