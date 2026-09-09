@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use arrow::array::{Array, DictionaryArray, ListArray, StringArray};
+use arrow::array::{Array, DictionaryArray, Float64Array, ListArray, StringArray};
 use arrow::datatypes::Int32Type;
 
 use raptrix_cim_arrow::{
@@ -100,6 +100,28 @@ fn assert_memphis_n5_modsw2_continuous(path: &str) {
     assert!(
         found,
         "{path}: expected a 5-step MODSW=2 bank as continuous_voltage"
+    );
+}
+
+fn assert_ieee14_v_ang_set_degrees(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    let batch = tables
+        .iter()
+        .find(|(n, _)| n == TABLE_BUSES)
+        .map(|(_, b)| b)
+        .unwrap_or_else(|| panic!("{path} missing buses"));
+    let v_ang = batch
+        .column_by_name("v_ang_set")
+        .expect("v_ang_set")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("Float64");
+    let max_abs = (0..v_ang.len())
+        .map(|i| v_ang.value(i).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        (10.0..=15.0).contains(&max_abs),
+        "{path}: IEEE 14 v_ang_set max |θ| must be ~12.7 deg, not ~0.280 rad (got {max_abs})"
     );
 }
 
@@ -444,6 +466,9 @@ fn golden_build_all_external_raw_cases() {
         assert_shunt_control_columns(&t.output_file);
         if t.case_name.contains("Memphis") {
             assert_memphis_n5_modsw2_continuous(&t.output_file);
+        }
+        if t.case_name.to_ascii_lowercase().contains("ieee14") {
+            assert_ieee14_v_ang_set_degrees(&t.output_file);
         }
     }
 

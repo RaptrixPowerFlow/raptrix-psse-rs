@@ -38,6 +38,7 @@ Copyright (c) 2026 Raptrix PowerFlow
 1. Accept `raptrix.version` ∈ {`v0.14.3`, `v0.14.2`, `v0.14.1`, `v0.14.0`, `v0.13.1`, `v0.13.0`}.
 2. Treat null `shunt_control_mode` as unspecified (including MODSW ≥ 3).
 3. Treat null `regulated_bus_id` as local regulation.
+4. Read `buses.v_ang_set` in **degrees** (IEEE 14 max |θ| ≈ 12.7, not 0.280 rad).
 
 ### raptrix-psse-rs **v0.7.2**: RPF **v0.14.2** (`raptrix-cim-arrow` **0.7.2**) — **Tap / PST control (dual-read v0.14.1 / v0.14.0 / v0.13.x)**
 

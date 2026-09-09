@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unknown_modsw` (bus I and the integer). `SWREG`/`SWREM` 0 or local I →
   null `regulated_bus_id`.
 - Dual-read v0.14.2 / v0.14.1 / v0.14.0 / v0.13.x.
+- **`buses.v_ang_set` is degrees** (PSS/E VA as-published). Do not convert to
+  radians on the wire. IEEE 14 max |θ| ≈ 12.7°, not 0.280 rad.
 
 ### Fixed
 

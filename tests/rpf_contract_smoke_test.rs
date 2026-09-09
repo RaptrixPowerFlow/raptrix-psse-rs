@@ -1438,3 +1438,65 @@ MODSW
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
 }
+
+#[test]
+fn v_ang_set_is_degrees_not_radians() {
+    let raw_path = unique_temp_path("vang_degrees", "raw");
+    let out_path = unique_temp_path("vang_degrees", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / VANG_DEGREES
+VANG DEGREES
+VANG DEGREES
+1,'SLACK',230.0,3,1,1,1,1.06,0.00,1.10,0.90,1.10,0.90
+2,'PQ',230.0,1,1,1,1,1.045,-12.72,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+1,'1',100.0,0.0,9999.0,-9999.0,1.06,0,100.0,0.0,1.0,0,1.0,1.0,1.0,1.0,1.0,1,1.0,1.0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1 ',0.01,0.10,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0,0,0,0,0,1,1,0.0,1
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write vang raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = read_rpf_tables(&out_path).expect("read_rpf_tables");
+    let (_, buses) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .expect("buses");
+    let v_ang = buses
+        .column_by_name("v_ang_set")
+        .expect("v_ang_set")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("Float64");
+    let max_abs = (0..v_ang.len())
+        .map(|i| v_ang.value(i).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        (max_abs - 12.72).abs() < 1.0e-9,
+        "v_ang_set must stay in degrees (≈12.72), not radians (≈0.222); got {max_abs}"
+    );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}

@@ -247,7 +247,7 @@ pub fn write_psse_to_rpf_with_options(
     let case_mode = resolve_case_mode(&network, options)?;
 
     // v0.9.6 warm-start seed payload: kept disabled on the PSS/E RAW conversion
-    // path. The buses table already carries v_ang_set = bus.va (radians) and
+    // path. The buses table already carries v_ang_set = bus.va (degrees) and
     // v_mag_set = bus.vm on solved-looking decks (generator VS is NOT written
     // into v_mag_set when the RAW carries a published operating point — VS≠VM
     // on PV buses was an RPF creation bug that produced tens-of-pu Q residuals
@@ -429,7 +429,7 @@ pub fn write_psse_to_rpf_with_options(
     if !bus_voltage_sanitization.is_empty() {
         eprintln!(
             "[converter] sanitized invalid bus voltage setpoints on export: \
-             v_mag_set={} (clamped to 1.0 pu), v_ang_set={} (clamped to 0.0 rad).",
+             v_mag_set={} (clamped to 1.0 pu), v_ang_set={} (clamped to 0.0 deg).",
             bus_voltage_sanitization.sanitized_v_mag_set,
             bus_voltage_sanitization.sanitized_v_ang_set
         );
@@ -2061,13 +2061,13 @@ fn sanitize_bus_voltage_setpoint(
         stats.sanitized_v_mag_set += 1;
         1.0
     };
-    let v_ang_rad = if raw_va_deg.is_finite() {
-        raw_va_deg.to_radians()
+    let v_ang_deg = if raw_va_deg.is_finite() {
+        raw_va_deg
     } else {
         stats.sanitized_v_ang_set += 1;
         0.0
     };
-    (v_mag, v_ang_rad)
+    (v_mag, v_ang_deg)
 }
 
 fn canonical_bus_type_token(bus_type: models::BusType) -> &'static str {
@@ -2146,9 +2146,9 @@ fn build_buses_batch(
             Some(vs) if !looks_solved_seed => vs,
             _ => bus.vm,
         };
-        // Clamped to a valid flat-start fallback (1.0 pu, 0 rad) when the source value
+        // Clamped to a valid flat-start fallback (1.0 pu, 0 deg) when the source value
         // is non-finite, zero, or negative — matches raptrix-core importer sanitization.
-        let (vm_export, va_export_rad) =
+        let (vm_export, va_export_deg) =
             sanitize_bus_voltage_setpoint(vm_candidate, bus.va, sanitization_stats);
 
         bus_id.append_value(bus.i as i32);
@@ -2157,7 +2157,7 @@ fn build_buses_batch(
         p_sched.append_value(agg.p_sched);
         q_sched.append_value(agg.q_sched);
         v_mag_set.append_value(vm_export);
-        v_ang_set.append_value(va_export_rad);
+        v_ang_set.append_value(va_export_deg);
         q_min.append_value(q_min_val);
         q_max.append_value(q_max_val);
         g_shunt.append_value(agg.g_shunt);

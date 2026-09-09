@@ -103,7 +103,7 @@ several `buses` columns:
 | `p_min_agg` | Σ(in-service generator PB / SBASE) |
 | `p_max_agg` | Σ(in-service generator PT / SBASE); 9999 pu for PQ load buses |
 | `v_mag_set` | Last in-service generator **VS** when finite and non-zero (PSS/E “unset” VS is 0); otherwise **Bus VM** — no band clamp on export |
-| `v_ang_set` | Bus VA converted to radians |
+| `v_ang_set` | Bus VA in degrees |
 
 > **Design note**: line-end admittances GI/BI/GJ/BJ are folded into the bus shunt
 > aggregation rather than stored on the branch, because the solver expects all shunt
@@ -142,7 +142,7 @@ several `buses` columns:
 | GL | 8* | `gl` | `g_shunt` (partial) | Inline bus shunt conductance (MW @ 1 pu); folded into aggregated `g_shunt`. |
 | BL | 9* | `bl` | `b_shunt` (partial) | Inline bus shunt susceptance (MVAr @ 1 pu); folded into aggregated `b_shunt`. |
 | VM | — | `vm` | `v_mag_set` (fallback) | Used when no in-service generator supplies a non-zero finite **VS** for `v_mag_set` aggregation. |
-| VA | — | `va` | `v_ang_set` | Bus.VA × π/180 → radians. |
+| VA | — | `va` | `v_ang_set` | Bus.VA in degrees (contract units; do not convert to radians). |
 | NVHI | — | `nvhi` | `v_max` | Normal voltage upper limit (pu); stored as parsed (missing tail fields → 0.0). |
 | NVLO | — | `nvlo` | `v_min` | Normal voltage lower limit (pu); stored as parsed. |
 | EVHI | — | `evhi` | *(not stored)* | Emergency voltage limits have no canonical column in v0.8.8. |
