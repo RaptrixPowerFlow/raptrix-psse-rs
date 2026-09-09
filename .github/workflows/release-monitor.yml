@@ -1,11 +1,10 @@
 name: Release Monitor
 
+# Disabled 2026-09-09: this opener created issues #2–#27 on every Release
+# conclusion. Re-enable only after the notify job is rewritten to comment
+# on a single sticky issue (or page) instead of opening a new issue.
 on:
-  workflow_run:
-    workflows:
-      - Release
-    types:
-      - completed
+  workflow_dispatch:
 
 permissions:
   issues: write
