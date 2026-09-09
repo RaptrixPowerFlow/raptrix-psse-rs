@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.2 converter.
+//! Raptrix PowerFlow Interchange v0.14.3 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -21,8 +21,9 @@
 //! deterministic `bus_uuid`, `case_fingerprint`, optional CLI metadata). Deck
 //! numbers and codes are **not** clamped or solver-tuned here: parsed values are
 //! written as-is, except for schema-defined structure (per-unit scaling by
-//! `SBASE`, bus-table **aggregates** in `docs/psse-mapping.md`, and PSS/E-documented
-//! defaults when a token is missing). One explicit **interchange boundary**:
+//! `SBASE`, transformer **CW / CZ / CM** conversion onto system-base `r` / `x` /
+//! `tap_ratio` / MAG, bus-table **aggregates** in `docs/psse-mapping.md`, and
+//! PSS/E-documented defaults when a token is missing). One explicit **interchange boundary**:
 //! after aggregating reactive limits onto a bus, if `q_min` > `q_max` the exporter
 //! **swaps** them so the bus row obeys min/max ordering (PSS/E `QB`/`QT` on each
 //! `generators` row stay as in the deck). Extra RAW numerics without dedicated
@@ -37,6 +38,7 @@
 
 pub mod models;
 pub mod parser;
+pub mod transformer_convert;
 pub mod validation;
 
 // Re-export reader utilities so tests and tools can use them directly.
@@ -71,11 +73,15 @@ use raptrix_cim_arrow::{
     TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
     TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS,
     TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W,
-    TABLE_TRANSFORMERS_3W, TABLE_ZONES, classical_params_struct_fields, normalize_tap_control,
+    TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING, classical_params_struct_fields,
+    normalize_tap_control, regulated_bus_id_from_swreg, shunt_control_mode_from_modsw,
     table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
+use crate::transformer_convert::{
+    TransformerId, convert_mag_to_system, convert_z_to_system, tap_ratio_from_cw,
+};
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
 const METADATA_KEY_LOADS_ZIP_FIDELITY_PRESENCE: &str = "rpf.loads.zip_fidelity_presence";
@@ -410,7 +416,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.2) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.3) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     write_root_rpf_with_metadata(
         output,
@@ -2918,6 +2924,25 @@ fn build_switched_shunts_batch(
     let bus_id_arr = bus_id.finish();
     let mrid = new_null_array(&arrow::datatypes::DataType::Utf8, bus_id_arr.len());
 
+    let mut shunt_control_mode = StringDictionaryBuilder::<Int32Type>::new();
+    let mut regulated_bus_id = Int32Builder::new();
+    for shunt in shunts {
+        match shunt_control_mode_from_modsw(i32::from(shunt.modsw)) {
+            Some(token) => shunt_control_mode.append_value(token),
+            None => {
+                shunt_control_mode.append_null();
+                eprintln!(
+                    "[converter] {UNKNOWN_MODSW_WARNING}: bus I={} MODSW={}",
+                    shunt.i, shunt.modsw
+                );
+            }
+        }
+        match regulated_bus_id_from_swreg(shunt.swrem as i32, shunt.i as i32) {
+            Some(remote) => regulated_bus_id.append_value(remote),
+            None => regulated_bus_id.append_null(),
+        }
+    }
+
     RecordBatch::try_new(
         schema,
         vec![
@@ -2930,6 +2955,8 @@ fn build_switched_shunts_batch(
             Arc::new(b_init_pu.finish()),
             Arc::new(shunt_id.finish()),
             mrid,
+            Arc::new(shunt_control_mode.finish()),
+            Arc::new(regulated_bus_id.finish()),
         ],
     )
     .context("building switched_shunts batch")
@@ -3237,15 +3264,40 @@ fn build_transformers_2w_batch(
         from_bus_id.append_value(t.i as i32);
         to_bus_id.append_value(t.j as i32);
         ckt.append_value(t.ckt.as_ref());
-        r.append_value(t.r12);
-        x.append_value(t.x12);
+        let tx_id = TransformerId {
+            i: t.i,
+            j: t.j,
+            k: 0,
+        };
+        let baskv1 = bus_nominal_kv
+            .get(&t.i)
+            .copied()
+            .filter(|v| *v > 1.0e-9)
+            .unwrap_or(t.nomv1);
+        let baskv2 = bus_nominal_kv
+            .get(&t.j)
+            .copied()
+            .filter(|v| *v > 1.0e-9)
+            .unwrap_or(t.nomv2);
+        let (r_sys, x_sys) = convert_z_to_system(tx_id, t.cz, t.r12, t.x12, t.sbase12, base_mva)?;
+        let windv2 = if t.windv2.abs() > 1.0e-12 {
+            t.windv2
+        } else {
+            1.0
+        };
+        let tap = tap_ratio_from_cw(
+            tx_id, t.cw, t.windv1, windv2, t.nomv1, t.nomv2, baskv1, baskv2,
+        )?;
+        let (g_sys, b_sys) = convert_mag_to_system(tx_id, t.cm, t.mag1, t.mag2)?;
+        r.append_value(r_sys);
+        x.append_value(x_sys);
         winding1_r.append_value(0.0); // Placeholder: see psse-mapping for 3W export notes
         winding1_x.append_value(0.0);
         winding2_r.append_value(0.0);
         winding2_x.append_value(0.0);
-        g.append_value(t.mag1);
-        b.append_value(t.mag2);
-        tap_ratio.append_value(t.windv1);
+        g.append_value(g_sys);
+        b.append_value(b_sys);
+        tap_ratio.append_value(tap);
         nominal_tap_ratio.append_value(derive_nominal_tap_ratio(t));
         // RPF schema contract: transformers_2w.phase_shift is degrees (see cim-rs
         // rpf-field-guide). raptrix-core converts to radians on materialize.

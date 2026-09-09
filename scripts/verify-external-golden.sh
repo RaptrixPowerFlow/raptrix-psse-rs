@@ -179,6 +179,9 @@ fi
 convert_case "ACTIVSg25k" "tests/data/external/ACTIVSg25k.RAW" "ACTIVSg25k"
 convert_case "ACTIVSg70k" "tests/data/external/ACTIVSg70k.RAW" "ACTIVSg70k" \
   "$(pick_dyn tests/data/external/ACTIVSg70k)"
+convert_case "Memphis 2026 Mar7" "tests/data/external/MemphisCase2026_Mar7.RAW" \
+  "MemphisCase2026_Mar7" \
+  "$(pick_dyn tests/data/external/MemphisCase2026_Mar7)"
 
 echo
 echo "[verify-external-golden] OK — all conversions completed (dynamic canonical when DYR present)."

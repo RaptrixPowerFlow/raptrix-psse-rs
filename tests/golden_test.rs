@@ -15,9 +15,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use arrow::array::{Array, DictionaryArray, ListArray, StringArray};
+use arrow::datatypes::Int32Type;
+
 use raptrix_cim_arrow::{
     RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_MULTI_SECTION_LINES, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
+    TABLE_MULTI_SECTION_LINES, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
 };
 
 const EXTERNAL_DIR: &str = "tests/data/external";
@@ -41,6 +44,64 @@ const TAP_CONTROL_COLUMNS: &[&str] = &[
     "regulated_bus_id",
     "operation_time_min",
 ];
+
+fn dict_utf8_at(col: &dyn Array, i: usize) -> Option<&str> {
+    let dict = col
+        .as_any()
+        .downcast_ref::<DictionaryArray<Int32Type>>()
+        .expect("expected Dictionary<Int32, Utf8>");
+    if dict.is_null(i) {
+        return None;
+    }
+    let values = dict
+        .values()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("dictionary values must be Utf8");
+    Some(values.value(dict.key(i).expect("dictionary key")))
+}
+
+fn assert_shunt_control_columns(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    let batch = tables
+        .iter()
+        .find(|(n, _)| n == TABLE_SWITCHED_SHUNTS)
+        .map(|(_, b)| b)
+        .unwrap_or_else(|| panic!("{path} missing {TABLE_SWITCHED_SHUNTS}"));
+    for name in ["shunt_control_mode", "regulated_bus_id"] {
+        let col = batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("{path} {TABLE_SWITCHED_SHUNTS} missing {name}"));
+        assert_eq!(col.len(), batch.num_rows());
+    }
+}
+
+fn assert_memphis_n5_modsw2_continuous(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    let batch = tables
+        .iter()
+        .find(|(n, _)| n == TABLE_SWITCHED_SHUNTS)
+        .map(|(_, b)| b)
+        .unwrap_or_else(|| panic!("{path} missing {TABLE_SWITCHED_SHUNTS}"));
+    let steps = batch
+        .column_by_name("b_steps")
+        .expect("b_steps")
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .expect("List");
+    let modes = batch
+        .column_by_name("shunt_control_mode")
+        .expect("shunt_control_mode");
+    let found = (0..batch.num_rows()).any(|i| {
+        !steps.is_null(i)
+            && steps.value(i).len() == 5
+            && dict_utf8_at(modes, i) == Some("continuous_voltage")
+    });
+    assert!(
+        found,
+        "{path}: expected a 5-step MODSW=2 bank as continuous_voltage"
+    );
+}
 
 fn assert_tap_control_contract(path: &str) {
     let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
@@ -277,7 +338,7 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
-    assert_eq!(RPF_VERSION, "v0.14.2");
+    assert_eq!(RPF_VERSION, "v0.14.3");
 
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {
@@ -380,6 +441,10 @@ fn golden_build_all_external_raw_cases() {
     for t in &timings {
         assert_membership_flags_all_null(&t.output_file);
         assert_tap_control_contract(&t.output_file);
+        assert_shunt_control_columns(&t.output_file);
+        if t.case_name.contains("Memphis") {
+            assert_memphis_n5_modsw2_continuous(&t.output_file);
+        }
     }
 
     // Legacy short-stem aliases still referenced by older core/scripts paths.

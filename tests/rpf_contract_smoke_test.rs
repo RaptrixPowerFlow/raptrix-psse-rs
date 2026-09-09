@@ -25,7 +25,7 @@ use raptrix_cim_arrow::{
     METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_MRID_SUPPORT, RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES,
     TABLE_CONTINGENCIES, TABLE_CONTINGENCY_SEQUENCES, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_METADATA, TABLE_OWNERS, read_rpf_tables, rpf_file_metadata,
+    TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS, read_rpf_tables, rpf_file_metadata,
 };
 
 fn dict_utf8_at(col: &dyn Array, i: usize) -> &str {
@@ -1267,7 +1267,7 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.14.2");
+    assert_eq!(RPF_VERSION, "v0.14.3");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
@@ -1356,6 +1356,84 @@ BUS TYPE
             .all(|(name, _)| name != TABLE_CONTINGENCY_SEQUENCES),
         "PSS/E path must omit contingency_sequences"
     );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn switched_shunt_modsw_tokens_and_unknown() {
+    let raw_path = unique_temp_path("switched_shunt_modsw", "raw");
+    let out_path = unique_temp_path("switched_shunt_modsw", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / MODSW TOKENS
+MODSW
+MODSW
+1,'BUS1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+76,'BUS76',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+88,'BUS88',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+12,'BUS12',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN VSC DC LINE DATA
+0 / END OF VSC DC LINE DATA, BEGIN IMPEDANCE CORRECTION DATA
+0 / END OF IMPEDANCE CORRECTION DATA, BEGIN MULTI-TERMINAL DC DATA
+0 / END OF MULTI-TERMINAL DC DATA, BEGIN MULTI-SECTION LINE DATA
+0 / END OF MULTI-SECTION LINE DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA, BEGIN INTER-AREA TRANSFER DATA
+0 / END OF INTER-AREA TRANSFER DATA, BEGIN OWNER DATA
+0 / END OF OWNER DATA, BEGIN FACTS DEVICE DATA
+0 / END OF FACTS DEVICE DATA, BEGIN SWITCHED SHUNT DATA
+1,0,0,1,1.05,0.95,0,100.0,'        ',10.0,1,10.0
+76,1,0,1,1.05,0.95,76,100.0,'        ',20.0,1,20.0
+88,2,0,1,1.05,0.95,12,100.0,'        ',10.0,5,2.0
+12,3,0,1,1.05,0.95,0,100.0,'        ',5.0,1,5.0
+0 / END OF SWITCHED SHUNT DATA, BEGIN GNE DEVICE DATA
+0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
+0 / END OF INDUCTION MACHINE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write switched-shunt raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion should succeed");
+
+    let tables = read_rpf_tables(&out_path).expect("read_rpf_tables");
+    let (_, shunts) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_SWITCHED_SHUNTS)
+        .expect("switched_shunts table");
+    assert!(
+        shunts
+            .schema()
+            .field_with_name("shunt_control_mode")
+            .is_ok()
+    );
+    assert!(shunts.schema().field_with_name("regulated_bus_id").is_ok());
+    let modes = shunts
+        .column_by_name("shunt_control_mode")
+        .expect("shunt_control_mode");
+    let remotes = shunts
+        .column_by_name("regulated_bus_id")
+        .expect("regulated_bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("Int32");
+    assert_eq!(shunts.num_rows(), 4);
+    assert_eq!(dict_utf8_at(modes, 0), "locked");
+    assert_eq!(dict_utf8_at(modes, 1), "discrete_voltage");
+    assert_eq!(dict_utf8_at(modes, 2), "continuous_voltage");
+    assert!(modes.is_null(3), "MODSW=3 must be null + unknown_modsw");
+    assert!(remotes.is_null(0), "SWREG=0 is local");
+    assert!(remotes.is_null(1), "SWREG=I is local");
+    assert_eq!(remotes.value(2), 12);
+    assert!(remotes.is_null(3));
 
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);

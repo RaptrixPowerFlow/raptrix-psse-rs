@@ -333,16 +333,18 @@ pub struct TwoWindingTransformer {
     pub cw: u8,
     /// Impedance data input mode (CZ).
     pub cz: u8,
+    /// Magnetizing admittance input mode (CM). 0 is treated as 1 (PSS/E default).
+    pub cm: u8,
     /// Transformer status: 1 = in service (STAT).
     pub stat: u8,
-    /// Magnetising conductance (MAG1, p.u. on system base).
+    /// Magnetising conductance (MAG1). CM=1: pu on system base. Converted at RPF write.
     pub mag1: f64,
-    /// Magnetising susceptance (MAG2, p.u. on system base).
+    /// Magnetising susceptance (MAG2). CM=1: pu on system base. Converted at RPF write.
     pub mag2: f64,
-    // --- Line 2: leakage impedance on SBASE1-2 base ---
-    /// Series resistance of the two-winding branch (R1-2).
+    // --- Line 2: leakage impedance as coded by CZ (converted to system pu at RPF write) ---
+    /// Series resistance of the two-winding branch (R1-2), RAW coding.
     pub r12: f64,
-    /// Series reactance of the two-winding branch (X1-2).
+    /// Series reactance of the two-winding branch (X1-2), RAW coding.
     pub x12: f64,
     /// Winding 1–2 MVA base (SBASE1-2).
     pub sbase12: f64,
@@ -394,7 +396,7 @@ pub struct ThreeWindingTransformer {
     pub ckt: Box<str>,
     /// Transformer status: 1 = in service (STAT).
     pub stat: u8,
-    /// Pairwise series resistance R(H-M).
+    /// Pairwise series resistance R(H-M), pu on system SBASE after parse convert.
     pub r_hm: f64,
     /// Pairwise series reactance X(H-M).
     pub x_hm: f64,
@@ -406,11 +408,11 @@ pub struct ThreeWindingTransformer {
     pub r_ml: f64,
     /// Pairwise series reactance X(M-L).
     pub x_ml: f64,
-    /// Off-nominal turns ratio of winding H (WINDV1).
+    /// Off-nominal turns ratio of winding H (WINDV1), pu of BASKV after CW convert.
     pub tap_h: f64,
-    /// Off-nominal turns ratio of winding M (WINDV2).
+    /// Off-nominal turns ratio of winding M (WINDV2), pu of BASKV after CW convert.
     pub tap_m: f64,
-    /// Off-nominal turns ratio of winding L (WINDV3).
+    /// Off-nominal turns ratio of winding L (WINDV3), pu of BASKV after CW convert.
     pub tap_l: f64,
     /// Phase shift angle of winding H in degrees (ANG1).
     pub phase_shift_deg: f64,
@@ -593,7 +595,7 @@ pub struct FactsDeviceRaw {
 pub struct SwitchedShunt {
     /// Bus number (I).
     pub i: u32,
-    /// Control mode (MODSW): 0 = locked, 1 = discrete, 2 = continuous.
+    /// Control mode (MODSW): 0/1/2 map to RPF tokens; any other code is unknown.
     pub modsw: u8,
     /// Adjustment method (ADJM): 0 = steps, 1 = admittance.
     pub adjm: u8,

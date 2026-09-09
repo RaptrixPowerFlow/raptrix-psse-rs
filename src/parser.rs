@@ -19,16 +19,12 @@
 //!   and bare implicit-exponent (`1.5-3 → 1.5e-3`) used by some exporters.
 //! * **Quote-aware tokeniser**: bus names may contain spaces; quoted strings
 //!   are not split at internal commas or spaces.
-//! * **3-winding transformer star expansion**: creates a fictitious star bus
-//!   and three 2-winding legs, matching the C++ solver approach.
+//! * **3-winding transformer star expansion**: converts each pairwise Z on its
+//!   own SBASE, then creates a fictitious star bus and three 2-winding legs.
 //! * **DYR parser**: preserves all numeric dynamic model records and extracts
 //!   synchronous-machine parameters used by the generator table.
 
-use std::{
-    fs,
-    io::{self, BufRead},
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -36,6 +32,9 @@ use crate::models::{
     Area, Branch, Bus, BusType, CaseId, DcLine2W, DyrGeneratorData, DyrModelData, FactsDeviceRaw,
     FixedShunt, Generator, Load, MultiSectionLine, Network, Owner, SwitchedShunt,
     ThreeWindingTransformer, TwoWindingTransformer, Zone,
+};
+use crate::transformer_convert::{
+    TransformerId, convert_z_to_system, validate_transformer_codes, winding_pu_of_baskv,
 };
 
 // ---------------------------------------------------------------------------
@@ -246,15 +245,37 @@ fn default_next_state(state: ParseState, version: u32) -> ParseState {
 // ---------------------------------------------------------------------------
 
 /// Advance the iterator, strip a trailing `\r`, and return the line.
-fn next_line(lines: &mut io::Lines<io::BufReader<fs::File>>) -> Result<Option<String>> {
-    match lines.next() {
-        None => Ok(None),
-        Some(Ok(l)) => Ok(Some(l.trim_end_matches('\r').to_string())),
-        Some(Err(e)) => Err(anyhow::Error::from(e).context("I/O error reading file")),
+fn next_line<'a>(lines: &mut std::str::Lines<'a>) -> Option<String> {
+    lines.next().map(|l| l.trim_end_matches('\r').to_string())
+}
+
+/// Read a PSS/E deck. Prefer UTF-8; fall back to Windows-1252 (PowerWorld
+/// title lines often carry `0x93`/`0x94` smart quotes).
+fn read_vendor_text(path: &Path, kind: &str) -> Result<String> {
+    let bytes =
+        fs::read(path).with_context(|| format!("cannot open {kind} file: {}", path.display()))?;
+    Ok(decode_vendor_text(&bytes))
+}
+
+fn decode_vendor_text(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_owned(),
+        Err(_) => bytes.iter().copied().map(windows_1252_char).collect(),
     }
 }
 
-/// Advance the iterator; return `Err` if the file ends unexpectedly.
+fn windows_1252_char(b: u8) -> char {
+    const C1: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž',
+        '\u{8F}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9D}',
+        'ž', 'Ÿ',
+    ];
+    match b {
+        0x80..=0x9F => C1[(b - 0x80) as usize],
+        _ => char::from(b),
+    }
+}
+
 /// Parse a Fortran-style floating-point token into an `f64`.
 ///
 /// Handles:
@@ -1243,8 +1264,9 @@ fn star_leg_transformer(
         i: from_bus,
         j: to_bus,
         ckt: format!("S{ckt_suffix}").into_boxed_str(),
-        cw: 0,
-        cz: 0,
+        cw: 1,
+        cz: 1,
+        cm: 1,
         stat,
         mag1: 0.0,
         mag2: 0.0,
@@ -1265,6 +1287,15 @@ fn star_leg_transformer(
         rmi1: 0.0,
         ntp1: 0,
     }
+}
+
+fn bus_baskv(buses: &[Bus], bus_id: u32, nomv_fallback: f64) -> f64 {
+    buses
+        .iter()
+        .find(|b| b.i == bus_id)
+        .map(|b| b.baskv)
+        .filter(|v| *v > 1.0e-9)
+        .unwrap_or(nomv_fallback)
 }
 
 /// Build a fictitious star bus for the 3W star expansion.
@@ -1334,10 +1365,8 @@ pub fn parse_raw(path: &Path) -> Result<Network> {
 }
 
 fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) -> Result<Network> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("cannot open RAW file: {}", path.display()))?;
-    let reader = io::BufReader::new(file);
-    let mut lines_iter = reader.lines();
+    let text = read_vendor_text(path, "RAW")?;
+    let mut lines_iter = text.lines();
 
     let mut state = ParseState::Header;
     let mut psse_version: u32 = 33;
@@ -1352,7 +1381,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
     let mut multi_section_rows_rejected: usize = 0;
 
     loop {
-        let raw_line = match next_line(&mut lines_iter)? {
+        let raw_line = match next_line(&mut lines_iter) {
             None => break,
             Some(l) => l,
         };
@@ -1396,8 +1425,8 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                 result.case_id = case_id;
 
                 // Consume the two case-description text lines (lines 2-3)
-                let _ = next_line(&mut lines_iter)?;
-                let _ = next_line(&mut lines_iter)?;
+                let _ = next_line(&mut lines_iter);
+                let _ = next_line(&mut lines_iter);
 
                 state = if psse_version >= 35 {
                     ParseState::SystemWide
@@ -1487,26 +1516,33 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                 let ckt = field_str(&f1, 3);
                 let cw = field_u8(&f1, 4);
                 let cz = field_u8(&f1, 5);
+                let cm = field_u8(&f1, 6);
                 let mag1 = field_f64(&f1, 7);
                 let mag2 = field_f64(&f1, 8);
                 let stat = field_u8_default(&f1, 11, 1);
+                let tx_id = TransformerId {
+                    i: i_bus,
+                    j: j_bus,
+                    k: k_bus,
+                };
+                validate_transformer_codes(tx_id, cw, cz, cm)?;
 
                 // Always read lines 2, 3, 4 (and 5 for 3W) regardless of status,
                 // so the line iterator stays synchronised with the file.
-                let l2 = match next_line(&mut lines_iter)? {
+                let l2 = match next_line(&mut lines_iter) {
                     None => break,
                     Some(l) => l,
                 };
-                let l3 = match next_line(&mut lines_iter)? {
+                let l3 = match next_line(&mut lines_iter) {
                     None => break,
                     Some(l) => l,
                 };
-                let l4 = match next_line(&mut lines_iter)? {
+                let l4 = match next_line(&mut lines_iter) {
                     None => break,
                     Some(l) => l,
                 };
                 let l5 = if k_bus != 0 {
-                    match next_line(&mut lines_iter)? {
+                    match next_line(&mut lines_iter) {
                         None => break,
                         Some(l) => Some(l),
                     }
@@ -1543,6 +1579,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         ckt: ckt.into_boxed_str(),
                         cw,
                         cz,
+                        cm,
                         stat,
                         mag1,
                         mag2,
@@ -1570,8 +1607,10 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                     // Record 2 (3W): R1-2, X1-2, SBASE1-2, R2-3, X2-3, SBASE2-3, R3-1, X3-1, SBASE3-1
                     let r23 = field_f64(&f2, 3);
                     let x23 = field_f64(&f2, 4);
+                    let sbase23 = field_f64(&f2, 5);
                     let r31 = field_f64(&f2, 6);
                     let x31 = field_f64(&f2, 7);
+                    let sbase31 = field_f64(&f2, 8);
 
                     // Record 4 for winding 2: WINDV2, NOMV2, ANG2, RATA2, …
                     let ang2 = field_f64(&f4, 2);
@@ -1587,13 +1626,35 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                     let ratb3 = field_f64(&f5, 4);
                     let ratc3 = field_f64(&f5, 5);
 
-                    // Star-delta impedance decomposition
-                    let za_r = 0.5 * (r12 + r31 - r23);
-                    let za_x = 0.5 * (x12 + x31 - x23);
-                    let zb_r = 0.5 * (r12 + r23 - r31);
-                    let zb_x = 0.5 * (x12 + x23 - x31);
-                    let zc_r = 0.5 * (r23 + r31 - r12);
-                    let zc_x = 0.5 * (x23 + x31 - x12);
+                    // Convert each pairwise Z on its own SBASE, then star-decompose
+                    // in one base. Applying the 2W SBASE1-2 scale to all three pairs
+                    // is wrong when SBASE2-3 / SBASE3-1 differ.
+                    let sbase_sys = if result.case_id.sbase.abs() > 1.0e-9 {
+                        result.case_id.sbase
+                    } else {
+                        100.0
+                    };
+                    let (r12_sys, x12_sys) =
+                        convert_z_to_system(tx_id, cz, r12, x12, sbase12, sbase_sys)?;
+                    let (r23_sys, x23_sys) =
+                        convert_z_to_system(tx_id, cz, r23, x23, sbase23, sbase_sys)?;
+                    let (r31_sys, x31_sys) =
+                        convert_z_to_system(tx_id, cz, r31, x31, sbase31, sbase_sys)?;
+
+                    let baskv_h = bus_baskv(&result.buses, i_bus, nomv1);
+                    let baskv_m = bus_baskv(&result.buses, j_bus, nomv2);
+                    let baskv_l = bus_baskv(&result.buses, k_bus, nomv3);
+                    let tap_h = winding_pu_of_baskv(tx_id, cw, windv1, nomv1, baskv_h)?;
+                    let tap_m = winding_pu_of_baskv(tx_id, cw, windv2, nomv2, baskv_m)?;
+                    let tap_l = winding_pu_of_baskv(tx_id, cw, windv3, nomv3, baskv_l)?;
+
+                    // Star-delta impedance decomposition (system-base pairs)
+                    let za_r = 0.5 * (r12_sys + r31_sys - r23_sys);
+                    let za_x = 0.5 * (x12_sys + x31_sys - x23_sys);
+                    let zb_r = 0.5 * (r12_sys + r23_sys - r31_sys);
+                    let zb_x = 0.5 * (x12_sys + x23_sys - x31_sys);
+                    let zc_r = 0.5 * (r23_sys + r31_sys - r12_sys);
+                    let zc_x = 0.5 * (x23_sys + x31_sys - x12_sys);
 
                     // Minimum MVA rating across the three windings
                     let rate = rata1.min(rata2).min(rata3);
@@ -1611,15 +1672,15 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         star_bus_id: star_id,
                         ckt: ckt.clone().into_boxed_str(),
                         stat,
-                        r_hm: r12,
-                        x_hm: x12,
-                        r_hl: r31,
-                        x_hl: x31,
-                        r_ml: r23,
-                        x_ml: x23,
-                        tap_h: windv1,
-                        tap_m: windv2,
-                        tap_l: windv3,
+                        r_hm: r12_sys,
+                        x_hm: x12_sys,
+                        r_hl: r31_sys,
+                        x_hl: x31_sys,
+                        r_ml: r23_sys,
+                        x_ml: x23_sys,
+                        tap_h,
+                        tap_m,
+                        tap_l,
                         phase_shift_deg: ang1,
                         rate_a_mva: rate,
                         rate_b_mva: rate_b,
@@ -1647,13 +1708,13 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                     ));
 
                     result.transformers.push(star_leg_transformer(
-                        i_bus, star_id, 1, za_r, za_x, windv1, ang1, rate, sbase12, stat,
+                        i_bus, star_id, 1, za_r, za_x, tap_h, ang1, rate, sbase_sys, stat,
                     ));
                     result.transformers.push(star_leg_transformer(
-                        j_bus, star_id, 2, zb_r, zb_x, windv2, ang2, rate, sbase12, stat,
+                        j_bus, star_id, 2, zb_r, zb_x, tap_m, ang2, rate, sbase_sys, stat,
                     ));
                     result.transformers.push(star_leg_transformer(
-                        k_bus, star_id, 3, zc_r, zc_x, windv3, ang3, rate, sbase12, stat,
+                        k_bus, star_id, 3, zc_r, zc_x, tap_l, ang3, rate, sbase_sys, stat,
                     ));
                 }
             }
@@ -1876,6 +1937,29 @@ T2
             b.va
         );
         assert!((b.baskv - 69.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn windows_1252_smart_quotes_in_title_do_not_abort_parse() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("cp1252_title.raw");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"0, 100.0, 33, 0, 0, 60.0 / CP1252\n");
+        raw.extend_from_slice(b"Birchfield, \x93Dynamic\x94 grids\n");
+        raw.extend_from_slice(b"T2\n");
+        raw.extend_from_slice(
+            b"101,'Test Bus     ',  69.0000,1,   1,   1,   1,1.00000000,   0.000000, 1.10000, 0.90000, 1.10000, 0.90000\n",
+        );
+        raw.extend_from_slice(b"0 / END OF BUS DATA, BEGIN LOAD DATA\n");
+        raw.extend_from_slice(b"0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA\n");
+        raw.extend_from_slice(b"0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA\n");
+        raw.extend_from_slice(b"0 / END OF GENERATOR DATA, BEGIN BRANCH DATA\n");
+        raw.extend_from_slice(minimal_raw_tail().as_bytes());
+        std::fs::write(&path, &raw).expect("write");
+
+        let net = parse_raw(&path).expect("Windows-1252 title must parse");
+        assert_eq!(net.buses.len(), 1);
+        assert_eq!(net.buses[0].i, 101);
     }
 
     #[test]
@@ -2116,16 +2200,14 @@ pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
 
 /// Parse all numeric DYR records from `path`.
 pub fn parse_dyr_records(path: &Path) -> Result<Vec<DyrModelData>> {
-    let file = fs::File::open(path)
-        .with_context(|| format!("cannot open DYR file: {}", path.display()))?;
-    let reader = io::BufReader::new(file);
+    let text = read_vendor_text(path, "DYR")?;
 
     let mut records: Vec<DyrModelData> = Vec::new();
     let mut pending = String::new();
 
-    for line_result in reader.lines() {
-        let line = line_result.context("I/O error reading DYR file")?;
-        let mut remaining = line.as_str();
+    for line in text.lines() {
+        let line = line.trim_end_matches('\r');
+        let mut remaining = line;
 
         loop {
             let slash_pos = remaining.find('/');

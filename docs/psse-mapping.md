@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.2**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.3**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -21,7 +21,8 @@ Arrow schema.
 > **Fidelity policy**: numeric fields are written exactly as they appear in the
 > source RAW file unless an explicit normalisation rule is documented below.
 > No value clamping, substitution, or scaling is applied at parse time except
-> where required to match the RPF schema units (e.g. MVA → per-unit on SBASE).
+> where required to match the RPF schema units (e.g. MVA → per-unit on SBASE,
+> transformer CW / CZ / CM → system-base `r` / `x` / `tap_ratio` / MAG).
 > Validation and singularity handling are the responsibility of the downstream solver.
 
 ---
@@ -33,10 +34,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.2 contract (current)
+### v0.14.3 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.2**; readers accept **v0.14.2**, **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- **Emit v0.14.3**; readers accept **v0.14.3**, **v0.14.2**, **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- Trailing nullable `switched_shunts.shunt_control_mode` / `regulated_bus_id` map PSS/E MODSW 0/1/2 and SWREG/SWREM. Other MODSW → null + `unknown_modsw`.
 - Trailing nullable transformer tap / PST control (`tap_min` / `tap_max` / `tap_limit_unit` / `n_positions` / `tap_step` / `tap_control_mode` / `regulated_bus_id` / `operation_time_min`) is mapped from RAW COD1/CONT1/RMA1/RMI1/NTP1. **3W is winding H / COD1 only** (M/L LTC is out of scope). `operation_time_min` is always null from RAW.
 - Trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines` are **null**. Do not invent BES from kV.
 - Optional root tables **`remedial_action_schemes`**, **`contingency_island_analysis`**, and **`contingency_sequences`** are **not** emitted by this PSS/E converter (no RAW mapping today). `contingencies` is a zero-row stub on the shared 10-column schema (`tpl_category` / `reserved` null).
@@ -71,6 +73,13 @@ value_pu = value_mva / SBASE
 ```
 
 Angles are stored in **radians** in RPF (PSS/E uses degrees).
+
+Transformer series `r` / `x` and `tap_ratio` are written in **system-base**
+units. RAW CW / CZ / CM coding is converted at export (2W) or at parse before
+star expansion (3W pairwise Z, each on its own SBASE). Missing CW/CZ/CM tokens
+default to 1. Unknown codes and **CM=2** fail conversion; they are not written
+through as raw numbers. CZ=3 is load loss in watts plus |Z| pu on winding
+SBASE — not ohms.
 
 ---
 
@@ -295,12 +304,12 @@ At export time the converter enforces one representation policy per file:
 | J | 1 | `j` | `to_bus_id` | Winding 2 bus. |
 | CKT | 1 | `ckt` | `ckt` | |
 | STAT | 1 | `stat` | `status` | Bool. |
-| MAG1 | 1 | `mag1` | `g` | Magnetising conductance (pu system base). |
-| MAG2 | 1 | `mag2` | `b` | Magnetising susceptance (pu system base). |
-| R1-2 | 2 | `r12` | `r` | Series resistance (pu on SBASE1-2 base). |
-| X1-2 | 2 | `x12` | `x` | Series reactance. |
-| SBASE1-2 | 2 | `sbase12` | *(not stored)* | Winding MVA base; used during parse only. |
-| WINDV1 | 3 | `windv1` | `tap_ratio` | Off-nominal turns ratio, winding 1. |
+| MAG1 | 1 | `mag1` | `g` | Magnetising conductance. CM=1: pu system base (written as-is). CM=2 rejected. |
+| MAG2 | 1 | `mag2` | `b` | Magnetising susceptance. Same CM rule as MAG1. |
+| R1-2 | 2 | `r12` | `r` | Series resistance, **pu on system SBASE** after CZ convert. CZ=1 identity; CZ=2 `× SBASE/SBASE1-2`; CZ=3 watts + \|Z\| on winding base, then the CZ=2 scale. |
+| X1-2 | 2 | `x12` | `x` | Series reactance, same CZ convert as `r`. |
+| SBASE1-2 | 2 | `sbase12` | *(not stored)* | Winding MVA base; used for CZ=2/3 convert. 3W also reads SBASE2-3 / SBASE3-1 and converts each pair before star expansion. |
+| WINDV1 | 3 | `windv1` | `tap_ratio` | From-side off-nominal tap = (winding-1 pu of BASKV) / (winding-2 pu of BASKV). CW=1: WINDV already pu of BASKV. CW=2: WINDV/BASKV (kV). CW=3: WINDV×NOMV/BASKV. |
 | NOMV1 | 3 | `nomv1` | `from_nominal_kv` | Required. Uses `NOMV1` when positive, else falls back to connected bus nominal-kV. |
 | ANG1 | 3 | `ang1` | `phase_shift` | Degrees on the wire (core converts to radians on materialize). |
 | RATA1 | 3 | `rata1` | `rate_a` | RATA1 / SBASE (pu). |
@@ -314,7 +323,7 @@ At export time the converter enforces one representation policy per file:
 | NTP1 | 3 | `ntp1` | `n_positions` | Null unless NTP>1 and RMA>RMI. |
 | — | — | — | `tap_step` | `(RMA-RMI)/(NTP-1)` when NTP>1. Never inferred from WINDV1. |
 | — | — | — | `operation_time_min` | Always null from RAW (not in PSS/E). |
-| WINDV2 | 4 | `windv2` | *(not stored)* | Used only during 3W star expansion. |
+| WINDV2 | 4 | `windv2` | *(denominator of `tap_ratio`)* | Defaults to 1.0 when missing/zero. Used with WINDV1 after CW convert. |
 | NOMV2 | 4 | `nomv2` | `to_nominal_kv` | Required. Uses `NOMV2` when positive, else falls back to connected bus nominal-kV (or opposite-side bus for synthetic star-leg rows). |
 | — | — | — | `nominal_tap_ratio` | Derived as `NOMV1 / NOMV2` when both rated voltages are present; falls back to `1.0` otherwise. |
 | — | — | — | `vector_group` | Always `"unknown"`. PSS/E RAW does not directly encode IEC vector-group semantics; `CW` / `CZ` describe voltage and impedance coding, not winding connection group. |
@@ -380,9 +389,9 @@ star bus IDs are greater than 10 000 000 and are not emitted in the exported
 | N1–N8 / B1–B8 | `steps` (expanded) | `b_steps` | List<Float64>: each Nk copies of Bk/SBASE. |
 | — | — | `current_step` | Estimated from BINIT: closest cumulative step sum index. |
 | — | — | `shunt_id` | Synthesized: `"{bus_id}_shunt_{n}"` (1-indexed per bus). |
-| MODSW | `modsw` | *(not stored)* | Control mode (0=locked, 1=discrete, 2=continuous). |
+| MODSW | `modsw` | `shunt_control_mode` | 0 → `locked`, 1 → `discrete_voltage`, 2 → `continuous_voltage`. Any other code → null + `unknown_modsw` (bus I and the integer). |
 | ADJM | `adjm` | *(not stored)* | Adjustment method. |
-| SWREM | `swrem` | *(not stored)* | Remotely regulated bus number. |
+| SWREM | `swrem` | `regulated_bus_id` | 0 or I → null (local). Remote dense `bus_id` otherwise. |
 | RMPCT | `rmpct` | *(not stored)* | Remote reactive fraction. |
 | RMIDNT | `rmidnt` | *(not stored)* | Remote bus name. |
 
@@ -451,7 +460,7 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 **Parser skips (records discarded in `parser.rs`):** SYSTEM-WIDE DATA, SYSTEM SWITCHING DEVICE, impedance correction, inter-area transfer, GNE device, induction machine blocks — no `Network` fields today. Multi-terminal DC is only flagged via `has_multi_terminal_dc`; no MTDC table in the interchange.
 
-**Interchange schema limits (not PSS/E gaps):** load AREA/ZONE/OWNER/SCALE/INTRPT have no dedicated `loads` columns; `buses` has no EVHI/EVLO columns; `transformers_2w` has no `params` map for CW/CZ and other RAW-only knobs. Closing those requires `raptrix-cim-arrow` / schema-contract changes plus exporter updates.
+**Interchange schema limits (not PSS/E gaps):** load AREA/ZONE/OWNER/SCALE/INTRPT have no dedicated `loads` columns; `buses` has no EVHI/EVLO columns; `transformers_2w` has no `params` map for residual RAW-only knobs (CW/CZ/CM themselves are converted into system-base `r`/`x`/`tap_ratio`/MAG, not stored as codes). Closing remaining gaps requires `raptrix-cim-arrow` / schema-contract changes plus exporter updates.
 
 ---
 

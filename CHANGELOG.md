@@ -18,6 +18,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-09-09
+
+### RPF v0.14.3 (raptrix-cim-arrow 0.7.3) — switched-shunt control tokens
+
+- Pin `raptrix-cim-arrow` to git tag `v0.7.3` and `arrow` **59.3**.
+- Writer stamps `v0.14.3`. Map PSS/E `MODSW` 0/1/2 → `locked` /
+  `discrete_voltage` / `continuous_voltage`. Any other code → null +
+  `unknown_modsw` (bus I and the integer). `SWREG`/`SWREM` 0 or local I →
+  null `regulated_bus_id`.
+- Dual-read v0.14.2 / v0.14.1 / v0.14.0 / v0.13.x.
+
+### Fixed
+
+- **Transformer CW / CZ / CM convert onto RPF system-base units.** RPF
+  `transformers_2w.r` / `x` / `tap_ratio` / `g` / `b` were previously the raw
+  RAW tokens (`r12`/`x12` as-coded, `tap_ratio = WINDV1` with no WINDV2 or CW).
+  2W convert is at export; 3W converts each pairwise Z on its own SBASE then
+  star-decomposes (do not apply the 2W SBASE1-2 formula to all three legs).
+  CW=1/2/3, CZ=1/2/3, CM=1. Missing codes default to 1. Unknown codes and CM=2
+  fail with I/J/K. CZ=3 is watts + \|Z\| pu on winding SBASE, not ohms.
+  CW=1/CZ=1 decks (IEEE 14/118) are unchanged.
+
+### Golden corpus
+
+- Added **MemphisCase2026_Mar7** (~993-bus TAMU IBR-heavy synthetic) to the
+  local external golden sweep: `tests/data/external/MemphisCase2026_Mar7.RAW`
+  plus `MemphisCase2026_Mar7_Dynamics.dyr`. Canonical `tests/golden/` output
+  is dynamic (`<stem>.rpf` / `_dynamic.rpf`) with a no-DYR `_static.rpf`
+  companion. `verify-external-golden.sh` lists the same pair.
+
+### Fixed
+
+- **Windows-1252 RAW/DYR titles**: PowerWorld decks with `0x93`/`0x94` smart
+  quotes in the header (Memphis TAMU citation) no longer fail as invalid UTF-8.
+  UTF-8 is still preferred when the file is valid.
+
 ---
 
 ## [0.7.2] - 2026-08-19

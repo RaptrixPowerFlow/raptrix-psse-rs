@@ -18,6 +18,27 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.7.3**: RPF **v0.14.3** (`raptrix-cim-arrow` **0.7.3**) — **Switched-shunt control tokens**
+
+`raptrix-psse-rs` **v0.7.3** emits RPF **v0.14.3**.
+
+#### What changed
+
+- Writer stamps `v0.14.3`; readers accept **v0.14.3** through **v0.13.0**.
+- `switched_shunts.shunt_control_mode`: MODSW 0/1/2 → `locked` /
+  `discrete_voltage` / `continuous_voltage`. Any other code → null +
+  `unknown_modsw` (include bus I and the integer). Do not invent
+  `discrete_reactive` (that is 0.14.4).
+- `switched_shunts.regulated_bus_id`: SWREG/SWREM 0 or I → null (local).
+- Do not conflate with file-level `default_shunt_control_mode`.
+- **Dependency**: `raptrix-cim-arrow` **0.7.3** / git tag **`v0.7.3`**, Arrow **59.3**.
+
+#### Consumer checklist
+
+1. Accept `raptrix.version` ∈ {`v0.14.3`, `v0.14.2`, `v0.14.1`, `v0.14.0`, `v0.13.1`, `v0.13.0`}.
+2. Treat null `shunt_control_mode` as unspecified (including MODSW ≥ 3).
+3. Treat null `regulated_bus_id` as local regulation.
+
 ### raptrix-psse-rs **v0.7.2**: RPF **v0.14.2** (`raptrix-cim-arrow` **0.7.2**) — **Tap / PST control (dual-read v0.14.1 / v0.14.0 / v0.13.x)**
 
 `raptrix-psse-rs` **v0.7.2** emits RPF **v0.14.2**.

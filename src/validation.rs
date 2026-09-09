@@ -21,6 +21,7 @@
 use std::collections::HashSet;
 
 use crate::models::{BusType, Network};
+use crate::transformer_convert::normalize_code;
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -463,8 +464,8 @@ fn check_transformers(r: &mut ValidationReport, n: &Network) {
             );
         }
 
-        // Off-nominal turns ratio out of reasonable range
-        if tx.windv1 < 0.5 || tx.windv1 > 2.0 {
+        // Off-nominal turns ratio out of reasonable range (CW=1: WINDV is pu of BASKV)
+        if normalize_code(tx.cw) == 1 && (tx.windv1 < 0.5 || tx.windv1 > 2.0) {
             push(
                 r,
                 Severity::Warning,
@@ -475,7 +476,7 @@ fn check_transformers(r: &mut ValidationReport, n: &Network) {
                 ),
             );
         }
-        if tx.windv2 < 0.5 || tx.windv2 > 2.0 {
+        if normalize_code(tx.cw) == 1 && (tx.windv2 < 0.5 || tx.windv2 > 2.0) {
             push(
                 r,
                 Severity::Warning,
