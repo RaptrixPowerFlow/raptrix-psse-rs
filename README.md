@@ -134,12 +134,14 @@ The optional **`scenario_context`** root table is **not** written by default. Th
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.7.3)
+## Recent release (v0.7.4)
 
-- **RPF v0.14.3** (`raptrix.version` / `raptrix-cim-arrow` **0.7.3**): switched-shunt `shunt_control_mode` / `regulated_bus_id` from MODSW / SWREG; dual-read **v0.14.2** through **v0.13.0**. Pre-0.13 still requires re-export.
+- **Parser**: `/` inside a single-quoted RAW field is no longer a comment.
+  NYISO names such as `EUCLID/OCWA` keep published VM/VA/kV (issue #31).
+- Still **RPF v0.14.3** (`raptrix-cim-arrow` **0.7.3**). Dual-read **v0.14.2**
+  through **v0.13.0**. Pre-0.13 still requires re-export.
 - Facility-membership flags on circuits and transformers are **null**. Do not invent BES from kV.
 - 3W tap control is winding H / COD1 only. `operation_time_min` stays null.
-- **`raptrix-cim-arrow`** is pinned to git tag **`v0.7.3`**.
 
 See [CHANGELOG.md](CHANGELOG.md) for full release history and [MIGRATION.md](MIGRATION.md) for schema version notes.
 

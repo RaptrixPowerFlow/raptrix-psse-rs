@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use arrow::array::{Array, DictionaryArray, Float64Array, ListArray, StringArray};
+use arrow::array::{Array, DictionaryArray, Float64Array, Int32Array, ListArray, StringArray};
 use arrow::datatypes::Int32Type;
 
 use raptrix_cim_arrow::{
@@ -101,6 +101,77 @@ fn assert_memphis_n5_modsw2_continuous(path: &str) {
         found,
         "{path}: expected a 5-step MODSW=2 bank as continuous_voltage"
     );
+}
+
+fn assert_nyiso_slash_names_keep_scheduled_vm(path: &str) {
+    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+    let batch = tables
+        .iter()
+        .find(|(n, _)| n == TABLE_BUSES)
+        .map(|(_, b)| b)
+        .unwrap_or_else(|| panic!("{path} missing buses"));
+    let bus_id = batch
+        .column_by_name("bus_id")
+        .expect("bus_id")
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .expect("Int32");
+    let v_mag = batch
+        .column_by_name("v_mag_set")
+        .expect("v_mag_set")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("Float64");
+    let v_ang = batch
+        .column_by_name("v_ang_set")
+        .expect("v_ang_set")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("Float64");
+    let nominal_kv = batch
+        .column_by_name("nominal_kv")
+        .expect("nominal_kv")
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("Float64");
+    let names = batch.column_by_name("name").expect("name");
+
+    // NYISO off/on-peak/2030 share these three slash-in-name PQ buses. A
+    // quote-blind `/` comment split used to drop VM and sanitize to 1.0.
+    let expected: &[(i32, &str)] = &[
+        (351, "EUCLID/OCWA"),
+        (1275, "SALAMANCA/~2"),
+        (1276, "SALAMANCA/~1"),
+    ];
+    for &(id, name_prefix) in expected {
+        let i = (0..bus_id.len())
+            .find(|&i| bus_id.value(i) == id)
+            .unwrap_or_else(|| panic!("{path}: missing bus {id}"));
+        let vm = v_mag.value(i);
+        assert!(
+            (vm - 1.0).abs() > 1.0e-4,
+            "{path} bus {id}: v_mag_set must keep RAW VM, not sanitized 1.0 (got {vm})"
+        );
+        assert!(
+            (1.005..=1.03).contains(&vm),
+            "{path} bus {id}: v_mag_set {vm} outside the NYISO scheduled band"
+        );
+        let name = dict_utf8_at(names, i).unwrap_or("");
+        assert!(
+            name.contains(name_prefix),
+            "{path} bus {id}: name must keep '/', got {name:?}"
+        );
+        let va = v_ang.value(i);
+        assert!(
+            va.abs() > 40.0,
+            "{path} bus {id}: v_ang_set must keep RAW VA, got {va}"
+        );
+        assert!(
+            (nominal_kv.value(i) - 115.0).abs() < 1.0e-6,
+            "{path} bus {id}: nominal_kv must stay 115, got {}",
+            nominal_kv.value(i)
+        );
+    }
 }
 
 fn assert_ieee14_v_ang_set_degrees(path: &str) {
@@ -469,6 +540,9 @@ fn golden_build_all_external_raw_cases() {
         }
         if t.case_name.to_ascii_lowercase().contains("ieee14") {
             assert_ieee14_v_ang_set_degrees(&t.output_file);
+        }
+        if t.case_name.to_ascii_lowercase().contains("nyiso") {
+            assert_nyiso_slash_names_keep_scheduled_vm(&t.output_file);
         }
     }
 

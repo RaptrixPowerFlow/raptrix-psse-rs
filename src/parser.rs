@@ -19,6 +19,8 @@
 //!   and bare implicit-exponent (`1.5-3 → 1.5e-3`) used by some exporters.
 //! * **Quote-aware tokeniser**: bus names may contain spaces; quoted strings
 //!   are not split at internal commas or spaces.
+//! * **Quote-aware comment split**: `/` starts a trailing comment only outside
+//!   a single-quoted field (names such as `EUCLID/OCWA` stay intact).
 //! * **3-winding transformer star expansion**: converts each pairwise Z on its
 //!   own SBASE, then creates a fictitious star bus and three 2-winding legs.
 //! * **DYR parser**: preserves all numeric dynamic model records and extracts
@@ -321,15 +323,42 @@ pub fn parse_fortran_double(raw: &str) -> f64 {
     s.parse::<f64>().unwrap_or(0.0)
 }
 
+/// Shared PSS/E single-quote rules used by [`tokenize`] and [`split_comment`].
+///
+/// Decks commonly embed apostrophes inside bus names without doubling them
+/// (`'O'Neil Bus 1'`). A naive toggle on every `'` swallows the rest of the
+/// line into one token. Closing a quoted field only when the next significant
+/// character is `,` (or EOS), and treating `''` as an escaped apostrophe,
+/// preserves both well-formed and legacy undoubled names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuoteClass {
+    Enter,
+    Leave,
+    EscapedApostrophe,
+    LiteralApostrophe,
+}
+
+fn classify_quote(chars: &[char], i: usize, in_quotes: bool) -> QuoteClass {
+    if !in_quotes {
+        QuoteClass::Enter
+    } else if i + 1 < chars.len() && chars[i + 1] == '\'' {
+        QuoteClass::EscapedApostrophe
+    } else {
+        let mut j = i + 1;
+        while j < chars.len() && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= chars.len() || chars[j] == ',' {
+            QuoteClass::Leave
+        } else {
+            QuoteClass::LiteralApostrophe
+        }
+    }
+}
+
 /// Quote-aware comma tokeniser.  Strips surrounding single quotes from each
 /// token and trims leading/trailing whitespace.  Does NOT split at commas
 /// that appear inside a quoted string.
-///
-/// PSS/E decks commonly embed apostrophes inside bus names without doubling
-/// them (`'O'Neil Bus 1'`). A naive toggle on every `'` swallows the rest of
-/// the line into one token. Closing a quoted field only when the next
-/// significant character is `,` (or EOS), and treating `''` as an escaped
-/// apostrophe, preserves both well-formed and legacy undoubled names.
 fn tokenize(line: &str) -> Vec<String> {
     let mut tokens: Vec<String> = Vec::new();
     let mut token = String::new();
@@ -340,26 +369,15 @@ fn tokenize(line: &str) -> Vec<String> {
     while i < chars.len() {
         let ch = chars[i];
         match ch {
-            '\'' => {
-                if !in_quotes {
-                    in_quotes = true;
-                } else if i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    // PSS/E escaped apostrophe inside a quoted field.
+            '\'' => match classify_quote(&chars, i, in_quotes) {
+                QuoteClass::Enter => in_quotes = true,
+                QuoteClass::Leave => in_quotes = false,
+                QuoteClass::EscapedApostrophe => {
                     token.push('\'');
                     i += 1;
-                } else {
-                    let mut j = i + 1;
-                    while j < chars.len() && chars[j].is_whitespace() {
-                        j += 1;
-                    }
-                    if j >= chars.len() || chars[j] == ',' {
-                        in_quotes = false;
-                    } else {
-                        // Embedded apostrophe (e.g. O'Neil) — keep literally.
-                        token.push('\'');
-                    }
                 }
-            }
+                QuoteClass::LiteralApostrophe => token.push('\''),
+            },
             ',' if !in_quotes => {
                 tokens.push(token.trim().to_string());
                 token.clear();
@@ -376,11 +394,36 @@ fn tokenize(line: &str) -> Vec<String> {
     tokens
 }
 
-/// Split a line at the first `/` into `(data, hint)`.
+/// Byte index of the first `/` that is not inside a single-quoted field.
+fn first_unquoted_slash(line: &str) -> Option<usize> {
+    let indexed: Vec<(usize, char)> = line.char_indices().collect();
+    let chars: Vec<char> = indexed.iter().map(|&(_, c)| c).collect();
+    let mut in_quotes = false;
+    let mut i = 0usize;
+    while i < indexed.len() {
+        let (byte_idx, ch) = indexed[i];
+        match ch {
+            '\'' => match classify_quote(&chars, i, in_quotes) {
+                QuoteClass::Enter => in_quotes = true,
+                QuoteClass::Leave => in_quotes = false,
+                QuoteClass::EscapedApostrophe => i += 1,
+                QuoteClass::LiteralApostrophe => {}
+            },
+            '/' if !in_quotes => return Some(byte_idx),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Split a line at the first **unquoted** `/` into `(data, hint)`.
 /// The `hint` may contain a section-transition marker like
 /// `"END OF BUS DATA, BEGIN LOAD DATA"`.
+///
+/// `/` inside a single-quoted field is data (e.g. `'EUCLID/OCWA '`).
 fn split_comment(line: &str) -> (&str, &str) {
-    match line.find('/') {
+    match first_unquoted_slash(line) {
         Some(pos) => (&line[..pos], &line[pos + 1..]),
         None => (line, ""),
     }
@@ -1873,7 +1916,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
 mod tests {
     use std::io::Write;
 
-    use super::{parse_facts_record, parse_raw, parse_raw_with_branch_deck_stats};
+    use super::{parse_facts_record, parse_raw, parse_raw_with_branch_deck_stats, split_comment};
 
     fn minimal_raw_tail() -> &'static str {
         r#"0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
@@ -1892,6 +1935,96 @@ mod tests {
 0 / END OF GNE DEVICE DATA, BEGIN INDUCTION MACHINE DATA
 0 / END OF INDUCTION MACHINE DATA
 "#
+    }
+
+    #[test]
+    fn split_comment_keeps_slash_inside_quoted_name() {
+        let line = "  351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183";
+        let (data, hint) = split_comment(line);
+        assert_eq!(data, line);
+        assert!(hint.is_empty());
+    }
+
+    #[test]
+    fn split_comment_still_splits_section_terminator_and_header() {
+        let (data, hint) = split_comment("0 / END OF BUS DATA, BEGIN LOAD DATA");
+        assert_eq!(data.trim(), "0");
+        assert!(hint.contains("BEGIN LOAD DATA"));
+
+        let (data, hint) = split_comment("0, 100.00, 33, 0, 1, 60.00 / September 20, 2022");
+        assert!(data.contains("100.00"));
+        assert!(hint.contains("September"));
+    }
+
+    #[test]
+    fn split_comment_strips_trailing_comment_after_quoted_slash_name() {
+        let line = "351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040 / leftover";
+        let (data, hint) = split_comment(line);
+        assert!(data.contains("1.00890040"));
+        assert!(data.contains("EUCLID/OCWA"));
+        assert_eq!(hint.trim(), "leftover");
+    }
+
+    #[test]
+    fn bus_name_with_embedded_slash_preserves_vm_va() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("slash_bus.raw");
+        let raw = format!(
+            r#"0, 100.0, 33, 0, 0, 60.0 / SLASH_BUS
+T1
+T2
+351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183, 1.10000, 0.90000, 1.10000, 0.90000
+1275,'SALAMANCA/~2', 115.0000,1,  65,  65,   1,1.02146566,  94.848269, 1.10000, 0.90000, 1.10000, 0.90000
+101,'O'Neil/Sub 1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+{tail}"#,
+            tail = minimal_raw_tail()
+        );
+        let mut f = std::fs::File::create(&path).expect("create");
+        f.write_all(raw.as_bytes()).expect("write");
+
+        let net = parse_raw(&path).expect("parse buses with slash in quoted names");
+        let euclid = net
+            .buses
+            .iter()
+            .find(|b| b.i == 351)
+            .expect("EUCLID/OCWA bus retained");
+        assert!(
+            euclid.name.contains("EUCLID/OCWA"),
+            "name must keep '/', got {:?}",
+            euclid.name
+        );
+        assert!(
+            (euclid.vm - 1.00890040).abs() < 1e-8,
+            "got vm {}",
+            euclid.vm
+        );
+        assert!((euclid.va - 97.978183).abs() < 1e-6, "got va {}", euclid.va);
+        assert!((euclid.baskv - 115.0).abs() < 1e-9);
+        assert_eq!(euclid.area, 67);
+
+        let salamanca = net
+            .buses
+            .iter()
+            .find(|b| b.i == 1275)
+            .expect("SALAMANCA/~2 bus retained");
+        assert!(salamanca.name.contains("SALAMANCA/~2"));
+        assert!((salamanca.vm - 1.02146566).abs() < 1e-8);
+
+        let oneil = net
+            .buses
+            .iter()
+            .find(|b| b.i == 101)
+            .expect("O'Neil/Sub bus retained");
+        assert!(
+            oneil.name.contains("O'Neil/Sub"),
+            "apostrophe+slash name, got {:?}",
+            oneil.name
+        );
+        assert!((oneil.vm - 1.02).abs() < 1e-8);
     }
 
     #[test]

@@ -18,6 +18,25 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.7.4**: RPF **v0.14.3** — **Quoted `/` in RAW names**
+
+`raptrix-psse-rs` **v0.7.4** still emits RPF **v0.14.3**. This is a parser
+bugfix, not a schema change.
+
+#### What changed
+
+- `/` inside a single-quoted RAW field is data. Pre-0.7.4 converters truncated
+  those records at the slash (NYISO buses 351 / 1275 / 1276 exported
+  `v_mag_set=1.0` instead of the published VM).
+- **Dependency**: unchanged — `raptrix-cim-arrow` **0.7.3** / git tag **`v0.7.3`**.
+
+#### Consumer checklist
+
+1. Re-export any `.rpf` built from a RAW that has `/` in a quoted name
+   (or regenerate the golden corpus). Other cases are unchanged except
+   `metadata.raptrix_version` / `timestamp_utc`.
+2. Accept `raptrix.version` ∈ {`v0.14.3`, `v0.14.2`, `v0.14.1`, `v0.14.0`, `v0.13.1`, `v0.13.0`}.
+
 ### raptrix-psse-rs **v0.7.3**: RPF **v0.14.3** (`raptrix-cim-arrow` **0.7.3**) — **Switched-shunt control tokens**
 
 `raptrix-psse-rs` **v0.7.3** emits RPF **v0.14.3**.

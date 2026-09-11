@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-09-11
+
+### Fixed
+
+- **Quote-aware RAW comment split**: `/` inside a single-quoted field is no
+  longer treated as a trailing comment. NYISO names `EUCLID/OCWA` and
+  `SALAMANCA/~1` / `SALAMANCA/~2` previously lost VM/VA/kV/area after the
+  slash; missing VM was sanitized to `v_mag_set=1.0` (#31). Section
+  terminators (`0 / END OF …`) and header `/ title` are unchanged.
+
+### Golden corpus
+
+- Regenerated `tests/golden/` with the 0.7.4 writer so NYISO 351 / 1275 /
+  1276 keep RAW scheduled VM (and name / kV / angle).
+
 ## [0.7.3] - 2026-09-09
 
 ### RPF v0.14.3 (raptrix-cim-arrow 0.7.3) — switched-shunt control tokens

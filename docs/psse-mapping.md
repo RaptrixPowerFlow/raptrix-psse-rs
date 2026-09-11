@@ -118,7 +118,7 @@ several `buses` columns:
 | SBASE | `sbase` | `base_mva` | System MVA base; default 100 MVA if absent. |
 | REV | `rev` | `source_format_version` | RAW revision as Utf8 (e.g. `"33"`, `"35"`); paired with `source_format=psse_raw`. |
 | BASFRQ | `basfrq` | `frequency_hz` | Nominal system frequency (Hz). |
-| `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. |
+| `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. `/` starts a comment only **outside** quoted fields. |
 | — | — | `source_format` | Always `psse_raw` for this converter. |
 | — | — | `source_identity_scheme` | Always `dense_bus_id` for this converter. |
 | — | — | `raptrix_version` | Always crate package version written by this converter. |
@@ -133,7 +133,7 @@ several `buses` columns:
 | PSS/E field | RAW col | Rust `Bus` field | RPF column | Notes |
 |---|---|---|---|---|
 | I | 1 | `i` | `bus_id` | Positive integer ≤ 999 997. |
-| NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. |
+| NAME | 2 | `name` | `name` | Trailing spaces stripped; dictionary-encoded. Names may contain `/`; a `/` is a comment only outside quotes. |
 | BASKV | 3 | `baskv` | `nominal_kv` | Base voltage in kV (required Float64). |
 | IDE | 4 | `ide` | `type` | Dictionary tokens: **`PQ`**, **`PV`**, **`Slack`**. Per the PSS®E Program Operation Manual: `IDE=1` (load) and `IDE=4` (disconnected/isolated) map to `PQ`, `IDE=2` (voltage-regulating generator) maps to `PV`, and `IDE=3` (swing) maps to `Slack`. |
 | AREA | 5 | `area` | `area` | Foreign key → `areas.area_id`. |
