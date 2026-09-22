@@ -20,7 +20,7 @@
 //! * **Quote-aware tokeniser**: bus names may contain spaces; quoted strings
 //!   are not split at internal commas or spaces.
 //! * **Quote-aware comment split**: `/` starts a trailing comment only outside
-//!   a single-quoted field (names such as `EUCLID/OCWA` stay intact).
+//!   a single-quoted field (a name such as `'N/1'` stays intact).
 //! * **3-winding transformer star expansion**: converts each pairwise Z on its
 //!   own SBASE, then creates a fictitious star bus and three 2-winding legs.
 //! * **DYR parser**: preserves all numeric dynamic model records and extracts
@@ -31,8 +31,8 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 
 use crate::models::{
-    Area, Branch, Bus, BusType, CaseId, DcLine2W, DyrGeneratorData, DyrModelData, FactsDeviceRaw,
-    FixedShunt, Generator, Load, MultiSectionLine, Network, Owner, SwitchedShunt,
+    Area, Branch, Bus, BusType, CaseId, DcConverter, DcLine2W, DyrGeneratorData, DyrModelData,
+    FactsDeviceRaw, FixedShunt, Generator, Load, MultiSectionLine, Network, Owner, SwitchedShunt,
     ThreeWindingTransformer, TwoWindingTransformer, Zone,
 };
 use crate::transformer_convert::{
@@ -251,8 +251,8 @@ fn next_line<'a>(lines: &mut std::str::Lines<'a>) -> Option<String> {
     lines.next().map(|l| l.trim_end_matches('\r').to_string())
 }
 
-/// Read a PSS/E deck. Prefer UTF-8; fall back to Windows-1252 (PowerWorld
-/// title lines often carry `0x93`/`0x94` smart quotes).
+/// Read a PSS/E deck. Prefer UTF-8; fall back to Windows-1252.
+/// Some exported titles carry `0x93` / `0x94` smart quotes.
 fn read_vendor_text(path: &Path, kind: &str) -> Result<String> {
     let bytes =
         fs::read(path).with_context(|| format!("cannot open {kind} file: {}", path.display()))?;
@@ -326,7 +326,7 @@ pub fn parse_fortran_double(raw: &str) -> f64 {
 /// Shared PSS/E single-quote rules used by [`tokenize`] and [`split_comment`].
 ///
 /// Decks commonly embed apostrophes inside bus names without doubling them
-/// (`'O'Neil Bus 1'`). A naive toggle on every `'` swallows the rest of the
+/// (`'Q'Bus 1'`). A naive toggle on every `'` swallows the rest of the
 /// line into one token. Closing a quoted field only when the next significant
 /// character is `,` (or EOS), and treating `''` as an escaped apostrophe,
 /// preserves both well-formed and legacy undoubled names.
@@ -421,7 +421,7 @@ fn first_unquoted_slash(line: &str) -> Option<usize> {
 /// The `hint` may contain a section-transition marker like
 /// `"END OF BUS DATA, BEGIN LOAD DATA"`.
 ///
-/// `/` inside a single-quoted field is data (e.g. `'EUCLID/OCWA '`).
+/// `/` inside a single-quoted field is data (e.g. `'N/1 '`).
 fn split_comment(line: &str) -> (&str, &str) {
     match first_unquoted_slash(line) {
         Some(pos) => (&line[..pos], &line[pos + 1..]),
@@ -572,6 +572,29 @@ fn field_u8_default(fields: &[String], idx: usize, default: u8) -> u8 {
         .get(idx)
         .and_then(|s| s.trim().parse().ok())
         .unwrap_or(default)
+}
+
+/// Winding-1 control block. A 3-rating record puts COD at index 6.
+/// A 12-rating record (nine extra RATE columns) puts COD at index 15.
+/// A complete 3-rating line ends near CNXA (~17 tokens). Lines at least 22
+/// tokens long are the 12-rating layout. NOMV stays at index 1 either way.
+struct WindingControl {
+    cod: i32,
+    cont: i32,
+    rma: f64,
+    rmi: f64,
+    ntp: i32,
+}
+
+fn winding_control(fields: &[String]) -> WindingControl {
+    let cod_idx = if fields.len() >= 22 { 15 } else { 6 };
+    WindingControl {
+        cod: field_i32(fields, cod_idx),
+        cont: field_i32(fields, cod_idx + 1),
+        rma: field_f64(fields, cod_idx + 2),
+        rmi: field_f64(fields, cod_idx + 3),
+        ntp: field_i32(fields, cod_idx + 6),
+    }
 }
 
 fn token_looks_float(token: &str) -> bool {
@@ -872,9 +895,8 @@ fn parse_generator_record(f: &[String], off: &VersionOffsets) -> Option<Generato
     let mbase = field_f64(f, off.gen_mbase_idx);
     let mbase = if mbase <= 0.0 { 100.0 } else { mbase };
 
-    // Blank PT (exactly 0) falls back to MBASE. A negative PT is a real cap:
-    // NYISO on-peak 799 and 651 are fixed at PT = PB = PG < 0. Negative PB
-    // is legal. Do not rewrite either one to 0.
+    // Blank PT (exactly 0) falls back to MBASE. A negative PT is a real cap
+    // when PT = PB = PG < 0. Negative PB is legal. Do not rewrite either one to 0.
     let pg = field_f64(f, 2);
     let pt = {
         let raw = field_f64(f, off.gen_pt_idx);
@@ -1207,7 +1229,7 @@ fn token_is_number(token: &str) -> bool {
 
 /// Named PSS/E two-terminal control record: `'NAME', MDC, RDC, SETVL, VSCHD, ...`.
 /// MDC=1 is power control. The megawatts are rectifier DC power and the kilovolts
-/// are inverter DC voltage, which is the split a solved Eastern case carries.
+/// are inverter DC voltage.
 fn is_psse_lcc_control(f: &[String]) -> bool {
     if f.len() < 5 || token_is_number(&f[0]) {
         return false;
@@ -1218,11 +1240,42 @@ fn is_psse_lcc_control(f: &[String]) -> bool {
         && token_to_f64(&f[4]).is_some_and(|v| v > 0.0)
 }
 
-/// Confirm a rectifier or inverter row and return its AC bus.
-/// Bridge count, commutating kV, ratio, and tap are checked so a control
-/// record is not paired with an unrelated line. The interchange table has
-/// no columns for those values yet, so they are not stored.
-fn parse_psse_lcc_terminal(row: &[String]) -> Option<u32> {
+/// Fields stored from a recognized rectifier or inverter row.
+///
+/// Recognition still requires a bus, bridge count in 1..=12, and EBAS > 0.
+/// Ratio, tap, and commutating reactance are stored when the token is a real
+/// number, including 0. A missing or non-numeric token stays null. ANMX/ANMN
+/// are limits and are not copied into a firing angle.
+struct LccTerminal {
+    bus_id: u32,
+    n_bridges: Option<i32>,
+    xc_ohm: Option<f64>,
+    ebas_kv: Option<f64>,
+    tr: Option<f64>,
+    tap: Option<f64>,
+    tap_max: Option<f64>,
+    tap_min: Option<f64>,
+}
+
+/// A real number at `idx`, or `None` when the token is missing or not numeric.
+/// `parse_fortran_double` turns a name into 0, so this uses [`token_is_number`].
+/// A parsed 0 is returned as 0.0. This does not substitute 1.0.
+fn optional_number(fields: &[String], idx: usize) -> Option<f64> {
+    let token = fields.get(idx)?;
+    if !token_is_number(token) {
+        return None;
+    }
+    let t = token.trim().trim_matches('\'');
+    t.replace(['D', 'd'], "e")
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+}
+
+/// Confirm a rectifier or inverter row and return the terminal fields.
+/// Bridge count and commutating kV are required so a control record is not
+/// paired with an unrelated line.
+fn parse_psse_lcc_terminal(row: &[String]) -> Option<LccTerminal> {
     if row.len() < 9 {
         return None;
     }
@@ -1232,16 +1285,58 @@ fn parse_psse_lcc_terminal(row: &[String]) -> Option<u32> {
         return None;
     }
     let ebas = token_to_f64(&row[6])?;
-    if !(ebas > 0.0) {
+    if ebas <= 0.0 {
         return None;
     }
-    Some(bus)
+    Some(LccTerminal {
+        bus_id: bus,
+        n_bridges: Some(bridges as i32),
+        xc_ohm: optional_number(row, 5),
+        ebas_kv: Some(ebas),
+        tr: optional_number(row, 7),
+        tap: optional_number(row, 8),
+        tap_max: optional_number(row, 9),
+        tap_min: optional_number(row, 10),
+    })
+}
+
+/// METER token `I` names the inverter. `R` names the rectifier. Anything else
+/// is unknown and meters neither end.
+fn meter_role(token: &str) -> Option<&'static str> {
+    match token.trim().trim_matches('\'').trim() {
+        "I" | "i" => Some("inverter"),
+        "R" | "r" => Some("rectifier"),
+        _ => None,
+    }
+}
+
+fn lcc_converter(dc_line_id: i32, end: &LccTerminal, role: &str, meter: bool) -> DcConverter {
+    DcConverter {
+        dc_line_id,
+        bus_id: end.bus_id,
+        role: role.into(),
+        converter_kind: "lcc".into(),
+        n_bridges: end.n_bridges,
+        ebas_kv: end.ebas_kv,
+        tr: end.tr,
+        tap: end.tap,
+        tap_min: end.tap_min,
+        tap_max: end.tap_max,
+        xc_ohm: end.xc_ohm,
+        alpha_deg: None,
+        gamma_deg: None,
+        is_meter_end: meter,
+    }
 }
 
 /// One PSS/E LCC line is three records: control, rectifier, inverter.
 /// `from_bus_id` is the rectifier and `to_bus_id` is the inverter.
 /// `p_setpoint_mw` is rectifier DC power and `v_setpoint_kv` is inverter DC voltage.
-fn parse_psse_lcc_triplet(group: &[Vec<String>], dc_line_id: i32) -> Option<DcLine2W> {
+/// `METER` records which end is metered and does not move `SETVL`.
+fn parse_psse_lcc_triplet(
+    group: &[Vec<String>],
+    dc_line_id: i32,
+) -> Option<(DcLine2W, [DcConverter; 2])> {
     if group.len() != 3 || !is_psse_lcc_control(&group[0]) {
         return None;
     }
@@ -1249,16 +1344,17 @@ fn parse_psse_lcc_triplet(group: &[Vec<String>], dc_line_id: i32) -> Option<DcLi
     let rdc = token_to_f64(&ctrl[2])?;
     let setvl = token_to_f64(&ctrl[3])?;
     let vschd = token_to_f64(&ctrl[4])?;
-    let from_bus = parse_psse_lcc_terminal(&group[1])?;
-    let to_bus = parse_psse_lcc_terminal(&group[2])?;
-    if from_bus == to_bus {
+    let from = parse_psse_lcc_terminal(&group[1])?;
+    let to = parse_psse_lcc_terminal(&group[2])?;
+    if from.bus_id == to.bus_id {
         return None;
     }
+    let metered = ctrl.get(8).and_then(|t| meter_role(t));
     let name = ctrl[0].trim().to_string();
-    Some(DcLine2W {
+    let line = DcLine2W {
         dc_line_id,
-        from_bus_id: from_bus,
-        to_bus_id: to_bus,
+        from_bus_id: from.bus_id,
+        to_bus_id: to.bus_id,
         ckt: "1".into(),
         r_ohm: rdc,
         l_henry: None,
@@ -1275,7 +1371,12 @@ fn parse_psse_lcc_triplet(group: &[Vec<String>], dc_line_id: i32) -> Option<DcLi
             Some(name.into())
         },
         converter_type: "lcc".into(),
-    })
+    };
+    let ends = [
+        lcc_converter(dc_line_id, &from, "rectifier", metered == Some("rectifier")),
+        lcc_converter(dc_line_id, &to, "inverter", metered == Some("inverter")),
+    ];
+    Some((line, ends))
 }
 
 fn parse_multi_section_line_record(f: &[String], line_id: i32) -> Option<MultiSectionLine> {
@@ -1705,6 +1806,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                 // Record 4: WINDV2, NOMV2[, ANG2, RATA2, …]
                 let windv2 = field_f64(&f4, 0);
                 let nomv2 = field_f64(&f4, 1);
+                let wind = winding_control(&f3);
 
                 if k_bus == 0 {
                     // ---- 2-winding transformer ----
@@ -1729,11 +1831,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         ratc1,
                         windv2,
                         nomv2,
-                        cod1: field_i32(&f3, 6),
-                        cont1: field_i32(&f3, 7),
-                        rma1: field_f64(&f3, 8),
-                        rmi1: field_f64(&f3, 9),
-                        ntp1: field_i32(&f3, 12),
+                        cod1: wind.cod,
+                        cont1: wind.cont,
+                        rma1: wind.rma,
+                        rmi1: wind.rmi,
+                        ntp1: wind.ntp,
                     });
                 } else {
                     // ---- 3-winding transformer → star equivalent ----
@@ -1823,11 +1925,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                         nominal_kv_h: nomv1,
                         nominal_kv_m: nomv2,
                         nominal_kv_l: nomv3,
-                        cod1: field_i32(&f3, 6),
-                        cont1: field_i32(&f3, 7),
-                        rma1: field_f64(&f3, 8),
-                        rmi1: field_f64(&f3, 9),
-                        ntp1: field_i32(&f3, 12),
+                        cod1: wind.cod,
+                        cont1: wind.cont,
+                        rma1: wind.rma,
+                        rmi1: wind.rmi,
+                        ntp1: wind.ntp,
                     });
 
                     // Determine area/zone/owner from bus i (must be in bus list already
@@ -1881,8 +1983,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                 } else {
                     lcc_group.push(f);
                     if lcc_group.len() == 3 {
-                        if let Some(row) = parse_psse_lcc_triplet(&lcc_group, next_dc_line_id) {
+                        if let Some((row, ends)) =
+                            parse_psse_lcc_triplet(&lcc_group, next_dc_line_id)
+                        {
                             result.dc_lines_2w.push(row);
+                            result.dc_converters.extend(ends);
                             next_dc_line_id += 1;
                         } else {
                             dc_rows_rejected += lcc_group.len();
@@ -2050,7 +2155,7 @@ mod tests {
 
     #[test]
     fn split_comment_keeps_slash_inside_quoted_name() {
-        let line = "  351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183";
+        let line = "  351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183";
         let (data, hint) = split_comment(line);
         assert_eq!(data, line);
         assert!(hint.is_empty());
@@ -2069,10 +2174,10 @@ mod tests {
 
     #[test]
     fn split_comment_strips_trailing_comment_after_quoted_slash_name() {
-        let line = "351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040 / leftover";
+        let line = "351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040 / leftover";
         let (data, hint) = split_comment(line);
         assert!(data.contains("1.00890040"));
-        assert!(data.contains("EUCLID/OCWA"));
+        assert!(data.contains("N/1"));
         assert_eq!(hint.trim(), "leftover");
     }
 
@@ -2084,9 +2189,9 @@ mod tests {
             r#"0, 100.0, 33, 0, 0, 60.0 / SLASH_BUS
 T1
 T2
-351,'EUCLID/OCWA ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183, 1.10000, 0.90000, 1.10000, 0.90000
-1275,'SALAMANCA/~2', 115.0000,1,  65,  65,   1,1.02146566,  94.848269, 1.10000, 0.90000, 1.10000, 0.90000
-101,'O'Neil/Sub 1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
+351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183, 1.10000, 0.90000, 1.10000, 0.90000
+1275,'S/~2', 115.0000,1,  65,  65,   1,1.02146566,  94.848269, 1.10000, 0.90000, 1.10000, 0.90000
+101,'Q'Bus/1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
@@ -2098,44 +2203,48 @@ T2
         f.write_all(raw.as_bytes()).expect("write");
 
         let net = parse_raw(&path).expect("parse buses with slash in quoted names");
-        let euclid = net
+        let slash_name = net
             .buses
             .iter()
             .find(|b| b.i == 351)
-            .expect("EUCLID/OCWA bus retained");
+            .expect("slash-name bus retained");
         assert!(
-            euclid.name.contains("EUCLID/OCWA"),
+            slash_name.name.contains("N/1"),
             "name must keep '/', got {:?}",
-            euclid.name
+            slash_name.name
         );
         assert!(
-            (euclid.vm - 1.00890040).abs() < 1e-8,
+            (slash_name.vm - 1.00890040).abs() < 1e-8,
             "got vm {}",
-            euclid.vm
+            slash_name.vm
         );
-        assert!((euclid.va - 97.978183).abs() < 1e-6, "got va {}", euclid.va);
-        assert!((euclid.baskv - 115.0).abs() < 1e-9);
-        assert_eq!(euclid.area, 67);
+        assert!(
+            (slash_name.va - 97.978183).abs() < 1e-6,
+            "got va {}",
+            slash_name.va
+        );
+        assert!((slash_name.baskv - 115.0).abs() < 1e-9);
+        assert_eq!(slash_name.area, 67);
 
-        let salamanca = net
+        let tilde = net
             .buses
             .iter()
             .find(|b| b.i == 1275)
-            .expect("SALAMANCA/~2 bus retained");
-        assert!(salamanca.name.contains("SALAMANCA/~2"));
-        assert!((salamanca.vm - 1.02146566).abs() < 1e-8);
+            .expect("tilde-name bus retained");
+        assert!(tilde.name.contains("S/~2"));
+        assert!((tilde.vm - 1.02146566).abs() < 1e-8);
 
-        let oneil = net
+        let apostrophe = net
             .buses
             .iter()
             .find(|b| b.i == 101)
-            .expect("O'Neil/Sub bus retained");
+            .expect("apostrophe-and-slash bus retained");
         assert!(
-            oneil.name.contains("O'Neil/Sub"),
+            apostrophe.name.contains("Q'Bus/1"),
             "apostrophe+slash name, got {:?}",
-            oneil.name
+            apostrophe.name
         );
-        assert!((oneil.vm - 1.02).abs() < 1e-8);
+        assert!((apostrophe.vm - 1.02).abs() < 1e-8);
     }
 
     #[test]
@@ -2147,7 +2256,7 @@ T2
             r#"0, 100.0, 33, 0, 0, 60.0 / APOSTROPHE_BUS
 T1
 T2
-101,'O'Neil Bus 1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
+101,'Q'Bus 1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
 102,'Normal Bus  ',  22.0000,2,   1,   1,   1,1.01000000,  10.000000, 1.10000, 0.90000, 1.10000, 0.90000
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
@@ -2166,7 +2275,7 @@ T2
             .find(|b| b.i == 101)
             .expect("apostrophe bus retained");
         assert!(
-            b.name.starts_with("O'Neil"),
+            b.name.starts_with("Q'Bus"),
             "name should keep embedded apostrophe, got {:?}",
             b.name
         );
@@ -2271,7 +2380,7 @@ T2
     fn branch_deck_stats_v33_long_tail_uses_status_at_13() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("activsg_branch_v33.raw");
-        // v33 ACTIVSg-style branch row: RATEA at idx 6, ST at idx 13, long tap tail.
+        // v33 branch row: RATEA at idx 6, ST at idx 13, long tap tail.
         let raw = r#"0, 100.0, 33, 0, 0, 60.0 / ACTIVSG_BRANCH_V33
 T1
 T2

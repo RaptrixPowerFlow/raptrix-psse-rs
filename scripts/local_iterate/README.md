@@ -39,7 +39,7 @@ From the repo root or anywhere:
 pwsh scripts\local_iterate\run.ps1
 
 # limit to specific case stems (no extension, no _static suffix)
-pwsh scripts\local_iterate\run.ps1 -Cases ACTIVSg25k,Base_Eastern_Interconnect_515GW
+pwsh scripts\local_iterate\run.ps1 -Cases stem_a,stem_b
 
 # only re-run the harness against existing RPFs
 pwsh scripts\local_iterate\run.ps1 -SkipBuild -SkipConvert

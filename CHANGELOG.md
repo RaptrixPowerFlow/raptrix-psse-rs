@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-09-22
+
+### RPF v0.14.4 (raptrix-cim-arrow 0.7.4) — converter ends and branch-end shunts
+
+- Pin `raptrix-cim-arrow` to git tag `v0.7.4` and `arrow` **59.3**.
+- Writer stamps `v0.14.4`. Readers accept `v0.14.4` and `0.14.4` only. Re-export every cached `.rpf`. `v0.15.0` is not used.
+- `dc_lines_2w` stays 15 columns. `p_setpoint_mw` is rectifier DC power, including when `METER` names the inverter. `q_from_mvar` and `q_to_mvar` stay null.
+- `dc_converters` is always emitted and is not one of the 18 canonical tables. Zero rows is valid. Stamp `raptrix.features.dc_converters=true`. A three-record LCC group stores bridge count, commutating kV, ratio, tap, tap band, commutating reactance, and `is_meter_end`. `alpha_deg` and `gamma_deg` stay null. A parsed 0 ratio or tap stays 0. A shorthand DC line and a section-9 VSC line do not invent converter rows. `is_meter_end` does not move `SETVL`, and the DC schedule is not copied into bus `p_sched`.
+- `branches` gains `g_from`, `b_from`, `g_to`, `b_to` after `is_bptf`. Values are parsed `GI` / `BI` / `GJ` / `BJ` divided by `base_mva`, including 0 and out-of-service lines. Positive susceptance is capacitive. `branches.b_shunt` remains line charging. In-service ends are still folded into the bus shunt aggregates.
+- `computational_load_mode` stays null. This converter still does not emit `computational_load_profiles`.
+- A 12-rating transformer winding record reads `COD` / `CONT` / `RMA` / `RMI` / `NTP` after the twelve rates. A 3-rating record is unchanged. `NOMV` stays the second winding token.
+
+### Golden corpus
+
+- Regenerated local `tests/golden/` as v0.14.4. Inputs stay outside the published tree.
+
 ## [0.7.4] - 2026-09-11
 
 ### Fixed

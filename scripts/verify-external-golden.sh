@@ -113,75 +113,27 @@ convert_case() {
 echo "[verify-external-golden] repo: $(pwd)"
 echo "[verify-external-golden] RELAX_MISSING=$RELAX_MISSING"
 
-# --- Corpus (keep in sync with tests/golden_test.rs discovery) ---
-
-convert_case "Texas7k 2022" "tests/data/external/Texas7k_20220923.RAW" "Texas7k_20220923"
-convert_case "Texas7k 2021" "tests/data/external/Texas7k_20210804.RAW" "Texas7k_20210804" \
-  "$(pick_dyn tests/data/external/Texas7k_20210804)"
-convert_case "Texas7k 2021 updated" "tests/data/external/Texas7k_20210804_updated.RAW" \
-  "Texas7k_20210804_updated"
-
-convert_case "Texas2k summerpeak" "tests/data/external/Texas2k_series25_case1_summerpeak.RAW" \
-  "Texas2k_series25_case1_summerpeak" \
-  "$(pick_dyn tests/data/external/Texas2k_series25_case1_summerpeak)"
-# Legacy short stem alias used by some core tests
-if [[ -f "tests/golden/Texas2k_series25_case1_summerpeak.rpf" ]]; then
-  cp -f "tests/golden/Texas2k_series25_case1_summerpeak.rpf" "tests/golden/Texas2k_series25.rpf"
-  if [[ -f "tests/golden/Texas2k_series25_case1_summerpeak_dynamic.rpf" ]]; then
-    cp -f "tests/golden/Texas2k_series25_case1_summerpeak_dynamic.rpf" \
-      "tests/golden/Texas2k_series25_dynamic.rpf"
-  fi
-  if [[ -f "tests/golden/Texas2k_series25_case1_summerpeak_static.rpf" ]]; then
-    cp -f "tests/golden/Texas2k_series25_case1_summerpeak_static.rpf" \
-      "tests/golden/Texas2k_series25_static.rpf"
-  fi
-fi
-
-convert_case "EI 515GW" "tests/data/external/Base_Eastern_Interconnect_515GW.RAW" \
-  "Base_Eastern_Interconnect_515GW"
-
-convert_case "ACTIVSg10k" "tests/data/external/ACTIVSg10k.RAW" "ACTIVSg10k" \
-  "$(pick_dyn tests/data/external/ACTIVSg10k)"
-
-for case in \
-  Texas2k_series24_case1_2016summerPeak \
-  Texas2k_series24_case2_2016lowload \
-  Texas2k_series24_case3_2024summerpeak \
-  Texas2k_series24_case4_2024lowload \
-  Texas2k_series24_case6_2024lowloadwithgfm
-do
-  convert_case "Texas2k ${case}" "tests/data/external/${case}.RAW" "$case" \
-    "$(pick_dyn "tests/data/external/${case}")"
+# Discover every RAW under tests/data/external. The file list stays on disk.
+declare -A seen_raw=()
+converted=0
+shopt -s nullglob
+for raw in tests/data/external/*; do
+  [[ -f "$raw" ]] || continue
+  ext="${raw##*.}"
+  ext_lc=$(printf '%s' "$ext" | tr '[:upper:]' '[:lower:]')
+  [[ "$ext_lc" == "raw" ]] || continue
+  key=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')
+  [[ -n "${seen_raw[$key]:-}" ]] && continue
+  seen_raw[$key]=1
+  stem=$(basename "$raw")
+  stem="${stem%.*}"
+  convert_case "$stem" "$raw" "$stem" "$(pick_dyn "${raw%.*}")"
+  converted=$((converted + 1))
 done
-# Legacy GFM short name
-if [[ -f "tests/golden/Texas2k_series24_case6_2024lowloadwithgfm_dynamic.rpf" ]]; then
-  cp -f "tests/golden/Texas2k_series24_case6_2024lowloadwithgfm_dynamic.rpf" \
-    "tests/golden/Texas2k_series24_gfm_dynamic.rpf"
+if [[ "$converted" -eq 0 && "$RELAX_MISSING" != "1" ]]; then
+  echo "[error] no RAW files under tests/data/external (set RELAX_MISSING=1 to allow an empty corpus)" >&2
+  exit 1
 fi
-
-convert_case "IEEE 14" "tests/data/external/IEEE_14_bus.raw" "IEEE_14_bus"
-convert_case "IEEE 118" "tests/data/external/IEEE_118_Bus.RAW" "IEEE_118_Bus"
-convert_case "NYISO offpeak 2019" "tests/data/external/NYISO_offpeak2019_v23.raw" "NYISO_offpeak2019_v23"
-convert_case "NYISO onpeak 2019" "tests/data/external/NYISO_onpeak2019_v23.raw" "NYISO_onpeak2019_v23"
-convert_case "NYISO onpeak 2030 PW" \
-  "tests/data/external/NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld.raw" \
-  "NYISO_onpeak2030_v11_shunts_as_gensfromPowerWorld"
-convert_case "Texas7k 2030" "tests/data/external/Texas7k_2030_20220923.RAW" "Texas7k_2030_20220923"
-if [[ -f "tests/golden/Texas7k_2030_20220923.rpf" ]]; then
-  cp -f "tests/golden/Texas7k_2030_20220923.rpf" "tests/golden/Texas7k_2030.rpf"
-  cp -f "tests/golden/Texas7k_2030_20220923_static.rpf" "tests/golden/Texas7k_2030_static.rpf" 2>/dev/null || true
-fi
-convert_case "Midwest24k" "tests/data/external/Midwest24k_20220923.RAW" "Midwest24k_20220923"
-if [[ -f "tests/golden/Midwest24k_20220923.rpf" ]]; then
-  cp -f "tests/golden/Midwest24k_20220923.rpf" "tests/golden/Midwest24k.rpf"
-  cp -f "tests/golden/Midwest24k_20220923_static.rpf" "tests/golden/Midwest24k_static.rpf" 2>/dev/null || true
-fi
-convert_case "ACTIVSg25k" "tests/data/external/ACTIVSg25k.RAW" "ACTIVSg25k"
-convert_case "ACTIVSg70k" "tests/data/external/ACTIVSg70k.RAW" "ACTIVSg70k" \
-  "$(pick_dyn tests/data/external/ACTIVSg70k)"
-convert_case "Memphis 2026 Mar7" "tests/data/external/MemphisCase2026_Mar7.RAW" \
-  "MemphisCase2026_Mar7" \
-  "$(pick_dyn tests/data/external/MemphisCase2026_Mar7)"
 
 echo
 echo "[verify-external-golden] OK — all conversions completed (dynamic canonical when DYR present)."

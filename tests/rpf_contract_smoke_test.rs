@@ -24,8 +24,9 @@ use raptrix_cim_arrow::{
     BUS_TYPE_PQ, BUS_TYPE_PV, BUS_TYPE_SLACK, IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1,
     METADATA_KEY_CASE_MODE, METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_MRID_SUPPORT, RPF_VERSION, RootWriteOptions, TABLE_BRANCHES, TABLE_BUSES,
-    TABLE_CONTINGENCIES, TABLE_CONTINGENCY_SEQUENCES, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS, read_rpf_tables, rpf_file_metadata,
+    TABLE_CONTINGENCIES, TABLE_CONTINGENCY_SEQUENCES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W,
+    TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA, TABLE_OWNERS, TABLE_SWITCHED_SHUNTS,
+    read_rpf_tables, rpf_file_metadata,
 };
 
 fn dict_utf8_at(col: &dyn Array, i: usize) -> &str {
@@ -921,8 +922,8 @@ DISCONNECTED SLACK
 /// seed `v_mag_pu`. For PV/Slack buses, our writer sets `v_mag_set = gen.vs`
 /// (the scheduled target), but `bus.vm` (the operating value) differs by the
 /// machine's reactive trim. Letting the importer overwrite the target with
-/// the operating value measurably regresses convergence on Texas7k / 1.5k-bus snapshots
-/// planning files. The seed is emitted again only by callers that genuinely
+/// the operating value measurably regresses convergence on large planning files.
+/// The seed is emitted again only by callers that genuinely
 /// carry a separately-computed warm-start payload.
 #[test]
 fn writer_keeps_not_computed_for_warm_start_raw_no_seed_emission() {
@@ -1267,7 +1268,7 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.14.3");
+    assert_eq!(RPF_VERSION, "v0.14.4");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
@@ -1303,11 +1304,15 @@ BUS TYPE
         .iter()
         .find(|(name, _)| name == TABLE_BRANCHES)
         .expect("branches table");
-    assert_eq!(branches.schema().fields().len(), 32);
+    assert_eq!(branches.schema().fields().len(), 36);
     assert_eq!(branches.schema().field(28).name(), "is_secured");
     assert_eq!(branches.schema().field(29).name(), "is_bes");
     assert_eq!(branches.schema().field(30).name(), "is_bps");
     assert_eq!(branches.schema().field(31).name(), "is_bptf");
+    assert_eq!(branches.schema().field(32).name(), "g_from");
+    assert_eq!(branches.schema().field(33).name(), "b_from");
+    assert_eq!(branches.schema().field(34).name(), "g_to");
+    assert_eq!(branches.schema().field(35).name(), "b_to");
     for name in ["is_secured", "is_bes", "is_bps", "is_bptf"] {
         let col = branches
             .column_by_name(name)
@@ -1339,6 +1344,24 @@ BUS TYPE
         (0..gen_mrid.len()).any(|i| !gen_mrid.is_null(i)),
         "at least one generator row must carry non-null mrid"
     );
+    assert_eq!(
+        metadata
+            .get("raptrix.features.dc_converters")
+            .map(|v| v.as_str())
+            .unwrap_or(""),
+        "true"
+    );
+    let (_, dc_lines) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_DC_LINES_2W)
+        .expect("dc_lines_2w table");
+    assert_eq!(dc_lines.schema().fields().len(), 15);
+    let (_, converters) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_DC_CONVERTERS)
+        .expect("dc_converters table");
+    assert_eq!(converters.num_rows(), 0);
+
     assert_eq!(branch_mrid.value(0), "BR_1_2_1");
     assert_eq!(gen_mrid.value(0), "GEN_1_1");
 
@@ -1496,6 +1519,136 @@ VANG DEGREES
         (max_abs - 12.72).abs() < 1.0e-9,
         "v_ang_set must stay in degrees (≈12.72), not radians (≈0.222); got {max_abs}"
     );
+
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}
+
+#[test]
+fn branch_end_shunts_are_per_unit_including_out_of_service() {
+    let raw_path = unique_temp_path("branch_end_shunts", "raw");
+    let out_path = unique_temp_path("branch_end_shunts", "rpf");
+    let raw = r#"0, 100.0, 33, 0, 0, 60.0 / END SHUNTS
+END SHUNTS
+END SHUNTS
+1,'B1',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+2,'B2',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+3,'B3',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+4,'B4',230.0,1,1,1,1,1.00,0.00,1.10,0.90,1.10,0.90
+0 / END OF BUS DATA, BEGIN LOAD DATA
+0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
+0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1 ',0.0,0.1,0.05,100.0,0.0,0.0,10.0,20.0,30.0,-40.0,1
+3,4,'1 ',0.0,0.1,0.20,100.0,0.0,0.0,0.0,5.0,0.0,0.0,0
+0 / END OF BRANCH DATA, BEGIN TRANSFORMER DATA
+0 / END OF TRANSFORMER DATA, BEGIN AREA INTERCHANGE DATA
+0 / END OF AREA INTERCHANGE DATA, BEGIN TWO-TERMINAL DC DATA
+0 / END OF TWO-TERMINAL DC DATA, BEGIN ZONE DATA
+0 / END OF ZONE DATA
+"#;
+    fs::write(&raw_path, raw).expect("write raw");
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("conversion");
+
+    let tables = read_rpf_tables(&out_path).expect("read");
+    let (_, branches) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BRANCHES)
+        .expect("branches");
+    let g_from = branches
+        .column_by_name("g_from")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let b_from = branches
+        .column_by_name("b_from")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let g_to = branches
+        .column_by_name("g_to")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let b_to = branches
+        .column_by_name("b_to")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let b_shunt = branches
+        .column_by_name("b_shunt")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let status = branches
+        .column_by_name("status")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .unwrap();
+    assert_eq!(branches.num_rows(), 2);
+    assert!(status.value(0));
+    assert!((g_from.value(0) - 0.10).abs() < 1e-12);
+    assert!((b_from.value(0) - 0.20).abs() < 1e-12);
+    assert!((g_to.value(0) - 0.30).abs() < 1e-12);
+    assert!((b_to.value(0) - -0.40).abs() < 1e-12);
+    assert!((b_shunt.value(0) - 0.05).abs() < 1e-12);
+    assert!(!status.value(1));
+    assert!(!g_from.is_null(1) && g_from.value(1) == 0.0);
+    assert!((b_from.value(1) - 0.05).abs() < 1e-12);
+    assert!(!g_to.is_null(1) && g_to.value(1) == 0.0);
+    assert!(!b_to.is_null(1) && b_to.value(1) == 0.0);
+    assert!((b_shunt.value(1) - 0.20).abs() < 1e-12);
+
+    let (_, buses) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BUSES)
+        .expect("buses");
+    let bus_id = buses
+        .column_by_name("bus_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    let g_shunt = buses
+        .column_by_name("g_shunt")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    let bus_b = buses
+        .column_by_name("b_shunt")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    for i in 0..bus_id.len() {
+        match bus_id.value(i) {
+            1 => {
+                assert!((g_shunt.value(i) - 0.10).abs() < 1e-12);
+                assert!((bus_b.value(i) - 0.20).abs() < 1e-12);
+            }
+            2 => {
+                assert!((g_shunt.value(i) - 0.30).abs() < 1e-12);
+                assert!((bus_b.value(i) - -0.40).abs() < 1e-12);
+            }
+            3 | 4 => {
+                assert!(g_shunt.value(i).abs() < 1e-12);
+                assert!(bus_b.value(i).abs() < 1e-12);
+            }
+            other => panic!("unexpected bus {other}"),
+        }
+    }
 
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);

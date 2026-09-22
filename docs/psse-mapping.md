@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.3**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.4**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -34,10 +34,14 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.3 contract (current)
+### v0.14.4 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.3**; readers accept **v0.14.3**, **v0.14.2**, **v0.14.1**, **v0.14.0**, **v0.13.1**, and **v0.13.0**. Pre-0.13 `.rpf` files remain rejected (re-export required).
+- **Emit v0.14.4**; readers accept **`v0.14.4`** and **`0.14.4`** only. Older stamps are rejected (re-export required). `v0.15.0` is not used.
+- `dc_lines_2w` stays **15** columns. `p_setpoint_mw` is rectifier DC power. `q_from_mvar` and `q_to_mvar` stay null on this path. The DC schedule is not copied into `buses.p_sched`.
+- `dc_converters` is emitted on every file (zero rows when the case has no terminals) and is **not** one of the 18 canonical tables. `raptrix.features.dc_converters=true`. A three-record LCC group writes rectifier and inverter rows. A shorthand DC line and a section-9 VSC line do not. `is_meter_end` does not move `p_setpoint_mw`. LCC rows leave the eight VSC columns null. `alpha_deg` and `gamma_deg` stay null.
+- `branches` appends `g_from`, `b_from`, `g_to`, `b_to` after `is_bptf`: parsed `GI` / `BI` / `GJ` / `BJ` divided by `metadata.base_mva`. A parsed 0 is `0`, including out-of-service lines. Positive susceptance is capacitive. `branches.b_shunt` remains total line charging, not the sum of the end shunts. In-service ends are still added to `buses.g_shunt` and `buses.b_shunt`.
+- `metadata.computational_load_mode` stays null. `computational_load_profiles` is not emitted.
 - Trailing nullable `switched_shunts.shunt_control_mode` / `regulated_bus_id` map PSS/E MODSW 0/1/2 and SWREG/SWREM. Other MODSW → null + `unknown_modsw`.
 - Trailing nullable transformer tap / PST control (`tap_min` / `tap_max` / `tap_limit_unit` / `n_positions` / `tap_step` / `tap_control_mode` / `regulated_bus_id` / `operation_time_min`) is mapped from RAW COD1/CONT1/RMA1/RMI1/NTP1. **3W is winding H / COD1 only** (M/L LTC is out of scope). `operation_time_min` is always null from RAW.
 - Trailing nullable **`is_secured` / `is_bes` / `is_bps` / `is_bptf`** on `branches`, `transformers_2w`, `transformers_3w`, and `multi_section_lines` are **null**. Do not invent BES from kV.
@@ -105,9 +109,10 @@ several `buses` columns:
 | `v_mag_set` | Last in-service generator **VS** when finite and non-zero (PSS/E “unset” VS is 0); otherwise **Bus VM** — no band clamp on export |
 | `v_ang_set` | Bus VA in degrees |
 
-> **Design note**: line-end admittances GI/BI/GJ/BJ are folded into the bus shunt
-> aggregation rather than stored on the branch, because the solver expects all shunt
-> injections in the bus admittance matrix.
+> **Design note**: `GI` / `BI` / `GJ` / `BJ` are written on the branch as
+> `g_from` / `b_from` / `g_to` / `b_to` (each divided by `base_mva`). In-service
+> ends are also included in `buses.g_shunt` and `buses.b_shunt`. A consumer that
+> already injects those bus aggregates must not add the branch-end columns again.
 
 ---
 
@@ -166,8 +171,8 @@ considered as slack candidates.
 | `q_sched` | Net scheduled reactive injection = `qg_sched_pu − qd_load_pu`. |
 | `qd_load_pu` | Σ(in-service load QL) / SBASE; signed. **(v0.9.4+)** |
 | `qg_sched_pu` | Σ(in-service generator QG) / SBASE. **(v0.9.4+)** |
-| `g_shunt` | Combined conductance from bus GL + fixed shunts + line-end GI/GJ. |
-| `b_shunt` | Combined susceptance from bus BL + fixed shunts + line-end BI/BJ. |
+| `g_shunt` | Bus GL + fixed shunts + in-service line-end `g_from` / `g_to`. The branch row keeps the ends separately. |
+| `b_shunt` | Bus BL + fixed shunts + in-service line-end `b_from` / `b_to`. The branch row keeps the ends separately. |
 | `q_min` / `q_max` | Generator reactive capability range at bus. |
 | `p_min_agg` / `p_max_agg` | Generator active range at bus. |
 | `bus_uuid` | Synthesized as `"psse:bus:{bus_id}"` for stable cross-file identity. |
@@ -252,13 +257,11 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | RATEA | `ratea` | `rate_a` | RATEA / SBASE (per-unit). |
 | RATEB | `rateb` | `rate_b` | RATEB / SBASE. |
 | RATEC | `ratec` | `rate_c` | RATEC / SBASE. |
-| ST | `st` | `status` | Bool. |
-| GI | `gi` | *(bus agg only)* | From-end shunt conductance folded into `buses.g_shunt`. |
-
-**Out-of-service branches (`ST=0`)** are still emitted as normal `branches` rows with `status=false`. The converter does not drop them, so the `branches` table row count matches the non-terminator BRANCH deck line count from the RAW file. Importers or UIs that only list “in-service” or “active topology” equipment therefore report fewer branch rows than an RPF from this crate; the gap is typically the number of `ST=0` lines. For histograms of raw `ST` tokens and multiset diffs against a golden RPF, use `parser::parse_raw_with_branch_deck_stats` or `cargo run --bin branch_deck_scan -- --raw <file.raw> [--rpf <file.rpf>]`.
-| BI | `bi` | *(bus agg only)* | From-end shunt susceptance folded into `buses.b_shunt`. |
-| GJ | `gj` | *(bus agg only)* | To-end shunt conductance folded into `buses.g_shunt`. |
-| BJ | `bj` | *(bus agg only)* | To-end shunt susceptance folded into `buses.b_shunt`. |
+| ST | `st` | `status` | Bool. Out-of-service rows stay in the table with `status=false`. |
+| GI | `gi` | `g_from` | From-end conductance, `GI / base_mva`. A parsed 0 is 0, including out-of-service lines. Also added to `buses.g_shunt` when the branch is in service. |
+| BI | `bi` | `b_from` | From-end susceptance, `BI / base_mva`. Positive is capacitive. A parsed 0 is 0. In-service values are included in `buses.b_shunt`. |
+| GJ | `gj` | `g_to` | To-end conductance, `GJ / base_mva`. Same zero and out-of-service rule as `g_from`. |
+| BJ | `bj` | `b_to` | To-end susceptance, `BJ / base_mva`. Positive is capacitive. |
 | MET | `met` | *(not stored)* | Metered end flag. |
 | LEN | `len` | *(not stored)* | Line length (user units). |
 | O1 | `o1` | *(not stored)* | Owner number. |
@@ -268,6 +271,10 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | — | — | `name` | Always null. |
 | — | — | `from_nominal_kv` | Required. Resolved from `buses.nominal_kv` at export time. |
 | — | — | `to_nominal_kv` | Required. Resolved from `buses.nominal_kv` at export time. |
+
+`branches.b_shunt` remains total line charging (`B`). It is not the sum of `b_from` and `b_to`.
+
+Out-of-service branches stay in `branches` with `status=false`, so the row count matches the non-terminator branch records in the source. A view that lists only in-service equipment will show fewer rows. The end-shunt columns are still filled on those rows.
 
 **v0.8.6+ FACTS extension columns** (nullable; populated when section-18 rows can be matched safely):
 
@@ -430,8 +437,8 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 | PSS/E section | RPF table | Status (this crate) |
 |---|---|---|
-| Section 8 — Two-terminal DC | `dc_lines_2w` | A named MDC=1 line is the three-record PSS/E group (control, rectifier, inverter). Rectifier is `from_bus_id`, SETVL is `p_setpoint_mw`, RDC is `r_ohm`, and VSCHD is `v_setpoint_kv`. Bridge count, commutating kV, ratio, and tap are read to recognize the terminal rows and are not stored. One-line bus-pair rows still use the older shorthand. |
-| Section 9 — VSC DC | `dc_lines_2w` | Converted to `dc_lines_2w` rows for supported fields. |
+| Section 8 — Two-terminal DC | `dc_lines_2w` and `dc_converters` | A named MDC=1 line is the three-record group (control, rectifier, inverter). Rectifier is `from_bus_id`. SETVL is `p_setpoint_mw` (rectifier DC power; METER does not move it). RDC is `r_ohm`. VSCHD is `v_setpoint_kv`. Each terminal row stores `n_bridges`, `ebas_kv`, `tr`, `tap`, `tap_max` (TMX), `tap_min` (TMN), and `xc_ohm`. A missing or non-numeric ratio or tap is null; a parsed 0 stays 0. ANMX/ANMN are not written to `alpha_deg` / `gamma_deg`. METER `I` sets `is_meter_end` on the inverter only; METER `R` sets it on the rectifier only; any other token leaves both false. One-line bus-pair rows stay a `dc_lines_2w` row with no converter row. |
+| Section 9 — VSC DC | `dc_lines_2w` | Shorthand rows use `converter_type=vsc` and do not invent `dc_converters` rows. |
 | Section 10 — Impedance correction | — | Not converted here. |
 | Section 11 — Multi-terminal DC | — | Not converted here. |
 | Section 12 — Multi-section line | `multi_section_lines` (+ `branches` linkage) | Converted for supported records; malformed rows are skipped with parser accounting. |
@@ -454,7 +461,7 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 ## PSS/E RAW coverage (solver-oriented)
 
-**Exported today (static RAW path):** bus, load (PQ + ZIP columns — see `loads` schema), fixed shunt, generator, branch, 2W/3W transformer, area, zone, owner, switched shunt (+ derived `switched_shunt_banks`), multi-section line, two-terminal / VSC DC (`dc_lines_2w`), FACTS (merged onto matching `branches` FACTS columns where paired).
+**Exported today (static RAW path):** bus, load (PQ + ZIP columns — see `loads` schema), fixed shunt, generator, branch (including per-end `g_from` / `b_from` / `g_to` / `b_to`), 2W/3W transformer, area, zone, owner, switched shunt (+ derived `switched_shunt_banks`), multi-section line, two-terminal / VSC DC (`dc_lines_2w`, plus `dc_converters` for three-record LCC lines), FACTS (merged onto matching `branches` FACTS columns where paired).
 
 **Parsed but not written as standalone RPF tables:** FACTS rows are folded into `branches` when a branch pair matches; there is no separate `facts_devices` batch in this exporter yet.
 

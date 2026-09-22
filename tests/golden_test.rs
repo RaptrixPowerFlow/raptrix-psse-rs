@@ -19,8 +19,9 @@ use arrow::array::{Array, DictionaryArray, Float64Array, Int32Array, ListArray, 
 use arrow::datatypes::Int32Type;
 
 use raptrix_cim_arrow::{
-    RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS,
-    TABLE_MULTI_SECTION_LINES, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
+    RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W,
+    TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS, TABLE_MULTI_SECTION_LINES,
+    TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
 };
 
 const EXTERNAL_DIR: &str = "tests/data/external";
@@ -103,7 +104,7 @@ fn assert_memphis_n5_modsw2_continuous(path: &str) {
     );
 }
 
-fn assert_nyiso_slash_names_keep_scheduled_vm(path: &str) {
+fn assert_slash_names_keep_scheduled_vm(path: &str) {
     let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
     let batch = tables
         .iter()
@@ -136,29 +137,31 @@ fn assert_nyiso_slash_names_keep_scheduled_vm(path: &str) {
         .expect("Float64");
     let names = batch.column_by_name("name").expect("name");
 
-    // NYISO off/on-peak/2030 share these three slash-in-name PQ buses. A
-    // quote-blind `/` comment split used to drop VM and sanitize to 1.0.
-    let expected: &[(i32, &str)] = &[
-        (351, "EUCLID/OCWA"),
-        (1275, "SALAMANCA/~2"),
-        (1276, "SALAMANCA/~1"),
-    ];
-    for &(id, name_prefix) in expected {
+    // Buses whose published names contain `/`. A quote-blind comment split
+    // used to drop VM and sanitize it to 1.0. Other files reuse these ids
+    // without a slash in the name; leave those alone.
+    let Some(i351) = (0..bus_id.len()).find(|&i| bus_id.value(i) == 351) else {
+        return;
+    };
+    if !dict_utf8_at(names, i351).unwrap_or("").contains('/') {
+        return;
+    }
+    for id in [351, 1275, 1276] {
         let i = (0..bus_id.len())
             .find(|&i| bus_id.value(i) == id)
             .unwrap_or_else(|| panic!("{path}: missing bus {id}"));
         let vm = v_mag.value(i);
         assert!(
             (vm - 1.0).abs() > 1.0e-4,
-            "{path} bus {id}: v_mag_set must keep RAW VM, not sanitized 1.0 (got {vm})"
+            "{path} bus {id}: v_mag_set must keep the published VM (got {vm})"
         );
         assert!(
             (1.005..=1.03).contains(&vm),
-            "{path} bus {id}: v_mag_set {vm} outside the NYISO scheduled band"
+            "{path} bus {id}: v_mag_set {vm} is outside the published band"
         );
         let name = dict_utf8_at(names, i).unwrap_or("");
         assert!(
-            name.contains(name_prefix),
+            name.contains('/'),
             "{path} bus {id}: name must keep '/', got {name:?}"
         );
         let va = v_ang.value(i);
@@ -397,6 +400,46 @@ fn run_case(
             "rpf_version mismatch: expected {RPF_VERSION}, got {rpf_version}"
         ));
     }
+    if metadata
+        .get("raptrix.features.dc_converters")
+        .map(String::as_str)
+        != Some("true")
+    {
+        return Err(format!(
+            "{case_name}: missing raptrix.features.dc_converters=true"
+        ));
+    }
+    let tables = raptrix_cim_arrow::read_rpf_tables(Path::new(&out_s))
+        .map_err(|e| format!("read_rpf_tables failed: {e:#}"))?;
+    let branches = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_BRANCHES)
+        .map(|(_, batch)| batch)
+        .ok_or_else(|| format!("{case_name}: missing branches"))?;
+    for name in ["g_from", "b_from", "g_to", "b_to"] {
+        let col = branches
+            .column_by_name(name)
+            .ok_or_else(|| format!("{case_name}: branches missing {name}"))?;
+        if col.null_count() != 0 {
+            return Err(format!(
+                "{case_name}: branches.{name} must store parsed end shunts, including 0"
+            ));
+        }
+    }
+    let dc_lines = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_DC_LINES_2W)
+        .map(|(_, batch)| batch)
+        .ok_or_else(|| format!("{case_name}: missing dc_lines_2w"))?;
+    if dc_lines.num_columns() != 15 {
+        return Err(format!(
+            "{case_name}: dc_lines_2w has {} columns, expected 15",
+            dc_lines.num_columns()
+        ));
+    }
+    if !tables.iter().any(|(name, _)| name == TABLE_DC_CONVERTERS) {
+        return Err(format!("{case_name}: missing dc_converters table"));
+    }
 
     let buses = rows(&summary, TABLE_BUSES);
     let branches = rows(&summary, TABLE_BRANCHES);
@@ -431,7 +474,7 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
-    assert_eq!(RPF_VERSION, "v0.14.3");
+    assert_eq!(RPF_VERSION, "v0.14.4");
 
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {
@@ -541,9 +584,7 @@ fn golden_build_all_external_raw_cases() {
         if t.case_name.to_ascii_lowercase().contains("ieee14") {
             assert_ieee14_v_ang_set_degrees(&t.output_file);
         }
-        if t.case_name.to_ascii_lowercase().contains("nyiso") {
-            assert_nyiso_slash_names_keep_scheduled_vm(&t.output_file);
-        }
+        assert_slash_names_keep_scheduled_vm(&t.output_file);
     }
 
     // Legacy short-stem aliases still referenced by older core/scripts paths.

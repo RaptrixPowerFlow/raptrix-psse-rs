@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.3 converter.
+//! Raptrix PowerFlow Interchange v0.14.4 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -64,18 +64,19 @@ use arrow::{
 };
 use chrono::{SecondsFormat, Utc};
 use raptrix_cim_arrow::{
-    BUS_TYPE_PQ, BUS_TYPE_PV, BUS_TYPE_SLACK, IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1,
+    BUS_TYPE_PQ, BUS_TYPE_PV, BUS_TYPE_SLACK, DcConverterRow, IDENTITY_MODEL_HYBRID_SOLVER_FLAT_V1,
     METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_COMPUTATIONAL_LOAD_MODE,
     METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_SOLVED_STATE_PRESENCE, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
     TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_BUSES_SOLVED, TABLE_CONTINGENCIES,
-    TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS,
-    TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
+    TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
+    TABLE_GENERATORS, TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
     TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS,
     TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W,
-    TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING, classical_params_struct_fields,
-    normalize_tap_control, regulated_bus_id_from_swreg, shunt_control_mode_from_modsw,
-    table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
+    TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING, build_dc_converters_batch,
+    classical_params_struct_fields, empty_dc_converters_batch, normalize_tap_control,
+    regulated_bus_id_from_swreg, shunt_control_mode_from_modsw, table_schema,
+    tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -251,7 +252,7 @@ pub fn write_psse_to_rpf_with_options(
     // v_mag_set = bus.vm on solved-looking decks (generator VS is NOT written
     // into v_mag_set when the RAW carries a published operating point — VS≠VM
     // on PV buses was an RPF creation bug that produced tens-of-pu Q residuals
-    // on ACTIVSg plant ties). Flat-start decks still allow VS override.
+    // on low-impedance plant ties). Flat-start decks still allow VS override.
     // Emitting `buses_solved` remains optional for callers with a separate
     // advisory operating point.
     let emit_warm_start_seed: bool = false;
@@ -319,6 +320,10 @@ pub fn write_psse_to_rpf_with_options(
     table_batches.insert(
         TABLE_DC_LINES_2W,
         build_dc_lines_2w_batch(&network.dc_lines_2w)?,
+    );
+    table_batches.insert(
+        TABLE_DC_CONVERTERS,
+        build_dc_converters_table(&network.dc_converters)?,
     );
     table_batches.insert(
         TABLE_TRANSFORMERS_2W,
@@ -416,8 +421,10 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.3) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.4) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
+    // `include_dc_converters` stays at the RootWriteOptions default (true), which
+    // also stamps `raptrix.features.dc_converters=true`.
     write_root_rpf_with_metadata(
         output,
         &table_batches,
@@ -2095,7 +2102,7 @@ fn build_buses_batch(
     // setpoint (and should live only in generators / params / v_ctrl_set after import).
     // Writing VS into `v_mag_set` for PV while PQ neighbors keep bus VM fabricates large
     // ΔV across low-Z plant ties. Even a |VS−VM|≤0.02 hybrid rewrites thousands of
-    // plant terminals on ACTIVSg (RAW max|F| ~38 vs pure-VM ~0.002). When the deck
+    // plant terminals on a large solved deck (RAW max|F| ~38 vs pure-VM ~0.002). When the deck
     // looks solved, ALWAYS export bus.vm. Flat-start decks may still use VS for PV.
     let n = buses.len().max(1) as f64;
     let n_angled = buses.iter().filter(|b| b.va.abs() > 1.0e-4).count() as f64;
@@ -2299,6 +2306,10 @@ fn build_branches_batch(
     let mut parent_line_id = Int32Builder::new();
     let mut section_index = Int32Builder::new();
     let mut mrid = StringBuilder::new();
+    let mut g_from = Float64Builder::new();
+    let mut b_from = Float64Builder::new();
+    let mut g_to = Float64Builder::new();
+    let mut b_to = Float64Builder::new();
     let map_field_names = MapFieldNames {
         entry: "entries".to_string(),
         key: "key".to_string(),
@@ -2359,6 +2370,10 @@ fn build_branches_batch(
             branch.j,
             branch.ckt.as_ref(),
         ));
+        g_from.append_value(branch.gi / base_mva);
+        b_from.append_value(branch.bi / base_mva);
+        g_to.append_value(branch.gj / base_mva);
+        b_to.append_value(branch.bj / base_mva);
 
         let pair_key = if branch.i <= branch.j {
             (branch.i, branch.j)
@@ -2455,6 +2470,12 @@ fn build_branches_batch(
             null_bool_column(n),
             null_bool_column(n),
             null_bool_column(n),
+            // v0.14.4: GI/BI/GJ/BJ on base_mva. A parsed 0 is 0.0, including
+            // out-of-service lines. b_shunt above stays total line charging.
+            Arc::new(g_from.finish()),
+            Arc::new(b_from.finish()),
+            Arc::new(g_to.finish()),
+            Arc::new(b_to.finish()),
         ],
     )
     .context("building branches batch")
@@ -3058,6 +3079,33 @@ fn build_multi_section_lines_batch(rows: &[models::MultiSectionLine]) -> Result<
         ],
     )
     .context("building multi_section_lines batch")
+}
+
+fn build_dc_converters_table(rows: &[models::DcConverter]) -> Result<RecordBatch> {
+    if rows.is_empty() {
+        return Ok(empty_dc_converters_batch());
+    }
+    let mut built = Vec::with_capacity(rows.len());
+    for row in rows {
+        built.push(DcConverterRow {
+            dc_line_id: row.dc_line_id,
+            bus_id: i32::try_from(row.bus_id).context("dc_converters.bus_id exceeds i32")?,
+            role: row.role.to_string(),
+            converter_kind: row.converter_kind.to_string(),
+            n_bridges: row.n_bridges,
+            ebas_kv: row.ebas_kv,
+            tr: row.tr,
+            tap: row.tap,
+            tap_min: row.tap_min,
+            tap_max: row.tap_max,
+            xc_ohm: row.xc_ohm,
+            alpha_deg: row.alpha_deg,
+            gamma_deg: row.gamma_deg,
+            is_meter_end: row.is_meter_end,
+            ..DcConverterRow::default()
+        });
+    }
+    build_dc_converters_batch(&built)
 }
 
 fn build_dc_lines_2w_batch(rows: &[models::DcLine2W]) -> Result<RecordBatch> {

@@ -45,6 +45,10 @@ pub struct Network {
     pub multi_section_lines: Vec<MultiSectionLine>,
     /// Two-terminal and VSC DC line records (sections 8 and 8b).
     pub dc_lines_2w: Vec<DcLine2W>,
+    /// AC terminals of three-record LCC lines. Shorthand and VSC section rows
+    /// do not produce entries. Written as `dc_converters`, which is not one of
+    /// the 18 canonical equipment tables.
+    pub dc_converters: Vec<DcConverter>,
     /// Zone data records (section 13).
     pub zones: Vec<Zone>,
     /// Owner data records (section 15).
@@ -496,6 +500,42 @@ pub struct DcLine2W {
     pub name: Option<Box<str>>,
     /// Converter type token (`lcc`, `vsc`, etc.).
     pub converter_type: Box<str>,
+}
+
+/// One AC terminal of a two-terminal LCC line (v0.14.4 `dc_converters` row).
+///
+/// `alpha_deg` and `gamma_deg` stay unset: ANMX/ANMN are limits, not a firing angle.
+/// VSC-only columns are not stored here; the writer leaves them null.
+#[derive(Debug, Default, Clone)]
+pub struct DcConverter {
+    /// Line this terminal belongs to.
+    pub dc_line_id: i32,
+    /// AC bus. Rectifier matches `DcLine2W.from_bus_id`. Inverter matches `to_bus_id`.
+    pub bus_id: u32,
+    /// `rectifier` or `inverter`.
+    pub role: Box<str>,
+    /// `lcc` or `vsc`. Matches the parent line's `converter_type`.
+    pub converter_kind: Box<str>,
+    /// Bridge count, 1 through 12. Null when the token is absent.
+    pub n_bridges: Option<i32>,
+    /// Commutating-transformer AC base, kV.
+    pub ebas_kv: Option<f64>,
+    /// Transformer ratio. A parsed 0 stays 0. Null when the token is absent.
+    pub tr: Option<f64>,
+    /// Operating tap. A parsed 0 stays 0. Null when the token is absent.
+    pub tap: Option<f64>,
+    /// Minimum tap (TMN).
+    pub tap_min: Option<f64>,
+    /// Maximum tap (TMX).
+    pub tap_max: Option<f64>,
+    /// Commutating reactance, ohms. Stored, not used by an equation in this crate.
+    pub xc_ohm: Option<f64>,
+    /// Firing angle. Left null by this converter.
+    pub alpha_deg: Option<f64>,
+    /// Extinction angle. Left null by this converter.
+    pub gamma_deg: Option<f64>,
+    /// True only on the end named by METER. Does not move `p_setpoint_mw`.
+    pub is_meter_end: bool,
 }
 
 /// Parser-normalized multi-section line group.

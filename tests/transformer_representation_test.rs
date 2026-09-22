@@ -456,3 +456,43 @@ fn tap_control_voltage_cod_stamps_ratio() {
     let _ = fs::remove_file(raw_path);
     let _ = fs::remove_file(out_path);
 }
+
+#[test]
+fn twelve_rating_winding_reads_cod_after_the_rate_block() {
+    let raw_path = unique_temp_path("tap_cod12", "raw");
+    let out_path = unique_temp_path("tap_cod12", "rpf");
+    // Zeros sit where a 3-rating record would put COD. The real COD is 1
+    // after twelve RATE columns.
+    write_two_winding_raw(
+        &raw_path,
+        "1.0,230.0,0.0,100.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,1,40,1.1,0.9,1.1,0.9,33",
+    );
+
+    raptrix_psse_rs::write_psse_to_rpf(
+        raw_path.to_str().unwrap(),
+        None,
+        out_path.to_str().unwrap(),
+    )
+    .expect("12-rating COD conversion");
+
+    let tables = raptrix_psse_rs::read_rpf_tables(&out_path).expect("read");
+    let xfmr = table_by_name(&tables, TABLE_TRANSFORMERS_2W);
+    let mode = xfmr
+        .column_by_name("tap_control_mode")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    assert_eq!(mode.value(0), 1);
+    let unit = xfmr.column_by_name("tap_limit_unit").unwrap();
+    assert_eq!(dict_utf8_at(unit.as_ref(), 0), "ratio");
+    let nom = xfmr
+        .column_by_name("from_nominal_kv")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!((nom.value(0) - 230.0).abs() < 1e-9);
+    let _ = fs::remove_file(raw_path);
+    let _ = fs::remove_file(out_path);
+}

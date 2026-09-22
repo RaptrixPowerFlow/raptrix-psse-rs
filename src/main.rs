@@ -35,7 +35,7 @@ enum Commands {
     /// Parse a PSS/E case and write a Raptrix PowerFlow Interchange (.rpf) file.
     ///
     /// Example:
-    ///   raptrix-psse-rs convert --raw tests/data/external/Texas7k_20210804.RAW --output case.rpf
+    ///   raptrix-psse-rs convert --raw my_case.raw --output my_case.rpf
     Convert {
         /// Path to the PSS/E RAW file (.raw).
         #[arg(long)]

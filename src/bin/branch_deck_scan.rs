@@ -5,7 +5,7 @@
 
 //! CLI tool: BRANCH deck statistics, optional RAW↔RPF `branches` multiset diff.
 //!
-//! Example (Eastern 515GW or any large RAW):
+//! Example:
 //! ```text
 //! cargo run --bin branch_deck_scan -- --raw path/to/case.raw --rpf path/to/case_static.rpf
 //! ```

@@ -18,6 +18,26 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.7.5**: RPF **v0.14.4** (`raptrix-cim-arrow` **0.7.4**) — **Converter ends and branch-end shunts**
+
+`raptrix-psse-rs` **v0.7.5** emits RPF **v0.14.4**.
+
+#### What changed
+
+- Writer stamps `v0.14.4`. Readers accept **`v0.14.4`** and **`0.14.4`** only. There is no dual-read of v0.14.3 or any older stamp, and an old stamp is not padded forward. `v0.15.0` is not used.
+- `dc_lines_2w` stays 15 columns. `p_setpoint_mw` is rectifier DC power. Both Q columns stay null on this path.
+- `dc_converters` is always present. Zero rows is valid. Feature flag `raptrix.features.dc_converters=true`. It is not one of the 18 canonical tables. Three-record LCC lines write a rectifier row and an inverter row. Shorthand DC lines and section-9 VSC lines do not. `is_meter_end` does not move the setpoint.
+- `branches` appends `g_from`, `b_from`, `g_to`, `b_to` (pu on `base_mva`), including parsed zeros and out-of-service lines. `b_shunt` remains line charging. Bus shunt aggregates still fold in-service ends only.
+- `computational_load_mode` stays null. `computational_load_profiles` is still not emitted.
+- **Dependency**: `raptrix-cim-arrow` **0.7.4** / git tag **`v0.7.4`**, Arrow **59.3**.
+
+#### Consumer checklist
+
+1. Re-export every `.rpf` this converter produced at v0.14.3 or earlier.
+2. Accept `raptrix.version` ∈ {`v0.14.4`, `0.14.4`} only.
+3. Read `dc_converters` when terminal data is required. A missing table is not a valid v0.14.4 file.
+4. If a solver already injects `buses.g_shunt` / `buses.b_shunt`, do not also add `branches.g_from` / `b_from` / `g_to` / `b_to`.
+
 ### raptrix-psse-rs **v0.7.4**: RPF **v0.14.3** — **Quoted `/` in RAW names**
 
 `raptrix-psse-rs` **v0.7.4** still emits RPF **v0.14.3**. This is a parser
