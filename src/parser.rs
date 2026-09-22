@@ -872,19 +872,23 @@ fn parse_generator_record(f: &[String], off: &VersionOffsets) -> Option<Generato
     let mbase = field_f64(f, off.gen_mbase_idx);
     let mbase = if mbase <= 0.0 { 100.0 } else { mbase };
 
+    // Blank PT (exactly 0) falls back to MBASE. A negative PT is a real cap:
+    // NYISO on-peak 799 and 651 are fixed at PT = PB = PG < 0. Negative PB
+    // is legal. Do not rewrite either one to 0.
+    let pg = field_f64(f, 2);
     let pt = {
         let raw = field_f64(f, off.gen_pt_idx);
-        if raw <= 0.0 { mbase } else { raw } // PSS/E fallback: Pmax = Mbase
+        if raw == 0.0 { mbase } else { raw }
     };
     let pb = {
         let raw = field_f64(f, off.gen_pb_idx);
-        if raw < 0.0 || raw > pt { 0.0 } else { raw }
+        if raw > pt { pt } else { raw }
     };
 
     Some(Generator {
         i,
         id: field_str(f, 1).into_boxed_str(),
-        pg: field_f64(f, 2),
+        pg,
         qg: field_f64(f, 3),
         qt: field_f64(f, 4),
         qb: field_f64(f, 5),
@@ -1191,6 +1195,89 @@ fn parse_dc_line_record(f: &[String], dc_line_id: i32, converter_type: &str) -> 
     })
 }
 
+fn token_is_number(token: &str) -> bool {
+    let t = token.trim().trim_matches('\'');
+    if t.is_empty() {
+        return false;
+    }
+    // parse_fortran_double turns a non-numeric token into 0.0, so it cannot
+    // tell a name from a number.
+    t.replace(['D', 'd'], "e").parse::<f64>().is_ok()
+}
+
+/// Named PSS/E two-terminal control record: `'NAME', MDC, RDC, SETVL, VSCHD, ...`.
+/// MDC=1 is power control. The megawatts are rectifier DC power and the kilovolts
+/// are inverter DC voltage, which is the split a solved Eastern case carries.
+fn is_psse_lcc_control(f: &[String]) -> bool {
+    if f.len() < 5 || token_is_number(&f[0]) {
+        return false;
+    }
+    token_to_positive_u32(&f[1]) == Some(1)
+        && token_to_f64(&f[2]).is_some_and(|v| v.is_finite())
+        && token_to_f64(&f[3]).is_some_and(|v| v > 0.0)
+        && token_to_f64(&f[4]).is_some_and(|v| v > 0.0)
+}
+
+/// Confirm a rectifier or inverter row and return its AC bus.
+/// Bridge count, commutating kV, ratio, and tap are checked so a control
+/// record is not paired with an unrelated line. The interchange table has
+/// no columns for those values yet, so they are not stored.
+fn parse_psse_lcc_terminal(row: &[String]) -> Option<u32> {
+    if row.len() < 9 {
+        return None;
+    }
+    let bus = token_to_positive_u32(&row[0])?;
+    let bridges = token_to_positive_u32(&row[1])?;
+    if !(1..=12).contains(&bridges) {
+        return None;
+    }
+    let ebas = token_to_f64(&row[6])?;
+    if !(ebas > 0.0) {
+        return None;
+    }
+    Some(bus)
+}
+
+/// One PSS/E LCC line is three records: control, rectifier, inverter.
+/// `from_bus_id` is the rectifier and `to_bus_id` is the inverter.
+/// `p_setpoint_mw` is rectifier DC power and `v_setpoint_kv` is inverter DC voltage.
+fn parse_psse_lcc_triplet(group: &[Vec<String>], dc_line_id: i32) -> Option<DcLine2W> {
+    if group.len() != 3 || !is_psse_lcc_control(&group[0]) {
+        return None;
+    }
+    let ctrl = &group[0];
+    let rdc = token_to_f64(&ctrl[2])?;
+    let setvl = token_to_f64(&ctrl[3])?;
+    let vschd = token_to_f64(&ctrl[4])?;
+    let from_bus = parse_psse_lcc_terminal(&group[1])?;
+    let to_bus = parse_psse_lcc_terminal(&group[2])?;
+    if from_bus == to_bus {
+        return None;
+    }
+    let name = ctrl[0].trim().to_string();
+    Some(DcLine2W {
+        dc_line_id,
+        from_bus_id: from_bus,
+        to_bus_id: to_bus,
+        ckt: "1".into(),
+        r_ohm: rdc,
+        l_henry: None,
+        control_mode: "power".into(),
+        p_setpoint_mw: Some(setvl),
+        i_setpoint_ka: None,
+        v_setpoint_kv: Some(vschd),
+        q_from_mvar: None,
+        q_to_mvar: None,
+        status: true,
+        name: if name.is_empty() {
+            None
+        } else {
+            Some(name.into())
+        },
+        converter_type: "lcc".into(),
+    })
+}
+
 fn parse_multi_section_line_record(f: &[String], line_id: i32) -> Option<MultiSectionLine> {
     let (_a_idx, b_idx, from_bus_id, to_bus_id) = first_plausible_bus_pair_with_indices(f)?;
     if from_bus_id == to_bus_id {
@@ -1422,6 +1509,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
     let mut next_multi_section_line_id: i32 = 1;
     let mut dc_rows_rejected: usize = 0;
     let mut multi_section_rows_rejected: usize = 0;
+    let mut lcc_group: Vec<Vec<String>> = Vec::new();
 
     loop {
         let raw_line = match next_line(&mut lines_iter) {
@@ -1443,6 +1531,10 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
 
         // ---- Section terminator ----
         if is_section_end(data) {
+            if state == ParseState::TwoTerminalDc && !lcc_group.is_empty() {
+                dc_rows_rejected += lcc_group.len();
+                lcc_group.clear();
+            }
             let next = hint_to_state(hint_part, psse_version)
                 .unwrap_or_else(|| default_next_state(state, psse_version));
             state = next;
@@ -1777,11 +1869,26 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
             // ================================================================
             ParseState::TwoTerminalDc => {
                 let f = tokenize(data);
-                if let Some(row) = parse_dc_line_record(&f, next_dc_line_id, "lcc") {
-                    result.dc_lines_2w.push(row);
-                    next_dc_line_id += 1;
+                if lcc_group.is_empty() {
+                    if is_psse_lcc_control(&f) {
+                        lcc_group.push(f);
+                    } else if let Some(row) = parse_dc_line_record(&f, next_dc_line_id, "lcc") {
+                        result.dc_lines_2w.push(row);
+                        next_dc_line_id += 1;
+                    } else {
+                        dc_rows_rejected += 1;
+                    }
                 } else {
-                    dc_rows_rejected += 1;
+                    lcc_group.push(f);
+                    if lcc_group.len() == 3 {
+                        if let Some(row) = parse_psse_lcc_triplet(&lcc_group, next_dc_line_id) {
+                            result.dc_lines_2w.push(row);
+                            next_dc_line_id += 1;
+                        } else {
+                            dc_rows_rejected += lcc_group.len();
+                        }
+                        lcc_group.clear();
+                    }
                 }
             }
 
@@ -1873,6 +1980,10 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
 
             ParseState::Done => break,
         }
+    }
+
+    if !lcc_group.is_empty() {
+        dc_rows_rejected += lcc_group.len();
     }
 
     eprintln!(

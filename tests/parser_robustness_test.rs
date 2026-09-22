@@ -78,6 +78,29 @@ fn raw_with_dc_and_msl_rows(dc_rows: &str, msl_rows: &str) -> String {
 }
 
 #[test]
+fn psse_three_record_lcc_line() {
+    let raw = raw_with_dc_rows(
+        "'DC Line 1   ', 1, 10.0000, 550.00, 250.00, 0.00, 0.0000, 0.10000, I, 0.00, 0, 0.00000\n\
+         58540, 2, 15, 15, 0, 10, 345, 0.55784, 1.5, 1.5, 0.51, 0.00625, 0, 0, 0, 0, 0\n\
+         55247, 2, 15, 15, 0, 10, 345, 0.55784, 1.5, 1.5, 0.51, 0.00625, 0, 0, 0, 0, 0",
+    );
+    let network = parse_snippet(&raw).expect("Failed to parse PSS/E LCC triplet");
+
+    assert_eq!(network.dc_lines_2w.len(), 1);
+    let dc = &network.dc_lines_2w[0];
+    assert_eq!(dc.from_bus_id, 58540);
+    assert_eq!(dc.to_bus_id, 55247);
+    assert_eq!(dc.converter_type.as_ref(), "lcc");
+    assert_eq!(dc.control_mode.as_ref(), "power");
+    assert_eq!(dc.name.as_deref(), Some("DC Line 1"));
+    assert!((dc.r_ohm - 10.0).abs() < 1.0e-9);
+    assert_eq!(dc.p_setpoint_mw, Some(550.0));
+    assert_eq!(dc.v_setpoint_kv, Some(250.0));
+    assert_eq!(dc.q_from_mvar, None);
+    assert_eq!(dc.q_to_mvar, None);
+}
+
+#[test]
 fn dc_line_minimal_fields() {
     let raw = raw_with_dc_rows("10, 20, 'DC1', 'LCC'");
     let network = parse_snippet(&raw).expect("Failed to parse minimal DC line");

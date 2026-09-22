@@ -222,8 +222,8 @@ that rebuild shunt injections from `fixed_shunts` alone get the correct totals.
 | I | `i` | `bus_id` | |
 | ID | `id` | `id` | Dictionary-encoded. |
 | PG | `pg` | `p_sched_mw` | MW as in RAW. |
-| PT | `pt` | `p_max_mw` | MW. |
-| PB | `pb` | `p_min_mw` | MW. |
+| PT | `pt` | `p_max_mw` | MW. Blank PT (exactly 0) falls back to MBASE. A negative PT is kept. |
+| PB | `pb` | `p_min_mw` | MW. Negative PB is kept. If PB > PT, PB is set to PT. |
 | QT | `qt` | `q_max_mvar` | MVAr. |
 | QB | `qb` | `q_min_mvar` | MVAr. |
 | STAT | `stat` | `status` | Bool. |
@@ -430,7 +430,7 @@ When no matching supported machine model is present, `generators.h = 0.0`,
 
 | PSS/E section | RPF table | Status (this crate) |
 |---|---|---|
-| Section 8 — Two-terminal DC | `dc_lines_2w` | Converted to `dc_lines_2w` rows when records parse cleanly. |
+| Section 8 — Two-terminal DC | `dc_lines_2w` | A named MDC=1 line is the three-record PSS/E group (control, rectifier, inverter). Rectifier is `from_bus_id`, SETVL is `p_setpoint_mw`, RDC is `r_ohm`, and VSCHD is `v_setpoint_kv`. Bridge count, commutating kV, ratio, and tap are read to recognize the terminal rows and are not stored. One-line bus-pair rows still use the older shorthand. |
 | Section 9 — VSC DC | `dc_lines_2w` | Converted to `dc_lines_2w` rows for supported fields. |
 | Section 10 — Impedance correction | — | Not converted here. |
 | Section 11 — Multi-terminal DC | — | Not converted here. |
