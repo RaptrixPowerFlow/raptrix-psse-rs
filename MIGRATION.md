@@ -18,6 +18,10 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### raptrix-psse-rs **v0.7.6** — `metadata.raptrix_version` matches the schema stamp
+
+`raptrix-psse-rs` **v0.7.6** still emits RPF **v0.14.4**. The metadata row's `raptrix_version` is `v0.14.4`, identical to `raptrix.version` and `rpf_version`. Builds through **0.7.5** wrote the converter package version (`0.7.5`) in that column while the file header was already `v0.14.4`. Re-export any file a loader rejected because the metadata row was not `v0.14.4`.
+
 ### raptrix-psse-rs **v0.7.5**: RPF **v0.14.4** (`raptrix-cim-arrow` **0.7.4**) — **Converter ends and branch-end shunts**
 
 `raptrix-psse-rs` **v0.7.5** emits RPF **v0.14.4**.

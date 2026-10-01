@@ -126,7 +126,7 @@ several `buses` columns:
 | `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. `/` starts a comment only **outside** quoted fields. |
 | — | — | `source_format` | Always `psse_raw` for this converter. |
 | — | — | `source_identity_scheme` | Always `dense_bus_id` for this converter. |
-| — | — | `raptrix_version` | Always crate package version written by this converter. |
+| — | — | `raptrix_version` | Locked schema stamp (`v0.14.4`), the same value as file metadata `raptrix.version`. |
 | — | — | `is_planning_case` | Always `true` for PSS/E RAW imports. |
 | — | — | `case_mode` | `"flat_start_planning"` when all RAW bus voltages are approximately flat (`VM≈1.0`, `VA≈0`); otherwise `"warm_start_planning"`. |
 | — | — | `timestamp_utc` | UTC wall-clock time of conversion as Arrow `Timestamp(Microsecond, UTC)`. |

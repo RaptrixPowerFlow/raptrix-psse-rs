@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-10-01
+
+### Fixed
+
+- `metadata.raptrix_version` writes the locked schema stamp (`SCHEMA_VERSION`, `v0.14.4`), the same value as `raptrix.version`. Loaders that read the metadata row now see `v0.14.4`.
+
 ## [0.7.5] - 2026-09-22
 
 ### RPF v0.14.4 (raptrix-cim-arrow 0.7.4) — converter ends and branch-end shunts

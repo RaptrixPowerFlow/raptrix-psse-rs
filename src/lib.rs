@@ -68,15 +68,15 @@ use raptrix_cim_arrow::{
     METADATA_KEY_CASE_FINGERPRINT, METADATA_KEY_CASE_MODE, METADATA_KEY_COMPUTATIONAL_LOAD_MODE,
     METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_SOLVED_STATE_PRESENCE, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
-    TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_BUSES_SOLVED, TABLE_CONTINGENCIES,
-    TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS,
-    TABLE_GENERATORS, TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA,
-    TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS,
-    TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W,
-    TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING, build_dc_converters_batch,
-    classical_params_struct_fields, empty_dc_converters_batch, normalize_tap_control,
-    regulated_bus_id_from_swreg, shunt_control_mode_from_modsw, table_schema,
-    tap_limit_unit_from_cod, write_root_rpf_with_metadata,
+    SCHEMA_VERSION, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_BUSES_SOLVED,
+    TABLE_CONTINGENCIES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS,
+    TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS,
+    TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT,
+    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED,
+    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING,
+    build_dc_converters_batch, classical_params_struct_fields, empty_dc_converters_batch,
+    normalize_tap_control, regulated_bus_id_from_swreg, shunt_control_mode_from_modsw,
+    table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -1727,8 +1727,9 @@ fn build_metadata_batch(
     let mut snapshot_timestamp_utc =
         TimestampMicrosecondBuilder::with_capacity(1).with_timezone(utc_tz);
     snapshot_timestamp_utc.append_value(ts_micros);
+    // Contract: this column is the same stamp as file-level `raptrix.version`.
     let mut raptrix_version = StringBuilder::new();
-    raptrix_version.append_value(env!("CARGO_PKG_VERSION"));
+    raptrix_version.append_value(SCHEMA_VERSION);
     let mut case_fingerprint = StringBuilder::new();
     case_fingerprint.append_value(case_fingerprint_value);
 

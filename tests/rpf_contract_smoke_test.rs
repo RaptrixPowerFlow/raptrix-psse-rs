@@ -1293,6 +1293,17 @@ BUS TYPE
     );
 
     let tables = read_rpf_tables(&out_path).expect("read_rpf_tables");
+    let (_, metadata_batch) = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_METADATA)
+        .expect("metadata table");
+    let raptrix_version = metadata_batch
+        .column_by_name("raptrix_version")
+        .expect("metadata.raptrix_version")
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("metadata.raptrix_version is Utf8");
+    assert_eq!(raptrix_version.value(0), RPF_VERSION);
     let (_, generators) = tables
         .iter()
         .find(|(name, _)| name == TABLE_GENERATORS)

@@ -134,14 +134,15 @@ Trailing nullable **`mrid`** columns exist on equipment tables (`branches`, `gen
 
 **v0.14.3** maps RAW MODSW 0/1/2 onto `switched_shunts.shunt_control_mode` tokens and SWREG/SWREM onto `regulated_bus_id` (null = local). Other MODSW → null + `unknown_modsw`.
 
-**v0.14.4** adds `dc_converters` and the four branch-end shunt columns. This crate stamps `v0.14.4` only. `computational_load_mode` stays null; `computational_load_profiles` is not emitted.
+**v0.14.4** adds `dc_converters` and the four branch-end shunt columns. This crate stamps `v0.14.4` on both the file header (`raptrix.version`) and `metadata.raptrix_version`. `computational_load_mode` stays null; `computational_load_profiles` is not emitted.
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.7.5)
+## Recent release (v0.7.6)
 
+- `metadata.raptrix_version` is the locked schema stamp **`v0.14.4`**, the same value as `raptrix.version`. Re-export files produced by **0.7.5** and earlier if a loader reads that column.
 - Pin `raptrix-cim-arrow` **0.7.4** (git tag **`v0.7.4`**). Writers stamp **RPF v0.14.4**. Readers accept **`v0.14.4`** and **`0.14.4`** only. Re-export cached `.rpf` files. `v0.15.0` is not used.
 - `dc_lines_2w` stays 15 columns. `dc_converters` is always emitted (`raptrix.features.dc_converters=true`). Three-record LCC lines store bridge count, commutating kV, ratio, tap, tap band, and commutating reactance. `METER` sets `is_meter_end` and does not move `SETVL`.
 - `branches.g_from` / `b_from` / `g_to` / `b_to` are the parsed end shunts on `base_mva`, including zeros and out-of-service lines.

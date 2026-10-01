@@ -20,8 +20,8 @@ use arrow::datatypes::Int32Type;
 
 use raptrix_cim_arrow::{
     RPF_VERSION, TABLE_BRANCHES, TABLE_BUSES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W,
-    TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS, TABLE_MULTI_SECTION_LINES,
-    TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
+    TABLE_DYNAMICS_MODELS, TABLE_GENERATORS, TABLE_LOADS, TABLE_METADATA,
+    TABLE_MULTI_SECTION_LINES, TABLE_SWITCHED_SHUNTS, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W,
 };
 
 const EXTERNAL_DIR: &str = "tests/data/external";
@@ -411,6 +411,27 @@ fn run_case(
     }
     let tables = raptrix_cim_arrow::read_rpf_tables(Path::new(&out_s))
         .map_err(|e| format!("read_rpf_tables failed: {e:#}"))?;
+    let metadata_batch = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_METADATA)
+        .map(|(_, batch)| batch)
+        .ok_or_else(|| format!("{case_name}: missing metadata"))?;
+    let raptrix_version = metadata_batch
+        .column_by_name("raptrix_version")
+        .ok_or_else(|| format!("{case_name}: metadata missing raptrix_version"))?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| format!("{case_name}: metadata.raptrix_version is not Utf8"))?;
+    let found_version = if raptrix_version.is_empty() {
+        "<empty>"
+    } else {
+        raptrix_version.value(0)
+    };
+    if found_version != RPF_VERSION {
+        return Err(format!(
+            "{case_name}: metadata.raptrix_version expected {RPF_VERSION}, got {found_version}"
+        ));
+    }
     let branches = tables
         .iter()
         .find(|(name, _)| name == TABLE_BRANCHES)
