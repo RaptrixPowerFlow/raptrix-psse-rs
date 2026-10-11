@@ -3722,10 +3722,8 @@ fn resolve_repca_branch_ids(network: &mut models::Network) {
         if !rec.model.eq_ignore_ascii_case("REPCA1") {
             continue;
         }
-        let (Some(from), Some(to)) = (
-            dyr_param(rec, "mon_from_bus"),
-            dyr_param(rec, "mon_to_bus"),
-        ) else {
+        let (Some(from), Some(to)) = (dyr_param(rec, "mon_from_bus"), dyr_param(rec, "mon_to_bus"))
+        else {
             continue;
         };
         if from <= 0.0 || to <= 0.0 {
@@ -3749,8 +3747,7 @@ fn resolve_repca_branch_ids(network: &mut models::Network) {
                     } else {
                         format!("{c}")
                     };
-                    trimmed == as_int
-                        || trimmed.parse::<f64>().ok() == Some(c)
+                    trimmed == as_int || trimmed.parse::<f64>().ok() == Some(c)
                 }
             }
         });
@@ -3794,11 +3791,7 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
         gen_id.append_value(rec.id.as_ref());
         model_type.append_value(rec.model.as_ref());
 
-        let has_param = |name: &str| {
-            rec.params
-                .iter()
-                .any(|(k, _)| k.eq_ignore_ascii_case(name))
-        };
+        let has_param = |name: &str| rec.params.iter().any(|(k, _)| k.eq_ignore_ascii_case(name));
         for (key, value) in &rec.params {
             params.keys().append_value(key.as_ref());
             params.values().append_value(*value);

@@ -2636,14 +2636,19 @@ fn dyr_token_number(token: &str) -> Option<f64> {
     if let Ok(v) = s.parse::<f64>() {
         return Some(v);
     }
-    let numeric_shaped = s.chars().all(|c| {
-        c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'E' | 'd' | 'D')
-    }) && s.chars().any(|c| c.is_ascii_digit());
+    let numeric_shaped = s
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'E' | 'd' | 'D'))
+        && s.chars().any(|c| c.is_ascii_digit());
     if !numeric_shaped {
         return None;
     }
     let parsed = parse_fortran_double(s);
-    if parsed.is_finite() { Some(parsed) } else { None }
+    if parsed.is_finite() {
+        Some(parsed)
+    } else {
+        None
+    }
 }
 
 fn tokenize_dyr_record(record: &str) -> Vec<DyrTok> {
@@ -2774,7 +2779,11 @@ fn parse_user_dyr_record(bus_id: u32, model: &str, parts: &[DyrTok]) -> Option<D
         if parts.len() < 10 {
             return None;
         }
-        (normalize_machine_id(&tok_text(&parts[2])), tok_text(&parts[3]), 4usize)
+        (
+            normalize_machine_id(&tok_text(&parts[2])),
+            tok_text(&parts[3]),
+            4usize,
+        )
     } else {
         if parts.len() < 9 {
             return None;
@@ -2960,8 +2969,8 @@ mod dyr_dictionary_tests {
             "Texas2k_series24_case1_2016summerPeak.dyr",
         ];
         let watched = [
-            "GENROU", "GENSAL", "ESST4B", "EXST1", "ESST1A", "GGOV1", "IEEEG1", "HYGOV",
-            "PSS2A", "REGCA1", "REECA1", "REPCA1", "WTARA1", "WTPTA1", "WTTQA1",
+            "GENROU", "GENSAL", "ESST4B", "EXST1", "ESST1A", "GGOV1", "IEEEG1", "HYGOV", "PSS2A",
+            "REGCA1", "REECA1", "REPCA1", "WTARA1", "WTPTA1", "WTTQA1",
         ];
         for name in files {
             let path = root.join(name);
@@ -2978,9 +2987,7 @@ mod dyr_dictionary_tests {
                     model
                 };
                 *counts.entry(key.to_string()).or_default() += 1;
-                if watched.contains(&model)
-                    && param(rec, "token_count_mismatch") == Some(1.0)
-                {
+                if watched.contains(&model) && param(rec, "token_count_mismatch") == Some(1.0) {
                     panic!("{name} {model} token_count_mismatch");
                 }
             }
