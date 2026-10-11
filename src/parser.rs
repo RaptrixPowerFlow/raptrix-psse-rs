@@ -2552,43 +2552,40 @@ pub fn parse_dyr(path: &Path) -> Result<Vec<DyrGeneratorData>> {
 }
 
 /// Parse all numeric DYR records from `path`.
+///
+/// A `/` ends a record only outside single quotes, so a name such as `'N/1'`
+/// does not split the record. Records may continue onto the next line.
 pub fn parse_dyr_records(path: &Path) -> Result<Vec<DyrModelData>> {
     let text = read_vendor_text(path, "DYR")?;
 
     let mut records: Vec<DyrModelData> = Vec::new();
     let mut pending = String::new();
+    let mut in_quote = false;
 
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
-        let mut remaining = line;
-
-        loop {
-            let slash_pos = remaining.find('/');
-            let segment = match slash_pos {
-                Some(pos) => remaining[..pos].trim(),
-                None => remaining.trim(),
-            };
-
-            if !segment.is_empty() && !segment.starts_with('@') {
-                if !pending.is_empty() {
-                    pending.push(' ');
+        let chars: Vec<char> = line.chars().collect();
+        let mut seg_start = 0usize;
+        let mut i = 0usize;
+        while i < chars.len() {
+            let ch = chars[i];
+            if ch == '\'' {
+                in_quote = !in_quote;
+            } else if ch == '/' && !in_quote {
+                let segment: String = chars[seg_start..i].iter().collect();
+                append_dyr_segment(&mut pending, segment.trim());
+                if !pending.is_empty()
+                    && let Some(rec) = try_parse_dyr_record(&pending)
+                {
+                    records.push(rec);
                 }
-                pending.push_str(segment);
+                pending.clear();
+                seg_start = i + 1;
             }
-
-            if let Some(pos) = slash_pos {
-                // Slash terminates a record; process whatever was accumulated
-                if !pending.is_empty() {
-                    if let Some(rec) = try_parse_dyr_record(&pending) {
-                        records.push(rec);
-                    }
-                    pending.clear();
-                }
-                remaining = &remaining[pos + 1..];
-            } else {
-                break;
-            }
+            i += 1;
         }
+        let tail: String = chars[seg_start..].iter().collect();
+        append_dyr_segment(&mut pending, tail.trim());
     }
 
     // Handle any unterminated trailing record
@@ -2615,56 +2612,208 @@ pub fn extract_dyr_generators(records: &[DyrModelData]) -> Vec<DyrGeneratorData>
     records.iter().filter_map(try_extract_dyr_machine).collect()
 }
 
+fn append_dyr_segment(pending: &mut String, segment: &str) {
+    if segment.is_empty() || segment.starts_with('@') {
+        return;
+    }
+    if !pending.is_empty() {
+        pending.push(' ');
+    }
+    pending.push_str(segment);
+}
+
+#[derive(Debug, Clone)]
+enum DyrTok {
+    Num(f64),
+    Text(String),
+}
+
+fn dyr_token_number(token: &str) -> Option<f64> {
+    let s = token.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if let Ok(v) = s.parse::<f64>() {
+        return Some(v);
+    }
+    let numeric_shaped = s.chars().all(|c| {
+        c.is_ascii_digit() || matches!(c, '.' | '+' | '-' | 'e' | 'E' | 'd' | 'D')
+    }) && s.chars().any(|c| c.is_ascii_digit());
+    if !numeric_shaped {
+        return None;
+    }
+    let parsed = parse_fortran_double(s);
+    if parsed.is_finite() { Some(parsed) } else { None }
+}
+
+fn tokenize_dyr_record(record: &str) -> Vec<DyrTok> {
+    let mut toks = Vec::new();
+    let mut tok = String::new();
+    let mut in_q = false;
+    let flush = |tok: &mut String, toks: &mut Vec<DyrTok>| {
+        let text = tok.trim().to_string();
+        tok.clear();
+        if text.is_empty() {
+            return;
+        }
+        if let Some(v) = dyr_token_number(&text) {
+            toks.push(DyrTok::Num(v));
+        } else {
+            toks.push(DyrTok::Text(text));
+        }
+    };
+    for ch in record.chars() {
+        match ch {
+            '\'' => {
+                in_q = !in_q;
+            }
+            ' ' | '\t' | ',' if !in_q => flush(&mut tok, &mut toks),
+            _ => tok.push(ch),
+        }
+    }
+    flush(&mut tok, &mut toks);
+    toks
+}
+
+fn tok_text(tok: &DyrTok) -> String {
+    match tok {
+        DyrTok::Num(v) => {
+            if v.fract() == 0.0 && v.abs() < 1.0e12 {
+                format!("{}", *v as i64)
+            } else {
+                format!("{v}")
+            }
+        }
+        DyrTok::Text(s) => s.clone(),
+    }
+}
+
+fn tok_num(tok: &DyrTok) -> Option<f64> {
+    match tok {
+        DyrTok::Num(v) => Some(*v),
+        DyrTok::Text(s) => dyr_token_number(s),
+    }
+}
+
+fn push_param(params: &mut Vec<(Box<str>, f64)>, key: &str, value: f64) {
+    if value.is_finite() {
+        params.push((key.to_string().into_boxed_str(), value));
+    }
+}
+
 /// Attempt to parse one DYR record from a `/`-terminated accumulation.
 ///
 /// Expected token layout: `BUS_ID  'MODEL_NAME'  MACHINE_ID  ... parameters ...`
+/// Dictionary models also receive named ICON/CON keys. `p1..pN` is always the
+/// raw numeric tail. A non-numeric token is never stored as 0.
 fn try_parse_dyr_record(record: &str) -> Option<DyrModelData> {
-    // Tokenise by whitespace and commas, stripping quotes
-    let parts: Vec<String> = {
-        let mut toks: Vec<String> = Vec::new();
-        let mut tok = String::new();
-        let mut in_q = false;
-        for ch in record.chars() {
-            match ch {
-                '\'' => in_q = !in_q,
-                ' ' | '\t' | ',' if !in_q => {
-                    if !tok.is_empty() {
-                        toks.push(tok.trim().to_string());
-                        tok = String::new();
-                    }
-                }
-                _ => tok.push(ch),
-            }
-        }
-        if !tok.trim().is_empty() {
-            toks.push(tok.trim().to_string());
-        }
-        toks
-    };
-
+    let parts = tokenize_dyr_record(record);
     if parts.len() < 3 {
         return None;
     }
+    let bus_id = tok_num(&parts[0]).filter(|v| *v > 0.0)? as u32;
+    let model = tok_text(&parts[1]).to_ascii_uppercase();
+    if matches!(model.as_str(), "USRMDL" | "USRBUS" | "USRLOD" | "USRBRN") {
+        return parse_user_dyr_record(bus_id, &model, &parts);
+    }
 
-    let bus_id: u32 = parts[0].parse().ok().filter(|&v| v > 0)?;
-    let model = parts[1].to_ascii_uppercase();
-    let machine_id = normalize_machine_id(&parts[2]);
+    let machine_id = normalize_machine_id(&tok_text(&parts[2]));
+    let data = &parts[3..];
+    let mut params: Vec<(Box<str>, f64)> = Vec::new();
+    let mut p = 0usize;
+    for tok in data {
+        if let Some(v) = tok_num(tok) {
+            p += 1;
+            push_param(&mut params, &format!("p{p}"), v);
+        }
+    }
 
-    let params = parts[3..]
-        .iter()
-        .enumerate()
-        .map(|(idx, token)| {
-            (
-                format!("p{}", idx + 1).into_boxed_str(),
-                parse_fortran_double(token),
-            )
-        })
-        .collect();
+    let mut params_named = 0.0;
+    let mut icon_count = 0.0;
+    let mut con_count = 0.0;
+    let mut dict_code = 0.0;
+    let mut mismatch = 0.0;
+    if let Some(def) = raptrix_cim_arrow::dyn_dictionary::lookup_psse(&model) {
+        dict_code = f64::from(def.code);
+        icon_count = def.icons.len() as f64;
+        con_count = def.cons.len() as f64;
+        if data.len() == def.data_len() {
+            params_named = 1.0;
+            for (i, name) in def.icons.iter().chain(def.cons.iter()).enumerate() {
+                if let Some(v) = tok_num(&data[i]) {
+                    push_param(&mut params, name, v);
+                }
+            }
+        } else {
+            mismatch = 1.0;
+        }
+    }
+    push_param(&mut params, "source_dyr", 1.0);
+    push_param(&mut params, "params_named", params_named);
+    push_param(&mut params, "icon_count", icon_count);
+    push_param(&mut params, "con_count", con_count);
+    if dict_code > 0.0 {
+        push_param(&mut params, "dict_code", dict_code);
+    }
+    if mismatch > 0.0 {
+        push_param(&mut params, "token_count_mismatch", 1.0);
+    }
 
     Some(DyrModelData {
         bus_id,
         id: machine_id.into_boxed_str(),
         model: model.into_boxed_str(),
+        params,
+    })
+}
+
+/// `'USRMDL' ID 'NAME' IC IT NI NC NS NV` then NI icons and NC cons.
+/// USRBUS / USRLOD / USRBRN omit the machine id (the name is the id).
+fn parse_user_dyr_record(bus_id: u32, model: &str, parts: &[DyrTok]) -> Option<DyrModelData> {
+    let (id, name, header_at) = if model == "USRMDL" {
+        if parts.len() < 10 {
+            return None;
+        }
+        (normalize_machine_id(&tok_text(&parts[2])), tok_text(&parts[3]), 4usize)
+    } else {
+        if parts.len() < 9 {
+            return None;
+        }
+        let name = tok_text(&parts[2]);
+        (normalize_machine_id(&name), name, 3usize)
+    };
+    let ni = tok_num(parts.get(header_at + 2)?)? as usize;
+    let nc = tok_num(parts.get(header_at + 3)?)? as usize;
+    let data_at = header_at + 6;
+    let mut params = Vec::new();
+    let mut p = 0usize;
+    for tok in parts.iter().skip(3) {
+        if let Some(v) = tok_num(tok) {
+            p += 1;
+            push_param(&mut params, &format!("p{p}"), v);
+        }
+    }
+    if parts.len() >= data_at + ni + nc {
+        for i in 0..ni {
+            if let Some(v) = tok_num(&parts[data_at + i]) {
+                push_param(&mut params, &format!("icon{}", i + 1), v);
+            }
+        }
+        for i in 0..nc {
+            if let Some(v) = tok_num(&parts[data_at + ni + i]) {
+                push_param(&mut params, &format!("con{}", i + 1), v);
+            }
+        }
+    }
+    push_param(&mut params, "source_dyr", 1.0);
+    push_param(&mut params, "params_named", 0.0);
+    push_param(&mut params, "icon_count", ni as f64);
+    push_param(&mut params, "con_count", nc as f64);
+    let model_type = format!("{model}:{name}");
+    Some(DyrModelData {
+        bus_id,
+        id: id.into_boxed_str(),
+        model: model_type.into_boxed_str(),
         params,
     })
 }
@@ -2687,23 +2836,38 @@ fn try_extract_dyr_machine(record: &DyrModelData) -> Option<DyrGeneratorData> {
             *v = *value;
         }
     };
+    // Named dictionary keys win. The index fallback is the historical p-only
+    // layout (p1 is params[0]) used when the record was not dictionary-named.
+    let named = |params: &[(Box<str>, f64)], key: &str| -> Option<f64> {
+        params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| *v)
+    };
+    let take = |dest: &mut f64, key: &str, idx: usize| {
+        if let Some(v) = named(&record.params, key) {
+            *dest = v;
+        } else {
+            set(dest, &record.params, idx);
+        }
+    };
 
     match record.model.as_ref() {
         "GENROU" | "GENROE" => {
-            set(&mut data.h, &record.params, 7);
-            set(&mut data.d, &record.params, 8);
-            set(&mut data.xd_prime, &record.params, 11);
+            take(&mut data.h, "H", 7);
+            take(&mut data.d, "D", 8);
+            take(&mut data.xd_prime, "xd_prime", 11);
             Some(data)
         }
         "GENSAL" | "GENSAE" => {
-            set(&mut data.h, &record.params, 5);
-            set(&mut data.d, &record.params, 6);
-            set(&mut data.xd_prime, &record.params, 9);
+            take(&mut data.h, "H", 5);
+            take(&mut data.d, "D", 6);
+            take(&mut data.xd_prime, "xd_prime", 9);
             Some(data)
         }
         "GENCLS" => {
-            set(&mut data.h, &record.params, 3);
-            set(&mut data.d, &record.params, 4);
+            take(&mut data.h, "H", 3);
+            take(&mut data.d, "D", 4);
             Some(data)
         }
         _ => None, // Exciter, governor, etc. — not a machine model
@@ -2713,4 +2877,134 @@ fn try_extract_dyr_machine(record: &DyrModelData) -> Option<DyrGeneratorData> {
 /// Uppercase and trim a PSS/E machine ID token.
 fn normalize_machine_id(s: &str) -> String {
     s.trim().to_ascii_uppercase()
+}
+
+#[cfg(test)]
+mod dyr_dictionary_tests {
+    use super::*;
+
+    fn param(rec: &DyrModelData, key: &str) -> Option<f64> {
+        rec.params
+            .iter()
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| *v)
+    }
+
+    #[test]
+    fn slash_inside_quotes_does_not_end_the_record() {
+        let rec = try_parse_dyr_record(
+            "1004 'REGCA1' 'N/1' 1 0.01 10 0.9 0.5 1.22 1.2 0.8 0.4 -1.3 0.02 0.7 0 0 0.8",
+        )
+        .expect("record");
+        assert_eq!(rec.id.as_ref(), "N/1");
+        assert_eq!(param(&rec, "params_named"), Some(1.0));
+        assert_eq!(param(&rec, "lvplsw"), Some(1.0));
+        assert_eq!(param(&rec, "tg"), Some(0.01));
+        assert!(param(&rec, "token_count_mismatch").is_none());
+    }
+
+    #[test]
+    fn fortran_exponent_stays_numeric() {
+        let rec = try_parse_dyr_record("1 'GENCLS' 1 3.5 1.5-3").expect("gencls");
+        assert_eq!(param(&rec, "H"), Some(3.5));
+        assert!((param(&rec, "D").unwrap() - 0.0015).abs() < 1e-9);
+    }
+
+    #[test]
+    fn genrou_names_h_and_xd_prime() {
+        let rec = try_parse_dyr_record(
+            "1048 'GENROU' 1 4.9 0.04 0.48 0.06 2.56 0 1.59 1.55 0.38 0.8 0.35 0.27 0.11 0.46",
+        )
+        .expect("genrou");
+        assert_eq!(param(&rec, "H"), Some(2.56));
+        assert_eq!(param(&rec, "xd_prime"), Some(0.38));
+        assert_eq!(param(&rec, "p5"), Some(2.56));
+        let mach = try_extract_dyr_machine(&rec).expect("machine");
+        assert!((mach.h - 2.56).abs() < 1e-9);
+        assert!((mach.xd_prime - 0.38).abs() < 1e-9);
+    }
+
+    #[test]
+    fn length_mismatch_stays_positional() {
+        let rec = try_parse_dyr_record("1 'GENROU' 1 4.9 0.04").expect("short");
+        assert_eq!(param(&rec, "params_named"), Some(0.0));
+        assert_eq!(param(&rec, "token_count_mismatch"), Some(1.0));
+        assert!(param(&rec, "H").is_none());
+        assert_eq!(param(&rec, "p1"), Some(4.9));
+    }
+
+    #[test]
+    fn usrmdl_header_splits_icons_and_cons() {
+        let rec = try_parse_dyr_record(
+            "190124 'USRMDL' 1 'REAX3BU1' 107 0 1 7 2 4 190123 0.066667 1 1 9999 -9999 9999 -9999",
+        )
+        .expect("usrmdl");
+        assert_eq!(rec.model.as_ref(), "USRMDL:REAX3BU1");
+        assert_eq!(param(&rec, "params_named"), Some(0.0));
+        assert_eq!(param(&rec, "icon1"), Some(190123.0));
+        assert!((param(&rec, "con1").unwrap() - 0.066667).abs() < 1e-9);
+        assert_eq!(param(&rec, "con7"), Some(-9999.0));
+    }
+
+    #[test]
+    fn corpus_named_models_match_dictionary_lengths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/external");
+        if !root.is_dir() {
+            return;
+        }
+        let files = [
+            "Texas2k_series24_case6_2024lowloadwithgfm.dyr",
+            "Texas2k_series25_case1_summerpeak.dyr",
+            "Texas7k_20210804.dyr",
+            "MemphisCase2026_Mar7_Dynamics.dyr",
+            "Texas2k_series24_case1_2016summerPeak.dyr",
+        ];
+        let watched = [
+            "GENROU", "GENSAL", "ESST4B", "EXST1", "ESST1A", "GGOV1", "IEEEG1", "HYGOV",
+            "PSS2A", "REGCA1", "REECA1", "REPCA1", "WTARA1", "WTPTA1", "WTTQA1",
+        ];
+        for name in files {
+            let path = root.join(name);
+            if !path.is_file() {
+                continue;
+            }
+            let records = parse_dyr_records(&path).expect(name);
+            let mut counts = std::collections::HashMap::<String, usize>::new();
+            for rec in &records {
+                let model = rec.model.as_ref();
+                let key = if model.starts_with("USRMDL") {
+                    "USRMDL"
+                } else {
+                    model
+                };
+                *counts.entry(key.to_string()).or_default() += 1;
+                if watched.contains(&model)
+                    && param(rec, "token_count_mismatch") == Some(1.0)
+                {
+                    panic!("{name} {model} token_count_mismatch");
+                }
+            }
+            if name.starts_with("Texas7k") {
+                assert_eq!(counts.get("REGCA1").copied().unwrap_or(0), 189, "{name}");
+                assert_eq!(counts.get("REECA1").copied().unwrap_or(0), 182, "{name}");
+                assert_eq!(counts.get("REPCA1").copied().unwrap_or(0), 174, "{name}");
+                assert_eq!(counts.get("USRMDL").copied().unwrap_or(0), 15, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn reeca1_remote_bus_and_vdip() {
+        let mut nums = String::from("1004 'REECA1' 1");
+        nums.push_str(" 0 0 1 1 1 0");
+        for _ in 0..45 {
+            nums.push_str(" 0.1");
+        }
+        let rec = try_parse_dyr_record(&nums).expect("reeca");
+        assert_eq!(param(&rec, "params_named"), Some(1.0));
+        assert_eq!(param(&rec, "remote_bus_id"), Some(0.0));
+        assert_eq!(param(&rec, "vdip"), Some(0.1));
+        assert_eq!(param(&rec, "icon_count"), Some(6.0));
+        assert_eq!(param(&rec, "con_count"), Some(45.0));
+    }
 }

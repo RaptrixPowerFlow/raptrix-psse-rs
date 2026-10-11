@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.7] - 2026-10-11
+
+### Added
+
+- Pin `raptrix-cim-arrow` to git tag `v0.7.5`. Schema stamp stays `v0.14.4`.
+- DYR records that match the shared dynamics dictionary store named ICON/CON keys beside `p1..pN`, with `source_dyr`, `params_named`, and `dict_code`. A length mismatch stays positional.
+- `USRMDL` rows keep the user-model name and split ICON/CON counts from the header.
+- REPCA1 from/to/ckt resolves to `mon_branch_id` on the RAW branch list. A transformer monitor does not resolve.
+- `REGFMA1` is `grid_forming` rather than a grid-following REGC.
+
 ## [0.7.6] - 2026-10-01
 
 ### Fixed

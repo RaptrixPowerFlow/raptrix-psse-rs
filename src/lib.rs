@@ -216,6 +216,7 @@ pub fn write_psse_to_rpf_with_options(
     if let Some(dyr) = dyr_path {
         network.dyr_models = parser::parse_dyr_records(std::path::Path::new(dyr))
             .with_context(|| format!("failed to parse DYR file: {dyr}"))?;
+        resolve_repca_branch_ids(&mut network);
         network.dyr_generators = parser::extract_dyr_generators(&network.dyr_models);
     }
 
@@ -1576,6 +1577,12 @@ fn classify_ibr_model(model: &str) -> Option<(&'static str, &'static str)> {
         return Some(("wind_type3", "grid_following"));
     }
 
+    // Grid-forming names before the generic "reg" prefix, so REGFMA1 is not
+    // swallowed as a grid-following REGC.
+    if m.starts_with("regfm") || m.contains("gfm") || m.contains("vsg") || m.contains("vsm") {
+        return Some(("generic_ibr", "grid_forming"));
+    }
+
     // --- Generic Renewable / Device-Agnostic Controls
     // REGC, REEC, REPC (without type suffix) apply to unspecified renewable source.
     // Lower priority to avoid shadowing typed families.
@@ -1584,12 +1591,6 @@ fn classify_ibr_model(model: &str) -> Option<(&'static str, &'static str)> {
         .any(|p| m.starts_with(p))
     {
         return Some(("generic_ibr", "grid_following"));
-    }
-
-    // --- Grid-Forming (GFM) Explicit Indicators
-    // Any model with GFM suffix is flagged as grid-forming regardless of family.
-    if m.contains("gfm") || m.contains("vsg") || m.contains("vsm") {
-        return Some(("generic_ibr", "grid_forming"));
     }
 
     // No match
@@ -1643,8 +1644,11 @@ fn compute_ibr_subtype_by_generator(network: &Network) -> HashMap<(u32, String),
             selected_mode = Some(control_mode);
         }
 
-        if let (Some(device_type), Some(_control_mode)) = (selected_type, selected_mode) {
-            out.insert(key, canonical_ibr_subtype(device_type).to_string());
+        if let (Some(device_type), Some(control_mode)) = (selected_type, selected_mode) {
+            out.insert(
+                key,
+                canonical_ibr_subtype_for(device_type, control_mode).to_string(),
+            );
         }
     }
     out
@@ -2724,6 +2728,14 @@ fn canonical_ibr_subtype(device_type: &str) -> &'static str {
     }
 }
 
+fn canonical_ibr_subtype_for(device_type: &str, control_mode: &str) -> &'static str {
+    if control_mode == "grid_forming" {
+        "grid_forming"
+    } else {
+        canonical_ibr_subtype(device_type)
+    }
+}
+
 fn build_loads_batch(loads: &[models::Load], base_mva: f64) -> Result<RecordBatch> {
     let schema = Arc::new(table_schema(TABLE_LOADS).expect("loads schema must exist"));
 
@@ -3697,6 +3709,58 @@ fn build_owners_batch(owners: &[models::Owner]) -> Result<RecordBatch> {
     .context("building owners batch")
 }
 
+fn dyr_param(rec: &models::DyrModelData, key: &str) -> Option<f64> {
+    rec.params
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| *v)
+}
+
+/// REPCA1 monitored branch → dense `branches.branch_id` (write order, 1-based).
+fn resolve_repca_branch_ids(network: &mut models::Network) {
+    for rec in &mut network.dyr_models {
+        if !rec.model.eq_ignore_ascii_case("REPCA1") {
+            continue;
+        }
+        let (Some(from), Some(to)) = (
+            dyr_param(rec, "mon_from_bus"),
+            dyr_param(rec, "mon_to_bus"),
+        ) else {
+            continue;
+        };
+        if from <= 0.0 || to <= 0.0 {
+            continue;
+        }
+        let from_u = from as u32;
+        let to_u = to as u32;
+        let ckt = dyr_param(rec, "mon_ckt");
+        let found = network.branches.iter().position(|branch| {
+            let ends = (branch.i == from_u && branch.j == to_u)
+                || (branch.i == to_u && branch.j == from_u);
+            if !ends {
+                return false;
+            }
+            match ckt {
+                None => true,
+                Some(c) => {
+                    let trimmed = branch.ckt.trim();
+                    let as_int = if c.fract() == 0.0 {
+                        format!("{}", c as i64)
+                    } else {
+                        format!("{c}")
+                    };
+                    trimmed == as_int
+                        || trimmed.parse::<f64>().ok() == Some(c)
+                }
+            }
+        });
+        if let Some(idx) = found {
+            rec.params
+                .push(("mon_branch_id".into(), (idx as f64) + 1.0));
+        }
+    }
+}
+
 fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<RecordBatch> {
     let schema =
         Arc::new(table_schema(TABLE_DYNAMICS_MODELS).expect("dynamics_models schema must exist"));
@@ -3730,24 +3794,29 @@ fn build_dynamics_models_batch(records: &[models::DyrModelData]) -> Result<Recor
         gen_id.append_value(rec.id.as_ref());
         model_type.append_value(rec.model.as_ref());
 
+        let has_param = |name: &str| {
+            rec.params
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case(name))
+        };
         for (key, value) in &rec.params {
             params.keys().append_value(key.as_ref());
             params.values().append_value(*value);
         }
-        // Also emit named classical keys so consumers that only read `params`
-        // (and not classical_params) still get H / D / xd_prime.
+        // Positional-only machine rows still need H / D / xd_prime in the map.
+        // Dictionary rows already carry those names; do not write them twice.
         if let Some(mach) =
             machine_classical.get(&(rec.bus_id, rec.id.to_string(), rec.model.to_string()))
         {
-            if mach.h.is_finite() && mach.h > 0.0 {
+            if !has_param("H") && mach.h.is_finite() && mach.h > 0.0 {
                 params.keys().append_value("H");
                 params.values().append_value(mach.h);
             }
-            if mach.d.is_finite() {
+            if !has_param("D") && mach.d.is_finite() {
                 params.keys().append_value("D");
                 params.values().append_value(mach.d);
             }
-            if mach.xd_prime.is_finite() && mach.xd_prime > 0.0 {
+            if !has_param("xd_prime") && mach.xd_prime.is_finite() && mach.xd_prime > 0.0 {
                 params.keys().append_value("xd_prime");
                 params.values().append_value(mach.xd_prime);
             }
@@ -4000,6 +4069,17 @@ mod tests {
         let message = format!("{err:#}");
         assert!(message.contains("ambiguous 3-winding overlap"));
         assert!(message.contains("star_bus_id=10000001"));
+    }
+
+    #[test]
+    fn regfma_is_grid_forming_not_generic_regc() {
+        let (kind, mode) = classify_ibr_model("REGFMA1").expect("classified");
+        assert_eq!(kind, "generic_ibr");
+        assert_eq!(mode, "grid_forming");
+        assert_eq!(canonical_ibr_subtype_for(kind, mode), "grid_forming");
+        let (solar, solar_mode) = classify_ibr_model("REGCA1").expect("regca");
+        assert_eq!(solar, "solar_pv");
+        assert_eq!(solar_mode, "grid_following");
     }
 
     #[test]

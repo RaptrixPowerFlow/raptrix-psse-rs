@@ -416,7 +416,11 @@ input deck.
 | Bus number | `DyrModelData.bus_id` | `bus_id` | Model attachment bus. |
 | Machine / device ID | `DyrModelData.id` | `gen_id` | Preserved as the PSS/E ID token; machine-linked models join via `generators.mrid` / `generators.generator_id` (there is no `generators.id`). |
 | Model name | `DyrModelData.model` | `model_type` | Examples: `"GENROU"`, `"ESST4B"`, `"GGOV1"`, `"PSS2A"`, `"REGCA1"`. |
-| Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. |
+| Parameter 1..N | `DyrModelData.params` | `params["p1"]` ... `params["pN"]` | Numeric parameters are written in source order using 1-based keys. A non-numeric token is not stored as 0. |
+| Named ICON/CON | dictionary | `params["H"]`, `params["vdip"]`, … | When `raptrix-cim-arrow` `dyn_dictionary` knows the model and the token count matches, each column is also stored under its canonical name. `params_named=1`, `dict_code`, `icon_count`, `con_count`. A length mismatch sets `token_count_mismatch=1` and keeps positional keys only. |
+| Provenance | — | `params["source_dyr"]=1` | Every DYR row. |
+| REPCA1 monitor | RAW branch table | `mon_from_bus`, `mon_to_bus`, `mon_ckt`, `mon_branch_id` | `mon_branch_id` is the 1-based `branches.branch_id` when the from/to/ckt triple matches. |
+| USRMDL | header NI/NC | `model_type=USRMDL:<name>`, `icon1..`, `con1..` | `params_named=0`. |
 | — | — | `perc1_params` | **v0.10.0+**: nullable struct column required by the interchange contract. This exporter writes **null** on every row until PERC1 parameters are mapped from DYR. |
 
 **Interaction with `generators` table**: a supported synchronous-machine subset
