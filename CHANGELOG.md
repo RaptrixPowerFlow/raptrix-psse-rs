@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- GENSAL and GENSAE inertia, damping, and `xd_prime` follow the dynamics dictionary. `H` is CON 4 (`p4`), `D` is CON 5 (`p5`), and `xd_prime` is CON 8 (`p8`). The old positional fallback read `T''qo`, `H`, and `Xq`.
+
 ## [0.7.7] - 2026-10-11
 
 ### Added

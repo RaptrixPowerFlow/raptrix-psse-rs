@@ -2538,11 +2538,14 @@ T2
 /// machine records.
 ///
 /// # Supported models
-/// | Model name | H index | D index | Xd′ index |
+/// | Model name | H token | D token | Xd′ token |
 /// |-----------|---------|---------|-----------|
 /// | GENROU / GENROE | 7  | 8  | 11 |
-/// | GENSAL / GENSAE | 5  | 6  | 9  |
+/// | GENSAL / GENSAE | 6  | 7  | 10 |
 /// | GENCLS          | 3  | 4  | — |
+///
+/// A token index is the dictionary position plus 3 (bus, model, id).
+/// `set` reads `params[token - 3]`. GENSAL H is `params[3]`.
 ///
 /// Each record is terminated by a `/` character.  Records may span multiple
 /// lines.  Comment lines that start with `@` are skipped.
@@ -2853,30 +2856,41 @@ fn try_extract_dyr_machine(record: &DyrModelData) -> Option<DyrGeneratorData> {
             .find(|(k, _)| k.eq_ignore_ascii_case(key))
             .map(|(_, v)| *v)
     };
-    let take = |dest: &mut f64, key: &str, idx: usize| {
+    // Dictionary position + 3. A missing key drops the index fallback.
+    // GENCLS has no xd_prime, so that field stays 0.
+    let token_index = |key: &str| -> Option<usize> {
+        let def = raptrix_cim_arrow::dyn_dictionary::lookup_psse(record.model.as_ref())?;
+        let pos = def
+            .icons
+            .iter()
+            .chain(def.cons.iter())
+            .position(|name| name.eq_ignore_ascii_case(key))?;
+        Some(pos + 3)
+    };
+    let take = |dest: &mut f64, key: &str| {
         if let Some(v) = named(&record.params, key) {
             *dest = v;
-        } else {
+        } else if let Some(idx) = token_index(key) {
             set(dest, &record.params, idx);
         }
     };
 
     match record.model.as_ref() {
         "GENROU" | "GENROE" => {
-            take(&mut data.h, "H", 7);
-            take(&mut data.d, "D", 8);
-            take(&mut data.xd_prime, "xd_prime", 11);
+            take(&mut data.h, "H");
+            take(&mut data.d, "D");
+            take(&mut data.xd_prime, "xd_prime");
             Some(data)
         }
         "GENSAL" | "GENSAE" => {
-            take(&mut data.h, "H", 5);
-            take(&mut data.d, "D", 6);
-            take(&mut data.xd_prime, "xd_prime", 9);
+            take(&mut data.h, "H");
+            take(&mut data.d, "D");
+            take(&mut data.xd_prime, "xd_prime");
             Some(data)
         }
         "GENCLS" => {
-            take(&mut data.h, "H", 3);
-            take(&mut data.d, "D", 4);
+            take(&mut data.h, "H");
+            take(&mut data.d, "D");
             Some(data)
         }
         _ => None, // Exciter, governor, etc. — not a machine model
@@ -2931,6 +2945,27 @@ mod dyr_dictionary_tests {
         let mach = try_extract_dyr_machine(&rec).expect("machine");
         assert!((mach.h - 2.56).abs() < 1e-9);
         assert!((mach.xd_prime - 0.38).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gensal_positional_fallback_reads_dictionary_columns() {
+        // Positional only: T'do, T''do, T''qo, H, D, Xd, Xq, X'd. No named H.
+        let values = [5.0, 0.0667, 0.05, 3.22, 2.0, 1.8, 1.7, 0.3];
+        let mut params = Vec::new();
+        for (i, value) in values.iter().enumerate() {
+            push_param(&mut params, &format!("p{}", i + 1), *value);
+        }
+        let rec = DyrModelData {
+            bus_id: 1,
+            id: "1".into(),
+            model: "GENSAL".into(),
+            params,
+        };
+        assert!(param(&rec, "H").is_none());
+        let mach = try_extract_dyr_machine(&rec).expect("gensal");
+        assert!((mach.h - 3.22).abs() < 1e-9);
+        assert!((mach.d - 2.0).abs() < 1e-9);
+        assert!((mach.xd_prime - 0.3).abs() < 1e-9);
     }
 
     #[test]

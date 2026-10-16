@@ -429,7 +429,7 @@ is lifted into the `generators` table so common machine parameters (`h`, `xd_pri
 | Supported machine family | `generators.h` source | `generators.D` source | `generators.xd_prime` source |
 |---|---|---|---|
 | `GENROU`, `GENROE` | DYR parameter 5 (`p5`) | DYR parameter 6 (`p6`) | DYR parameter 9 (`p9`) |
-| `GENSAL`, `GENSAE` | DYR parameter 3 (`p3`) | DYR parameter 4 (`p4`) | DYR parameter 7 (`p7`) |
+| `GENSAL`, `GENSAE` | DYR parameter 4 (`p4`) | DYR parameter 5 (`p5`) | DYR parameter 8 (`p8`) |
 | `GENCLS` | DYR parameter 1 (`p1`) | DYR parameter 2 (`p2`) | falls back to RAW `ZX` |
 
 When no matching supported machine model is present, `generators.h = 0.0`,

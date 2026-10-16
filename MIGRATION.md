@@ -18,6 +18,12 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
+### Unreleased — GENSAL / GENSAE machine columns
+
+Schema stamp stays **v0.14.4**. Re-export any dynamic case that contains `GENSAL` or `GENSAE`.
+
+`generators.params` and `dynamics_models.classical_params` for those machines now use the dictionary columns: `H` = `p4`, `D` = `p5`, `xd_prime` = `p8`. Earlier builds stored `T''qo` as `H`, the real inertia as `D`, and `Xq` as `xd_prime`. `GENROU`, `GENROE`, and `GENCLS` column positions are unchanged. Named dictionary rows were already correct when `params["H"]` was present; the positional fallback now agrees with that dictionary.
+
 ### raptrix-psse-rs **v0.7.6** — `metadata.raptrix_version` matches the schema stamp
 
 `raptrix-psse-rs` **v0.7.6** still emits RPF **v0.14.4**. The metadata row's `raptrix_version` is `v0.14.4`, identical to `raptrix.version` and `rpf_version`. Builds through **0.7.5** wrote the converter package version (`0.7.5`) in that column while the file header was already `v0.14.4`. Re-export any file a loader rejected because the metadata row was not `v0.14.4`.
