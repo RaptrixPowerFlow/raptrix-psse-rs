@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.4 converter.
+//! Raptrix PowerFlow Interchange v0.14.5 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -422,7 +422,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.4) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.5) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     // `include_dc_converters` stays at the RootWriteOptions default (true), which
     // also stamps `raptrix.features.dc_converters=true`.

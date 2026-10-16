@@ -459,7 +459,7 @@ fn worked_lcc_line_round_trips_as_v0144() {
     .expect("write rpf");
 
     let meta = raptrix_cim_arrow::rpf_file_metadata(&out_path).expect("metadata");
-    assert_eq!(meta.get("rpf_version").map(String::as_str), Some("v0.14.4"));
+    assert_eq!(meta.get("rpf_version").map(String::as_str), Some("v0.14.5"));
     assert_eq!(
         meta.get("raptrix.features.dc_converters")
             .map(String::as_str),

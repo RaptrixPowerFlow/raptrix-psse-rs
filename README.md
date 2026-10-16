@@ -37,7 +37,7 @@ The converter is built for modern 2026+ studies while preserving strong legacy P
 - Prefer explicit modern-grid representations over lossy legacy flattening.
 - Use DYR model families as the primary source for IBR classification and controls.
 - Fall back to RAW WMOD where DYR is unavailable.
-- Always emit the **18** canonical required root tables for **RPF v0.14.4** (zero-row where applicable), plus `dc_converters`, so downstream solver / RPF consumer pipelines stay deterministic.
+- Always emit the **18** canonical required root tables for **RPF v0.14.5** (zero-row where applicable), plus `dc_converters`, so downstream solver / RPF consumer pipelines stay deterministic.
 
 ## CLI Reference
 
@@ -74,9 +74,9 @@ cargo run --bin branch_deck_scan -- --raw <FILE.raw> [--rpf <FILE.rpf>] [--list-
 
 Diagnostics for the PSS/E BRANCH section: raw `ST` token histogram, parsed vs rejected lines, in-service/out-of-service counts, optional duplicate `(from_bus,to_bus,ckt)` keys, and (with `--rpf`) an in-service multiset diff between the parsed RAW network and the RPF `branches` table. Use this when reconciling branch row counts against tools that omit `ST=0` lines.
 
-## RPF v0.14.4 coverage
+## RPF v0.14.5 coverage
 
-The converter emits the **18** required root tables from the locked **v0.14.4** contract (readers accept `v0.14.4` and `0.14.4` only; see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
+The converter emits the **18** required root tables from the locked **v0.14.5** contract (readers accept `v0.14.5` and `0.14.5` only; see [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md)), including:
 
 - metadata
 - buses
@@ -134,16 +134,18 @@ Trailing nullable **`mrid`** columns exist on equipment tables (`branches`, `gen
 
 **v0.14.3** maps RAW MODSW 0/1/2 onto `switched_shunts.shunt_control_mode` tokens and SWREG/SWREM onto `regulated_bus_id` (null = local). Other MODSW → null + `unknown_modsw`.
 
-**v0.14.4** adds `dc_converters` and the four branch-end shunt columns. This crate stamps `v0.14.4` on both the file header (`raptrix.version`) and `metadata.raptrix_version`. `computational_load_mode` stays null; `computational_load_profiles` is not emitted.
+**v0.14.5** keeps the v0.14.4 columns and locks dynamics parameter names. This crate stamps `v0.14.5` on both the file header (`raptrix.version`) and `metadata.raptrix_version`. `WTTQA1` breakpoints are `pwr1`..`pwr4`. `computational_load_mode` stays null; `computational_load_profiles` is not emitted.
+
+**v0.14.4** added `dc_converters` and the four branch-end shunt columns. Current readers reject that stamp.
 
 The optional **`scenario_context`** root table is **not** written by default. The library API rejects non-empty `ExportOptions::scenario_context_rows` when optional-root IPC emission is unavailable in the linked `raptrix-cim-arrow` build (see crate error text).
 
 For schema v0.9.3 onward, nominal-kV fields are required on `branches`, `transformers_2w`, and `transformers_3w`. Export uses RAW nominal values when present and falls back to connected bus nominal-kV; if no valid value can be resolved, conversion fails fast.
 
-## Recent release (v0.7.6)
+## Recent release (v0.7.8)
 
-- `metadata.raptrix_version` is the locked schema stamp **`v0.14.4`**, the same value as `raptrix.version`. Re-export files produced by **0.7.5** and earlier if a loader reads that column.
-- Pin `raptrix-cim-arrow` **0.7.4** (git tag **`v0.7.4`**). Writers stamp **RPF v0.14.4**. Readers accept **`v0.14.4`** and **`0.14.4`** only. Re-export cached `.rpf` files. `v0.15.0` is not used.
+- Pin `raptrix-cim-arrow` **0.7.6** (git tag **`v0.7.6`**). Writers stamp **RPF v0.14.5**. Readers accept **`v0.14.5`** and **`0.14.5`** only. Re-export every cached `.rpf`. `v0.15.0` is not used.
+- `metadata.raptrix_version` is the locked schema stamp **`v0.14.5`**, the same value as `raptrix.version`.
 - `dc_lines_2w` stays 15 columns. `dc_converters` is always emitted (`raptrix.features.dc_converters=true`). Three-record LCC lines store bridge count, commutating kV, ratio, tap, tap band, and commutating reactance. `METER` sets `is_meter_end` and does not move `SETVL`.
 - `branches.g_from` / `b_from` / `g_to` / `b_to` are the parsed end shunts on `base_mva`, including zeros and out-of-service lines.
 - Facility-membership flags stay null. 3W tap control is winding H / COD1 only. `operation_time_min` stays null. `computational_load_mode` stays null.
@@ -189,7 +191,7 @@ Place any confidential or licensed PSS/E input files under `tests/data/external/
 cargo test --release -- --nocapture
 ```
 
-The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.14.4** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
+The **`golden_test`** integration suite (`tests/golden_test.rs`) converts every file in that corpus to **v0.14.5** `.rpf` under `tests/golden/`. **Dynamic is canonical**: when a `.dyr` / `.dyn` companion exists it is attached to `<stem>.rpf` (and mirrored as `<stem>_dynamic.rpf`); a no-DYR `<stem>_static.rpf` is also written for A/B. Cases without a dynamics deck are static-only.
 
 ### Windows, OneDrive, and WSL
 
@@ -234,7 +236,7 @@ Golden tests (with local external inputs) help catch regressions; they are not a
 
 ## Versioning & Schema Contract
 
-This crate pins **`raptrix-cim-arrow` 0.7.4** (RPF **v0.14.4**, git tag **`v0.7.4`**). Every emitted `.rpf` is validated against the locked contract before returning. Facility-membership flags and `operation_time_min` are emitted null. Readers accept **`v0.14.4`** and **`0.14.4`** only. Re-export any older `.rpf` through this converter.
+This crate pins **`raptrix-cim-arrow` 0.7.6** (RPF **v0.14.5**, git tag **`v0.7.6`**). Every emitted `.rpf` is validated against the locked contract before returning. Facility-membership flags and `operation_time_min` are emitted null. Readers accept **`v0.14.5`** and **`0.14.5`** only. Re-export any older `.rpf` through this converter.
 
 See [raptrix-cim-rs schema-contract](https://github.com/RaptrixPowerFlow/raptrix-cim-rs/blob/main/docs/schema-contract.md) for the full RPF specification.
 

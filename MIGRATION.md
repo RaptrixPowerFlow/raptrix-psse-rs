@@ -18,11 +18,15 @@ Copyright (c) 2026 Raptrix PowerFlow
 
 ## RPF Schema Version Migrations
 
-### Unreleased — GENSAL / GENSAE machine columns
+### raptrix-psse-rs **v0.7.8**: RPF **v0.14.5** (`raptrix-cim-arrow` **0.7.6**) — **Dynamics vocabulary**
 
-Schema stamp stays **v0.14.4**. Re-export any dynamic case that contains `GENSAL` or `GENSAE`.
+`raptrix-psse-rs` **v0.7.8** emits RPF **v0.14.5**. Re-export every dynamic case. There is no v0.14.4 read path and no alias from `WTTQA1` `p1`..`p4` to `pwr1`..`pwr4`.
 
-`generators.params` and `dynamics_models.classical_params` for those machines now use the dictionary columns: `H` = `p4`, `D` = `p5`, `xd_prime` = `p8`. Earlier builds stored `T''qo` as `H`, the real inertia as `D`, and `Xq` as `xd_prime`. `GENROU`, `GENROE`, and `GENCLS` column positions are unchanged. Named dictionary rows were already correct when `params["H"]` was present; the positional fallback now agrees with that dictionary.
+- Writer stamps `v0.14.5`. Readers accept **`v0.14.5`** and **`0.14.5`** only.
+- Positional keys stay `p1`..`pN`. Dictionary names are written beside them when the token count matches.
+- `WTTQA1` power breakpoints are `pwr1`..`pwr4`. `spd1`..`spd4` are unchanged.
+- `GENSAL` / `GENSAE` `classical_params` uses dictionary columns: `H` = `p4`, `D` = `p5`, `xd_prime` = `p8`. Earlier builds stored `T''qo` as `H`, the real inertia as `D`, and `Xq` as `xd_prime`. `GENROU`, `GENROE`, and `GENCLS` column positions are unchanged.
+- **Dependency**: `raptrix-cim-arrow` **0.7.6** / git tag **`v0.7.6`**.
 
 ### raptrix-psse-rs **v0.7.6** — `metadata.raptrix_version` matches the schema stamp
 

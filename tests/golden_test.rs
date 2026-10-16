@@ -15,7 +15,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use arrow::array::{Array, DictionaryArray, Float64Array, Int32Array, ListArray, StringArray};
+use arrow::array::{
+    Array, DictionaryArray, Float64Array, Int32Array, ListArray, MapArray, StringArray, StructArray,
+};
 use arrow::datatypes::Int32Type;
 
 use raptrix_cim_arrow::{
@@ -341,6 +343,115 @@ fn find_dynamic_companion(raw: &Path, dynamic_files: &[PathBuf]) -> Option<PathB
         .cloned()
 }
 
+fn dyr_mentions(path: &str, model: &str) -> bool {
+    fs::read_to_string(path)
+        .map(|text| text.to_ascii_uppercase().contains(model))
+        .unwrap_or(false)
+}
+
+fn map_key_count(map: &MapArray, row: usize, key: &str) -> usize {
+    if map.is_null(row) {
+        return 0;
+    }
+    let Some(keys) = map.keys().as_any().downcast_ref::<StringArray>() else {
+        return 0;
+    };
+    let offsets = map.offsets();
+    let start = offsets[row] as usize;
+    let end = offsets[row + 1] as usize;
+    (start..end)
+        .filter(|&i| !keys.is_null(i) && keys.value(i) == key)
+        .count()
+}
+
+fn assert_named_dynamics(
+    case_name: &str,
+    dyn_path: &str,
+    tables: &[(String, arrow::record_batch::RecordBatch)],
+) -> Result<(), String> {
+    let want_wttqa = dyr_mentions(dyn_path, "WTTQA1");
+    let want_gensal = dyr_mentions(dyn_path, "GENSAL") || dyr_mentions(dyn_path, "GENSAE");
+    if !want_wttqa && !want_gensal {
+        return Ok(());
+    }
+    let batch = tables
+        .iter()
+        .find(|(name, _)| name == TABLE_DYNAMICS_MODELS)
+        .map(|(_, batch)| batch)
+        .ok_or_else(|| format!("{case_name}: missing dynamics_models"))?;
+    let model_type = batch
+        .column_by_name("model_type")
+        .ok_or_else(|| format!("{case_name}: dynamics_models missing model_type"))?;
+    let params = batch
+        .column_by_name("params")
+        .ok_or_else(|| format!("{case_name}: dynamics_models missing params"))?
+        .as_any()
+        .downcast_ref::<MapArray>()
+        .ok_or_else(|| format!("{case_name}: params is not a map"))?;
+    let classical = batch
+        .column_by_name("classical_params")
+        .ok_or_else(|| format!("{case_name}: dynamics_models missing classical_params"))?
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .ok_or_else(|| format!("{case_name}: classical_params is not a struct"))?;
+    let h = classical
+        .column_by_name("H")
+        .and_then(|col| col.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| format!("{case_name}: classical_params.H missing"))?;
+    let d = classical
+        .column_by_name("D")
+        .and_then(|col| col.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| format!("{case_name}: classical_params.D missing"))?;
+    let xd_prime = classical
+        .column_by_name("xd_prime")
+        .and_then(|col| col.as_any().downcast_ref::<Float64Array>())
+        .ok_or_else(|| format!("{case_name}: classical_params.xd_prime missing"))?;
+
+    let mut saw_wttqa = false;
+    let mut saw_gensal = false;
+    for row in 0..batch.num_rows() {
+        let Some(model) = dict_utf8_at(model_type.as_ref(), row) else {
+            continue;
+        };
+        if model == "WTTQA1" {
+            saw_wttqa = true;
+            if map_key_count(params, row, "pwr1") != 1 {
+                return Err(format!("{case_name}: WTTQA1 row {row} missing pwr1"));
+            }
+            if map_key_count(params, row, "p1") != 1 {
+                return Err(format!(
+                    "{case_name}: WTTQA1 row {row} must keep a single positional p1"
+                ));
+            }
+        }
+        if model == "GENSAL" || model == "GENSAE" {
+            saw_gensal = true;
+            if classical.is_null(row) || h.is_null(row) || d.is_null(row) || xd_prime.is_null(row) {
+                return Err(format!(
+                    "{case_name}: {model} row {row} missing classical H/D/xd_prime"
+                ));
+            }
+            if map_key_count(params, row, "H") != 1
+                || map_key_count(params, row, "D") != 1
+                || map_key_count(params, row, "xd_prime") != 1
+            {
+                return Err(format!(
+                    "{case_name}: {model} row {row} missing dictionary H/D/xd_prime"
+                ));
+            }
+        }
+    }
+    if want_wttqa && !saw_wttqa {
+        return Err(format!("{case_name}: DYR names WTTQA1 but no dynamics row"));
+    }
+    if want_gensal && !saw_gensal {
+        return Err(format!(
+            "{case_name}: DYR names GENSAL/GENSAE but no dynamics row"
+        ));
+    }
+    Ok(())
+}
+
 fn run_case(
     raw: &Path,
     dynamic_files: &[PathBuf],
@@ -478,6 +589,9 @@ fn run_case(
             "DYR companion was attached but dynamics_models has 0 rows for {case_name}"
         ));
     }
+    if let Some(dyn_path) = dyn_s.as_deref() {
+        assert_named_dynamics(&case_name, dyn_path, &tables)?;
+    }
 
     Ok(CaseTiming {
         case_name,
@@ -495,7 +609,7 @@ fn run_case(
 
 #[test]
 fn golden_build_all_external_raw_cases() {
-    assert_eq!(RPF_VERSION, "v0.14.4");
+    assert_eq!(RPF_VERSION, "v0.14.5");
 
     let external_dir = Path::new(EXTERNAL_DIR);
     if !external_dir.exists() {

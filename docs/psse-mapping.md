@@ -13,7 +13,7 @@
 Copyright (c) 2026 Raptrix PowerFlow
 
 This document provides the field-by-field rules for translating PSS/E RAW (v23–v35)
-and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.4**) Apache
+and DYR records into the Raptrix PowerFlow Interchange (`.rpf` / RPF **v0.14.5**) Apache
 Arrow schema.
 
 **Scope:** Describes **current** export behavior for this crate revision. It is **not** a commitment that every omitted PSS/E field will gain a dedicated column, or that partial sections will be completed in any particular order—those follow interchange and product releases independently.
@@ -34,10 +34,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.4 contract (current)
+### v0.14.5 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.4**; readers accept **`v0.14.4`** and **`0.14.4`** only. Older stamps are rejected (re-export required). `v0.15.0` is not used.
+- **Emit v0.14.5**; readers accept **`v0.14.5`** and **`0.14.5`** only. Older stamps, including v0.14.4, are rejected (re-export required). `v0.15.0` is not used.
+- Dynamics `params` positional keys are `p1`..`pN`. Dictionary names are added when the DYR length matches. `WTTQA1` breakpoints are `pwr1`..`pwr4`. `GENSAL` / `GENSAE` `H` / `D` / `xd_prime` follow the dictionary.
 - `dc_lines_2w` stays **15** columns. `p_setpoint_mw` is rectifier DC power. `q_from_mvar` and `q_to_mvar` stay null on this path. The DC schedule is not copied into `buses.p_sched`.
 - `dc_converters` is emitted on every file (zero rows when the case has no terminals) and is **not** one of the 18 canonical tables. `raptrix.features.dc_converters=true`. A three-record LCC group writes rectifier and inverter rows. A shorthand DC line and a section-9 VSC line do not. `is_meter_end` does not move `p_setpoint_mw`. LCC rows leave the eight VSC columns null. `alpha_deg` and `gamma_deg` stay null.
 - `branches` appends `g_from`, `b_from`, `g_to`, `b_to` after `is_bptf`: parsed `GI` / `BI` / `GJ` / `BJ` divided by `metadata.base_mva`. A parsed 0 is `0`, including out-of-service lines. Positive susceptance is capacitive. `branches.b_shunt` remains total line charging, not the sum of the end shunts. In-service ends are still added to `buses.g_shunt` and `buses.b_shunt`.
@@ -126,7 +127,7 @@ several `buses` columns:
 | `/` comment | `title` | `study_name` | Free-form title on line 1 of the RAW file. `/` starts a comment only **outside** quoted fields. |
 | — | — | `source_format` | Always `psse_raw` for this converter. |
 | — | — | `source_identity_scheme` | Always `dense_bus_id` for this converter. |
-| — | — | `raptrix_version` | Locked schema stamp (`v0.14.4`), the same value as file metadata `raptrix.version`. |
+| — | — | `raptrix_version` | Locked schema stamp (`v0.14.5`), the same value as file metadata `raptrix.version`. |
 | — | — | `is_planning_case` | Always `true` for PSS/E RAW imports. |
 | — | — | `case_mode` | `"flat_start_planning"` when all RAW bus voltages are approximately flat (`VM≈1.0`, `VA≈0`); otherwise `"warm_start_planning"`. |
 | — | — | `timestamp_utc` | UTC wall-clock time of conversion as Arrow `Timestamp(Microsecond, UTC)`. |

@@ -18,9 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.7.8] - 2026-10-16
 
+### Changed
+
+- Pin `raptrix-cim-arrow` to git tag `v0.7.6`. Writers stamp RPF `v0.14.5`. Readers accept `v0.14.5` and `0.14.5` only. Re-export every dynamic case. There is no v0.14.4 read path.
 - GENSAL and GENSAE inertia, damping, and `xd_prime` follow the dynamics dictionary. `H` is CON 4 (`p4`), `D` is CON 5 (`p5`), and `xd_prime` is CON 8 (`p8`). The old positional fallback read `T''qo`, `H`, and `Xq`.
+- `WTTQA1` power breakpoints are stored as `pwr1`..`pwr4`, not `p1`..`p4`.
 
 ## [0.7.7] - 2026-10-11
 

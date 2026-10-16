@@ -1268,7 +1268,7 @@ BUS TYPE
     )
     .expect("conversion should succeed");
 
-    assert_eq!(RPF_VERSION, "v0.14.4");
+    assert_eq!(RPF_VERSION, "v0.14.5");
     let metadata = rpf_file_metadata(&out_path).expect("rpf_file_metadata");
     assert_eq!(
         metadata
