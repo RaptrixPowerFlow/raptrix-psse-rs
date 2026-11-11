@@ -6,7 +6,7 @@
 // https://mozilla.org/MPL/2.0/.
 
 //! `raptrix-psse-rs` — High-performance PSS/E (`.raw` + `.dyr`) →
-//! Raptrix PowerFlow Interchange v0.14.5 converter.
+//! Raptrix PowerFlow Interchange v0.14.6 converter.
 //!
 //! # Crate layout
 //! * [`models`] — PSS/E data structures.
@@ -69,14 +69,15 @@ use raptrix_cim_arrow::{
     METADATA_KEY_DEFAULT_SHUNT_CONTROL_MODE, METADATA_KEY_IDENTITY_MODEL,
     METADATA_KEY_SOLVED_STATE_PRESENCE, METADATA_KEY_VALIDATION_MODE, RootWriteOptions,
     SCHEMA_VERSION, TABLE_AREAS, TABLE_BRANCHES, TABLE_BUSES, TABLE_BUSES_SOLVED,
-    TABLE_CONTINGENCIES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W, TABLE_DYNAMICS_MODELS,
-    TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_GENERATORS_SOLVED, TABLE_INTERFACES, TABLE_LOADS,
-    TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS, TABLE_SCENARIO_CONTEXT,
-    TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS, TABLE_SWITCHED_SHUNTS_SOLVED,
-    TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES, UNKNOWN_MODSW_WARNING,
-    build_dc_converters_batch, classical_params_struct_fields, empty_dc_converters_batch,
-    normalize_tap_control, regulated_bus_id_from_swreg, shunt_control_mode_from_modsw,
-    table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
+    TABLE_COMPUTATIONAL_LOAD_PROFILES, TABLE_CONTINGENCIES, TABLE_DC_CONVERTERS, TABLE_DC_LINES_2W,
+    TABLE_DYNAMICS_MODELS, TABLE_FIXED_SHUNTS, TABLE_GENERATORS, TABLE_GENERATORS_SOLVED,
+    TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS,
+    TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS,
+    TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES,
+    UNKNOWN_MODSW_WARNING, build_computational_load_profiles_batch, build_dc_converters_batch,
+    classical_params_struct_fields, empty_dc_converters_batch, normalize_tap_control,
+    regulated_bus_id_from_swreg, shunt_control_mode_from_modsw, table_schema,
+    tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
@@ -160,6 +161,11 @@ pub struct ExportOptions {
     /// `rpf.default_shunt_control_mode` (v0.9.5+). When `None`, planning `case_mode` values
     /// default to `planning_full` to match `raptrix-cim-rs` planning exports.
     pub default_shunt_control_mode_override: Option<String>,
+    /// Optional computational-load rows. PSS/E RAW/DYR has no IT/PE split, cooling
+    /// carve-out, or CLO verification fields, so a normal export leaves this empty
+    /// and omits `computational_load_profiles`. When a caller supplies rows, unset
+    /// v0.14.6 fields stay null.
+    pub computational_load_profiles: Vec<raptrix_cim_arrow::ComputationalLoadProfileRow>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -350,6 +356,13 @@ pub fn write_psse_to_rpf_with_options(
         build_dynamics_models_batch(&network.dyr_models)?
     };
     table_batches.insert(TABLE_DYNAMICS_MODELS, dynamics_batch);
+    let include_computational_load_profiles = !options.computational_load_profiles.is_empty();
+    if include_computational_load_profiles {
+        table_batches.insert(
+            TABLE_COMPUTATIONAL_LOAD_PROFILES,
+            build_computational_load_profiles_batch(&options.computational_load_profiles)?,
+        );
+    }
 
     let mut seed_only_bus_count: usize = 0;
     if emit_warm_start_seed {
@@ -375,6 +388,7 @@ pub fn write_psse_to_rpf_with_options(
         dynamics_are_stub: network.dyr_models.is_empty(),
         include_solved_state: emit_warm_start_seed,
         include_contingency_sequences: false,
+        include_computational_load_profiles,
         ..RootWriteOptions::default()
     };
     let mut additional_root_metadata = HashMap::new();
@@ -422,7 +436,7 @@ pub fn write_psse_to_rpf_with_options(
     );
 
     // `write_root_rpf_with_metadata` stamps `raptrix.version` from `raptrix-cim-arrow`
-    // (`SCHEMA_VERSION`, currently v0.14.5) and re-opens the file for `validate_rpf_file`
+    // (`SCHEMA_VERSION`, currently v0.14.6) and re-opens the file for `validate_rpf_file`
     // so every emitted `.rpf` matches the locked root contract before returning.
     // `include_dc_converters` stays at the RootWriteOptions default (true), which
     // also stamps `raptrix.features.dc_converters=true`.

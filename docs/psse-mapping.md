@@ -34,10 +34,11 @@ Arrow schema.
 | v23 – v34 | ✓ | v33 is the most common; treated as baseline layout. |
 | v35 | ✓ | Extra fields (branch NAME, generator NREG/BASLOD, switched-shunt NAME/NREG) detected via `VersionOffsets` struct. |
 
-### v0.14.5 contract (current)
+### v0.14.6 contract (current)
 
 - **18** required root tables (see `raptrix-cim-rs` `docs/schema-contract.md`). **`ibr_devices` is removed**; inverter-based resources are modeled only on **`generators`** (`is_ibr`, `ibr_subtype`).
-- **Emit v0.14.5**; readers accept **`v0.14.5`** and **`0.14.5`** only. Older stamps, including v0.14.4, are rejected (re-export required). `v0.15.0` is not used.
+- **Emit v0.14.6**; readers accept **`v0.14.6`**, **`0.14.6`**, **`v0.14.5`**, and **`0.14.5`**. Older stamps, including v0.14.4, are rejected (re-export required). `v0.15.0` is not used.
+- RAW/DYR does not carry IT/PE fraction, cooling carve-out, multi-sag, envelope preset, or CLO verification. The default export omits `computational_load_profiles` and leaves `computational_load_mode` null. `ExportOptions.computational_load_profiles` emits caller-supplied rows; fields the caller leaves unset stay null.
 - Dynamics `params` positional keys are `p1`..`pN`. Dictionary names are added when the DYR length matches. `WTTQA1` breakpoints are `pwr1`..`pwr4`. `GENSAL` / `GENSAE` `H` / `D` / `xd_prime` follow the dictionary.
 - `dc_lines_2w` stays **15** columns. `p_setpoint_mw` is rectifier DC power. `q_from_mvar` and `q_to_mvar` stay null on this path. The DC schedule is not copied into `buses.p_sched`.
 - `dc_converters` is emitted on every file (zero rows when the case has no terminals) and is **not** one of the 18 canonical tables. `raptrix.features.dc_converters=true`. A three-record LCC group writes rectifier and inverter rows. A shorthand DC line and a section-9 VSC line do not. `is_meter_end` does not move `p_setpoint_mw`. LCC rows leave the eight VSC columns null. `alpha_deg` and `gamma_deg` stay null.

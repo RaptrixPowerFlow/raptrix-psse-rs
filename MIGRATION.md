@@ -9,6 +9,10 @@
 
 # Porting Status, Release Notes, and Schema Version Migrations
 
+## RPF v0.14.6
+
+Writers emit **v0.14.6** and readers still accept **v0.14.5**. PSS/E RAW and DYR do not carry the computational-load screening parameters, so `computational_load_profiles` stays omitted unless `ExportOptions.computational_load_profiles` is set. Unset fields on those rows stay null. This converter does not compute recovery MW or secondary overvoltage flags.
+
 **raptrix-psse-rs**  
 Copyright (c) 2026 Raptrix PowerFlow
 

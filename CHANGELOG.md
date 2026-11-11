@@ -16,7 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.7.9] - 2026-11-11
+
+- Emit RPF `v0.14.6` via `raptrix-cim-arrow` 0.7.7. Readers still accept `v0.14.5`.
+- RAW/DYR does not map the new computational-load screening fields. `ExportOptions.computational_load_profiles` can emit caller-supplied rows; unset fields stay null. The default export still omits the table.
 
 ## [0.7.8] - 2026-10-16
 
