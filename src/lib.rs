@@ -230,6 +230,7 @@ pub fn write_psse_to_rpf_with_options(
         network.dyr_generators = parser::extract_dyr_generators(&network.dyr_models);
     }
 
+    emit_fast_diagnostics(&network, dyr_path);
     enforce_deterministic_slack(&mut network);
 
     derive_switched_shunt_banks(&mut network);
@@ -516,6 +517,24 @@ fn emit_fast_diagnostics(network: &Network, dyr_path: Option<&str>) {
     if network.branches.is_empty() {
         warnings
             .push("RAW produced 0 branches; network may be disconnected or incomplete".to_string());
+    }
+
+    let published = crate::validation::screen_published_state(network);
+    if published.has_infeasible_flow() {
+        warnings.push(format!(
+            "BAD INPUT: {} in-service branch(es) and {} transformer(s) publish an infeasible flow (max {:.0} MW at {:.1} deg). {} The published voltages are kept.",
+            published.infeasible_branches,
+            published.infeasible_transformers,
+            published.max_implied_mw,
+            published.max_angle_deg,
+            published.worst
+        ));
+    }
+    if published.isolated_generators > 0 || published.isolated_ireg_targets > 0 {
+        warnings.push(format!(
+            "BAD INPUT: {} in-service generator(s) sit on an IDE=4 bus and {} regulate a disconnected bus.",
+            published.isolated_generators, published.isolated_ireg_targets
+        ));
     }
 
     let slack_count = network

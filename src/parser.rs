@@ -210,6 +210,32 @@ fn branch_offsets_for_record(f: &[String], psse_version: u32) -> VersionOffsets 
 
 /// Default section ordering, used when the line comment provides no hint.
 fn default_next_state(state: ParseState, version: u32) -> ParseState {
+    // REV 24–30 keeps fixed shunts on the bus record and writes switched
+    // shunts between the DC sections and impedance correction.
+    if version <= 30 {
+        return match state {
+            ParseState::SystemWide => ParseState::Bus,
+            ParseState::Bus => ParseState::Load,
+            ParseState::Load | ParseState::FixedShunt => ParseState::Generator,
+            ParseState::Generator => ParseState::Branch,
+            ParseState::Branch | ParseState::SystemSwitchingDevice => ParseState::Transformer,
+            ParseState::Transformer => ParseState::Area,
+            ParseState::Area => ParseState::TwoTerminalDc,
+            ParseState::TwoTerminalDc => ParseState::VscDc,
+            ParseState::VscDc => ParseState::SwitchedShunt,
+            ParseState::SwitchedShunt => ParseState::ImpedanceCorrection,
+            ParseState::ImpedanceCorrection => ParseState::MultiTerminalDc,
+            ParseState::MultiTerminalDc => ParseState::MultiSectionLine,
+            ParseState::MultiSectionLine => ParseState::Zone,
+            ParseState::Zone => ParseState::InterAreaTransfer,
+            ParseState::InterAreaTransfer => ParseState::Owner,
+            ParseState::Owner => ParseState::Facts,
+            ParseState::Facts => ParseState::Done,
+            ParseState::GneDevice => ParseState::InductionMachine,
+            ParseState::InductionMachine => ParseState::Done,
+            _ => ParseState::Done,
+        };
+    }
     match state {
         ParseState::SystemWide => ParseState::Bus,
         ParseState::Bus => ParseState::Load,
@@ -701,6 +727,33 @@ fn pre31_bus_name_token(token: &str) -> bool {
     !is_bare_numeric_token(t)
 }
 
+/// REV ≤ 30 name test that still accepts a numeric quoted name (`'12'`).
+///
+/// The tokeniser has already dropped the quotes, so a numeric name and a
+/// nameless record's BASKV look the same. A named record puts IDE in the
+/// fourth column; a nameless record puts IDE in the third.
+fn pre31_bus_has_name(fields: &[String]) -> bool {
+    let Some(token) = fields.get(1) else {
+        return false;
+    };
+    if pre31_bus_name_token(token) {
+        return true;
+    }
+    let t = token.trim();
+    if t.is_empty() || t == "''" || t == "\"\"" || !is_bare_numeric_token(t) {
+        return false;
+    }
+    let ide_at_3 = fields
+        .get(3)
+        .and_then(|ide| strict_psse_bus_ide_token(ide))
+        .is_some();
+    let ide_at_2 = fields
+        .get(2)
+        .and_then(|baskv| strict_psse_bus_ide_token(baskv))
+        .is_some();
+    ide_at_3 && !ide_at_2
+}
+
 fn is_bare_numeric_token(token: &str) -> bool {
     if token.contains(' ') {
         return false;
@@ -735,10 +788,11 @@ fn parse_bus_record_pre31(f: &[String]) -> Option<Bus> {
     if i == 0 {
         return None;
     }
-    let has_name = f.get(1).is_some_and(|s| pre31_bus_name_token(s));
+    let has_name = pre31_bus_has_name(f);
     let base = if has_name { 2 } else { 1 };
     // base+0 BASKV, +1 IDE, +2 GL, +3 BL, +4 AREA, +5 ZONE, +6 VM, +7 VA, +8 OWNER
     let owner_idx = base + 8;
+    let ide_raw = field_u8(f, base + 1);
     Some(Bus {
         i,
         name: if has_name {
@@ -747,7 +801,8 @@ fn parse_bus_record_pre31(f: &[String]) -> Option<Bus> {
             "????????????".into()
         },
         baskv: field_f64(f, base),
-        ide: psse_bus_ide_raw_to_type(field_u8(f, base + 1)),
+        ide: psse_bus_ide_raw_to_type(ide_raw),
+        disconnected: ide_raw == 4,
         gl: field_f64(f, base + 2),
         bl: field_f64(f, base + 3),
         area: field_u32_default(f, base + 4, 1),
@@ -886,6 +941,7 @@ fn parse_bus_record(f: &[String], psse_version: u32) -> Option<Bus> {
         },
         baskv: field_f64(f, baskv_idx),
         ide,
+        disconnected: ide_raw == 4,
         area: field_u32_default(f, area_idx, 1),
         zone: field_u32_default(f, zone_idx, 1),
         owner: field_u32_default(f, owner_idx, 1),
@@ -1702,6 +1758,7 @@ fn fictitious_star_bus(id: u32, area: u32, zone: u32, owner: u32) -> Bus {
         name: "STAR        ".into(),
         baskv: 0.0,
         ide: BusType::LoadBus,
+        disconnected: false,
         area,
         zone,
         owner,
@@ -1952,9 +2009,11 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                     None
                 };
 
-                let f2 = tokenize(l2.trim());
-                let f3 = tokenize(l3.trim());
-                let f4 = tokenize(l4.trim());
+                // Winding rows in REV 29 decks carry a trailing `/* ... */` comment.
+                // Leaving it on the line inflates the 12-rating test and shifts COD.
+                let f2 = tokenize(split_comment(l2.trim()).0);
+                let f3 = tokenize(split_comment(l3.trim()).0);
+                let f4 = tokenize(split_comment(l4.trim()).0);
 
                 // Record 2: R1-2, X1-2, SBASE1-2[, R2-3, X2-3, SBASE2-3, R3-1, X3-1, SBASE3-1]
                 let r12 = field_f64(&f2, 0);
@@ -2005,7 +2064,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
                     });
                 } else {
                     // ---- 3-winding transformer → star equivalent ----
-                    let f5 = tokenize(l5.unwrap().trim());
+                    let f5 = tokenize(split_comment(l5.unwrap().trim()).0);
 
                     // Record 2 (3W): R1-2, X1-2, SBASE1-2, R2-3, X2-3, SBASE2-3, R3-1, X3-1, SBASE3-1
                     let r23 = field_f64(&f2, 3);

@@ -18,10 +18,12 @@
 //! "Power Flow Data Quality Checks".  Each issue is tagged with the
 //! applicable subsection identifier (e.g. `"MMWG-7.3.3/zero-x"`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{BusType, Network};
-use crate::transformer_convert::normalize_code;
+use crate::transformer_convert::{
+    convert_z_to_system, normalize_code, series_z_on_from_tap, winding_taps_from_cw, TransformerId,
+};
 
 // ---------------------------------------------------------------------------
 // Public API types
@@ -117,6 +119,48 @@ impl ValidationReport {
         }
         eprintln!();
     }
+
+    /// One JSON object. Messages are escaped. Suitable for a batch screen.
+    pub fn to_json(&self) -> String {
+        let mut out = format!(
+            "{{\"errors\":{},\"warnings\":{},\"infos\":{},\"issues\":[",
+            self.error_count(),
+            self.warning_count(),
+            self.info_count()
+        );
+        for (index, issue) in self.issues.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            let severity = match issue.severity {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+                Severity::Info => "info",
+            };
+            out.push_str(&format!(
+                "{{\"severity\":\"{severity}\",\"check\":\"{}\",\"message\":\"{}\"}}",
+                json_escape(issue.check),
+                json_escape(&issue.message)
+            ));
+        }
+        out.push_str("]}");
+        out
+    }
+}
+
+fn json_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +186,7 @@ pub fn run_mmwg_checks(network: &Network) -> ValidationReport {
     check_switched_shunts(r, network);
     check_areas(r, network);
     check_system_balance(r, network);
+    check_published_operating_point(r, network);
 
     report
 }
@@ -907,6 +952,456 @@ fn check_system_balance(r: &mut ValidationReport, n: &Network) {
             n.owners.len()
         ),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Published operating point — not an MMWG subsection. A correct reader still
+// cannot turn a 25° angle across X = 0.0012 pu into an 800 MVA flow.
+// ---------------------------------------------------------------------------
+
+struct FlowHit {
+    angle_deg: f64,
+    implied_mw: f64,
+    message: String,
+}
+
+/// Counts and the worst sample. `validate` records the issues. `convert`
+/// prints one line and does not change the RPF.
+#[derive(Debug, Clone)]
+pub struct PublishedStateScreen {
+    pub infeasible_branches: usize,
+    pub infeasible_transformers: usize,
+    pub isolated_generators: usize,
+    pub isolated_ireg_targets: usize,
+    pub max_implied_mw: f64,
+    pub max_angle_deg: f64,
+    pub worst: String,
+}
+
+impl PublishedStateScreen {
+    pub fn has_infeasible_flow(&self) -> bool {
+        self.infeasible_branches + self.infeasible_transformers > 0
+    }
+}
+
+pub fn screen_published_state(network: &Network) -> PublishedStateScreen {
+    let mut screen = PublishedStateScreen {
+        infeasible_branches: 0,
+        infeasible_transformers: 0,
+        isolated_generators: 0,
+        isolated_ireg_targets: 0,
+        max_implied_mw: 0.0,
+        max_angle_deg: 0.0,
+        worst: String::new(),
+    };
+    let buses = bus_index(network);
+    if !deck_looks_solved(network) {
+        count_isolated_controls(network, &buses, &mut screen);
+        return screen;
+    }
+    let star_buses = star_bus_set(network);
+    let sbase = if network.case_id.sbase.abs() > 1.0e-9 {
+        network.case_id.sbase
+    } else {
+        100.0
+    };
+    let mut worst_mw = 0.0;
+    for branch in &network.branches {
+        if branch.st == 0 {
+            continue;
+        }
+        let Some(hit) = branch_flow_hit(network, &buses, branch, sbase) else {
+            continue;
+        };
+        screen.infeasible_branches += 1;
+        note_worst(&mut screen, &mut worst_mw, &hit);
+    }
+    for tx in &network.transformers {
+        if tx.stat == 0 || is_star_leg(tx, &star_buses) {
+            continue;
+        }
+        let Some(hit) = transformer_flow_hit(network, &buses, tx, sbase) else {
+            continue;
+        };
+        screen.infeasible_transformers += 1;
+        note_worst(&mut screen, &mut worst_mw, &hit);
+    }
+    for tx in &network.transformers_3w {
+        if tx.stat == 0 {
+            continue;
+        }
+        for (from, to, x, shift) in [
+            (tx.bus_h, tx.bus_m, tx.x_hm, tx.phase_shift_deg),
+            (tx.bus_h, tx.bus_l, tx.x_hl, tx.phase_shift_deg),
+            (tx.bus_m, tx.bus_l, tx.x_ml, 0.0),
+        ] {
+            let Some(hit) = pair_flow_hit(
+                &buses,
+                sbase,
+                from,
+                to,
+                x,
+                1.0,
+                shift,
+                tx.rate_a_mva,
+                &format!("3w {}-{} ckt '{}'", from, to, tx.ckt),
+                network,
+            ) else {
+                continue;
+            };
+            screen.infeasible_transformers += 1;
+            note_worst(&mut screen, &mut worst_mw, &hit);
+        }
+    }
+    count_isolated_controls(network, &buses, &mut screen);
+    screen
+}
+
+fn check_published_operating_point(r: &mut ValidationReport, network: &Network) {
+    let buses = bus_index(network);
+    if !deck_looks_solved(network) {
+        check_isolated_only(r, network, &buses);
+        return;
+    }
+    let star_buses = star_bus_set(network);
+    let sbase = if network.case_id.sbase.abs() > 1.0e-9 {
+        network.case_id.sbase
+    } else {
+        100.0
+    };
+    let mut branch_hits = 0usize;
+    let mut tx_hits = 0usize;
+    let mut shown = 0usize;
+    let mut push_hit = |kind: &'static str, hit: FlowHit, hits: &mut usize| {
+        *hits += 1;
+        if shown >= 16 {
+            return;
+        }
+        shown += 1;
+        push(r, Severity::Error, kind, hit.message);
+    };
+    for branch in &network.branches {
+        if branch.st == 0 {
+            continue;
+        }
+        if let Some(hit) = branch_flow_hit(network, &buses, branch, sbase) {
+            push_hit("MMWG-7.3.3/infeasible-published-flow", hit, &mut branch_hits);
+        }
+    }
+    for tx in &network.transformers {
+        if tx.stat == 0 || is_star_leg(tx, &star_buses) {
+            continue;
+        }
+        if let Some(hit) = transformer_flow_hit(network, &buses, tx, sbase) {
+            push_hit("MMWG-7.3.4/infeasible-published-tx-flow", hit, &mut tx_hits);
+        }
+    }
+    for tx in &network.transformers_3w {
+        if tx.stat == 0 {
+            continue;
+        }
+        for (from, to, x, shift) in [
+            (tx.bus_h, tx.bus_m, tx.x_hm, tx.phase_shift_deg),
+            (tx.bus_h, tx.bus_l, tx.x_hl, tx.phase_shift_deg),
+            (tx.bus_m, tx.bus_l, tx.x_ml, 0.0),
+        ] {
+            if let Some(hit) = pair_flow_hit(
+                &buses,
+                sbase,
+                from,
+                to,
+                x,
+                1.0,
+                shift,
+                tx.rate_a_mva,
+                &format!("3w {}-{} ckt '{}'", from, to, tx.ckt),
+                network,
+            ) {
+                push_hit("MMWG-7.3.4/infeasible-published-tx-flow", hit, &mut tx_hits);
+            }
+        }
+    }
+    let total = branch_hits + tx_hits;
+    if total > shown {
+        push(
+            r,
+            Severity::Error,
+            "MMWG-7.3.3/infeasible-published-flow",
+            format!(
+                "{total} in-service branches or transformers publish an infeasible flow; {shown} listed"
+            ),
+        );
+    }
+    check_isolated_only(r, network, &buses);
+}
+
+fn bus_is_disconnected(buses: &HashMap<u32, usize>, network: &Network, id: u32) -> bool {
+    buses
+        .get(&id)
+        .and_then(|&idx| network.buses.get(idx))
+        .is_some_and(|bus| bus.disconnected)
+}
+
+fn check_isolated_only(
+    r: &mut ValidationReport,
+    network: &Network,
+    buses: &HashMap<u32, usize>,
+) {
+    let mut gens = 0usize;
+    let mut ireg = 0usize;
+    let mut shown = 0usize;
+    for generator in &network.generators {
+        if generator.stat == 0 {
+            continue;
+        }
+        if bus_is_disconnected(buses, network, generator.i) {
+            gens += 1;
+            if shown < 8 {
+                shown += 1;
+                push(
+                    r,
+                    Severity::Warning,
+                    "MMWG-7.3.5/gen-on-isolated-bus",
+                    format!(
+                        "In-service generator bus {} id '{}' sits on IDE=4 (disconnected)",
+                        generator.i, generator.id
+                    ),
+                );
+            }
+        }
+        if generator.ireg != 0
+            && generator.ireg != generator.i
+            && bus_is_disconnected(buses, network, generator.ireg)
+        {
+            ireg += 1;
+            if shown < 8 {
+                shown += 1;
+                push(
+                    r,
+                    Severity::Warning,
+                    "MMWG-7.3.5/ireg-target-isolated",
+                    format!(
+                        "Generator bus {} regulates disconnected bus {}",
+                        generator.i, generator.ireg
+                    ),
+                );
+            }
+        }
+    }
+    if gens + ireg > shown {
+        push(
+            r,
+            Severity::Warning,
+            "MMWG-7.3.5/gen-on-isolated-bus",
+            format!(
+                "{gens} in-service generators sit on IDE=4 buses and {ireg} regulate an IDE=4 bus"
+            ),
+        );
+    }
+}
+
+fn count_isolated_controls(
+    network: &Network,
+    buses: &HashMap<u32, usize>,
+    screen: &mut PublishedStateScreen,
+) {
+    for generator in &network.generators {
+        if generator.stat == 0 {
+            continue;
+        }
+        if bus_is_disconnected(buses, network, generator.i) {
+            screen.isolated_generators += 1;
+        }
+        if generator.ireg != 0
+            && generator.ireg != generator.i
+            && bus_is_disconnected(buses, network, generator.ireg)
+        {
+            screen.isolated_ireg_targets += 1;
+        }
+    }
+}
+
+fn deck_looks_solved(network: &Network) -> bool {
+    let n = network.buses.len().max(1) as f64;
+    let angled = network
+        .buses
+        .iter()
+        .filter(|bus| bus.va.abs() > 1.0e-4)
+        .count() as f64;
+    let nonunity = network
+        .buses
+        .iter()
+        .filter(|bus| (bus.vm - 1.0).abs() > 1.0e-3)
+        .count() as f64;
+    angled / n > 0.25 || nonunity / n > 0.25
+}
+
+fn bus_index(network: &Network) -> HashMap<u32, usize> {
+    network
+        .buses
+        .iter()
+        .enumerate()
+        .map(|(index, bus)| (bus.i, index))
+        .collect()
+}
+
+fn energized<'a>(buses: &'a HashMap<u32, usize>, network: &'a Network, id: u32) -> Option<&'a crate::models::Bus> {
+    let index = *buses.get(&id)?;
+    let bus = network.buses.get(index)?;
+    if bus.disconnected || !(bus.vm > 0.0) || !bus.vm.is_finite() || !bus.va.is_finite() {
+        return None;
+    }
+    Some(bus)
+}
+
+fn wrap_deg(mut degrees: f64) -> f64 {
+    while degrees > 180.0 {
+        degrees -= 360.0;
+    }
+    while degrees < -180.0 {
+        degrees += 360.0;
+    }
+    degrees.abs()
+}
+
+fn flow_is_infeasible(rate_mva: f64, implied_mw: f64, angle_deg: f64) -> bool {
+    if angle_deg > 80.0 {
+        return true;
+    }
+    if rate_mva > 0.0 {
+        implied_mw > (5.0 * rate_mva).max(2500.0)
+    } else {
+        implied_mw > 5000.0
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pair_flow_hit(
+    buses: &HashMap<u32, usize>,
+    network_sbase: f64,
+    from: u32,
+    to: u32,
+    x_pu: f64,
+    tap_ratio: f64,
+    phase_deg: f64,
+    rate_mva: f64,
+    label: &str,
+    network: &Network,
+) -> Option<FlowHit> {
+    if x_pu.abs() <= 1.0e-9 {
+        return None;
+    }
+    let from_bus = energized(buses, network, from)?;
+    let to_bus = energized(buses, network, to)?;
+    let angle = wrap_deg(from_bus.va - to_bus.va - phase_deg);
+    let tap = if tap_ratio.is_finite() && tap_ratio.abs() > 1.0e-6 {
+        tap_ratio.abs()
+    } else {
+        1.0
+    };
+    let implied =
+        network_sbase * (from_bus.vm / tap) * to_bus.vm * angle.to_radians().sin() / x_pu.abs();
+    if !implied.is_finite() || !flow_is_infeasible(rate_mva, implied, angle) {
+        return None;
+    }
+    Some(FlowHit {
+        angle_deg: angle,
+        implied_mw: implied,
+        message: format!(
+            "{label}: X={x_pu:.6} pu, |dθ|={angle:.2} deg, implied {implied:.0} MW, RATEA={rate_mva:.0} MVA. Published voltage is not a feasible flow."
+        ),
+    })
+}
+
+fn branch_flow_hit(
+    network: &Network,
+    buses: &HashMap<u32, usize>,
+    branch: &crate::models::Branch,
+    sbase: f64,
+) -> Option<FlowHit> {
+    pair_flow_hit(
+        buses,
+        sbase,
+        branch.i,
+        branch.j,
+        branch.x,
+        1.0,
+        0.0,
+        branch.ratea,
+        &format!("Branch {}-{} ckt '{}'", branch.i, branch.j, branch.ckt),
+        network,
+    )
+}
+
+fn transformer_flow_hit(
+    network: &Network,
+    buses: &HashMap<u32, usize>,
+    tx: &crate::models::TwoWindingTransformer,
+    sbase: f64,
+) -> Option<FlowHit> {
+    let from_bus = energized(buses, network, tx.i)?;
+    let to_bus = energized(buses, network, tx.j)?;
+    let id = TransformerId {
+        i: tx.i,
+        j: tx.j,
+        k: 0,
+    };
+    let (r_sys, x_sys) = convert_z_to_system(id, tx.cz, tx.r12, tx.x12, tx.sbase12, sbase).ok()?;
+    let (x_eff, tap) = match winding_taps_from_cw(
+        id,
+        tx.cw,
+        tx.windv1,
+        tx.windv2,
+        tx.nomv1,
+        tx.nomv2,
+        from_bus.baskv,
+        to_bus.baskv,
+    ) {
+        Ok(taps) => {
+            let (_r_eff, x_eff) = series_z_on_from_tap(r_sys, x_sys, taps.t2);
+            (x_eff, taps.from_tap)
+        }
+        Err(_) => (x_sys, 1.0),
+    };
+    pair_flow_hit(
+        buses,
+        sbase,
+        tx.i,
+        tx.j,
+        x_eff,
+        tap,
+        tx.ang1,
+        tx.rata1,
+        &format!("Transformer {}-{} ckt '{}'", tx.i, tx.j, tx.ckt),
+        network,
+    )
+}
+
+fn note_worst(screen: &mut PublishedStateScreen, worst_mw: &mut f64, hit: &FlowHit) {
+    if hit.angle_deg > screen.max_angle_deg {
+        screen.max_angle_deg = hit.angle_deg;
+    }
+    if hit.implied_mw > *worst_mw {
+        *worst_mw = hit.implied_mw;
+        screen.max_implied_mw = hit.implied_mw;
+        screen.worst = hit.message.clone();
+    }
+}
+
+fn star_bus_set(network: &Network) -> HashSet<u32> {
+    network
+        .transformers_3w
+        .iter()
+        .map(|tx| tx.star_bus_id)
+        .collect()
+}
+
+fn is_star_leg(tx: &crate::models::TwoWindingTransformer, star_buses: &HashSet<u32>) -> bool {
+    // Star legs are the expanded 3W rows. Their pairwise X is also on
+    // transformers_3w, so counting both double-reports the same winding.
+    star_buses.contains(&tx.i)
+        || star_buses.contains(&tx.j)
+        || (tx.ckt.starts_with('S') && (tx.i >= 10_000_000 || tx.j >= 10_000_000))
 }
 
 // ---------------------------------------------------------------------------

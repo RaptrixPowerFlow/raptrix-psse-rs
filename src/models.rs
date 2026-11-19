@@ -129,8 +129,10 @@ pub struct Bus {
     pub name: Box<str>,
     /// Base voltage in kV (BASKV).
     pub baskv: f64,
-    /// Bus type code (IDE).
+    /// Bus type code (IDE). IDE 4 is folded to [`BusType::LoadBus`].
     pub ide: BusType,
+    /// RAW IDE was 4 (disconnected / isolated). The exported type stays PQ.
+    pub disconnected: bool,
     /// Area number (AREA).
     pub area: u32,
     /// Zone number (ZONE).

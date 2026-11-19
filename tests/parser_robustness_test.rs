@@ -8,6 +8,7 @@
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
 use raptrix_psse_rs::models::{BusType, DcConverter, Network};
 use raptrix_psse_rs::parser::parse_raw;
+use raptrix_psse_rs::validation::{run_mmwg_checks, Severity};
 use std::io::Write;
 use tempfile::NamedTempFile;
 
@@ -692,4 +693,94 @@ Q
     assert_eq!(modern_shunt.rmidnt.as_ref(), "ID");
     assert_eq!(modern_shunt.steps, vec![4.0, 4.0]);
     assert_eq!(modern_shunt.stat, 1);
+}
+
+#[test]
+fn rev29_numeric_name_commentless_sections_and_transformer_comment() {
+    let commented = "\
+0, 100.0, 29, 0, 0, 60.0 / synthetic
+S
+S
+1,'SLACK',138.0,3,0.0,0.0,1,1,1.01,0.0,1
+3,'12',138.0,2,0.0,0.0,1,1,1.02,3.0,1
+0 / END OF BUS DATA, BEGIN TRANSFORMER DATA
+1,3,0,'1',1,1,1,0.0,0.0,2,'T',1,1,1.0,0,0,0,0,0,0
+0.001, 0.05, 100.00
+1.0, 0.0, 0.0, 100, 100, 100, 1, 99, 1.1, 0.9, 1.1, 0.9, 0, 0, 0.0, 0.0, /* a,b,c,d,e,f,g,h,i,j */
+1.05, 0.0, /* winding two */
+0 / END OF TRANSFORMER DATA
+Q
+";
+    let net = parse_snippet(commented).expect("commented transformer");
+    let named = net.buses.iter().find(|bus| bus.i == 3).unwrap();
+    assert!(named.name.trim().starts_with('1'));
+    assert!((named.baskv - 138.0).abs() < 1e-9);
+    assert!((named.vm - 1.02).abs() < 1e-9);
+    assert_eq!(named.ide, BusType::GeneratorPV);
+    let tx = &net.transformers[0];
+    assert!((tx.windv1 - 1.0).abs() < 1e-9);
+    assert!((tx.windv2 - 1.05).abs() < 1e-9);
+    assert!((tx.nomv2).abs() < 1e-9);
+    assert_eq!(tx.cod1, 1);
+    assert_eq!(tx.cont1, 99);
+
+    let commentless = "\
+0, 100.0, 29, 0, 0, 60.0 / synthetic
+S
+S
+10,'A',138.0,1,0.0,0.0,1,1,1.03,-1.0,1
+0
+0
+0
+10,11,'1',0.01,0.05,0.0,50,50,50,0,0,0,0,1
+0
+0
+0
+0
+0
+10,0,1.10,0.90,0,,4.0,1,8.0
+0
+";
+    let bare = parse_snippet(commentless).expect("commentless rev 29");
+    assert_eq!(bare.buses.len(), 1);
+    assert!((bare.buses[0].vm - 1.03).abs() < 1e-9);
+    assert_eq!(bare.branches.len(), 1);
+    assert_eq!(bare.switched_shunts.len(), 1);
+    assert!((bare.switched_shunts[0].binit - 4.0).abs() < 1e-9);
+    assert_eq!(bare.switched_shunts[0].steps, vec![8.0]);
+}
+
+#[test]
+fn published_flow_and_ide4_are_named() {
+    let raw = "\
+0, 100.0, 29, 0, 0, 60.0 / synthetic
+S
+S
+1,'SLACK',138.0,3,0.0,0.0,1,1,1.00,0.0,1
+2,'FAR',138.0,1,0.0,0.0,1,1,1.00,25.2,1
+4,'OFF',138.0,4,0.0,0.0,1,1,1.00,0.0,1
+0 / END OF BUS DATA, BEGIN GENERATOR DATA
+1,'1',10.0,0.0,100.0,-100.0,1.00,4,100.0,0,0,0,0,1,1,100.0,20.0,0.0,1,1,0,0,0,0,0
+4,'1',5.0,0.0,10.0,-10.0,1.00,0,100.0,0,0,0,0,1,1,100.0,10.0,0.0,1,1,0,0,0,0,0
+0 / END OF GENERATOR DATA, BEGIN BRANCH DATA
+1,2,'1',0.0001,0.0012,0.0,800,800,800,0,0,0,0,1
+0 / END OF BRANCH DATA
+Q
+";
+    let net = parse_snippet(raw).expect("infeasible");
+    assert!(net.buses.iter().any(|bus| bus.i == 4 && bus.disconnected));
+    let report = run_mmwg_checks(&net);
+    let checks: Vec<&str> = report.issues.iter().map(|issue| issue.check).collect();
+    assert!(
+        checks.contains(&"MMWG-7.3.3/infeasible-published-flow"),
+        "missing flow screen: {checks:?}"
+    );
+    assert!(checks.contains(&"MMWG-7.3.5/gen-on-isolated-bus"));
+    assert!(checks.contains(&"MMWG-7.3.5/ireg-target-isolated"));
+    assert!(report
+        .issues
+        .iter()
+        .any(|issue| issue.check == "MMWG-7.3.3/infeasible-published-flow"
+            && issue.severity == Severity::Error
+            && issue.message.contains("1-2")));
 }

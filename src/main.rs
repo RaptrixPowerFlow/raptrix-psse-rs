@@ -111,6 +111,10 @@ enum Commands {
         /// Exit with code 1 if any ERROR-level issues are found (useful for CI).
         #[arg(long, default_value_t = false)]
         strict: bool,
+
+        /// Write one JSON object to stdout instead of the text report.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
 }
 
@@ -191,12 +195,16 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::Validate { raw, strict } => {
+        Commands::Validate { raw, strict, json } => {
             let raw_str = raw
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("RAW path is not valid UTF-8"))?;
             let report = raptrix_psse_rs::validate_psse_raw(raw_str)?;
-            report.print_summary();
+            if json {
+                println!("{}", report.to_json());
+            } else {
+                report.print_summary();
+            }
             if strict && !report.is_clean() {
                 std::process::exit(1);
             }
