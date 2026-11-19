@@ -64,8 +64,8 @@ bugfix, not a schema change.
 #### What changed
 
 - `/` inside a single-quoted RAW field is data. Pre-0.7.4 converters truncated
-  those records at the slash (NYISO buses 351 / 1275 / 1276 exported
-  `v_mag_set=1.0` instead of the published VM).
+  those records at the slash (affected buses exported `v_mag_set=1.0` instead
+  of the published VM).
 - **Dependency**: unchanged — `raptrix-cim-arrow` **0.7.3** / git tag **`v0.7.3`**.
 
 #### Consumer checklist
@@ -295,8 +295,8 @@ correctness fix to the PSS/E `IDE` field interpretation that affects
 
 #### Observable effects on existing RPFs (regenerate to pick up)
 
-- Cases with explicit `IDE=3` swing buses (e.g. `Base_Eastern_Interconnect_515GW`) now carry that exact bus as canonical slack (`type=3`); the converter no longer auto-picks a different (often higher-Pg) bus.
-- Cases with `IDE=4` disconnected buses (e.g. `ACTIVSg70k`, `Base_Eastern_Interconnect_515GW`) no longer surface those buses as orphan-slack candidates that get demoted to PV — they are written as canonical PQ (`type=1`) directly.
+- Cases with explicit `IDE=3` swing buses now carry that exact bus as canonical slack (`type=3`); the converter no longer auto-picks a different (often higher-Pg) bus.
+- Cases with `IDE=4` disconnected buses (e.g. `ACTIVSg70k`) no longer surface those buses as orphan-slack candidates that get demoted to PV — they are written as canonical PQ (`type=1`) directly.
 - The `BusType::GeneratorPQ` enum variant is retained for backward compatibility but is no longer assigned by the parser (no PSS/E IDE code maps to it). Downstream callers that pattern-match on it remain valid; canonicalization treats it identically to `LoadBus`.
 
 #### Companion change in `raptrix-core` (`rpf_reader.cpp`)

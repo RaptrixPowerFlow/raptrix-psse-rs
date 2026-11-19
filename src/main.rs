@@ -47,6 +47,12 @@ enum Commands {
         #[arg(long)]
         dyr: Option<PathBuf>,
 
+        /// Optional PSS/E contingency file. Resolved rows are written to `contingencies`.
+        ///
+        /// When omitted, that table stays a zero-row stub.
+        #[arg(long)]
+        con: Option<PathBuf>,
+
         /// Output path for the Raptrix PowerFlow Interchange file (.rpf).
         #[arg(long)]
         output: PathBuf,
@@ -115,6 +121,7 @@ fn main() -> Result<()> {
         Commands::Convert {
             raw,
             dyr,
+            con,
             output,
             transformer_mode,
             study_purpose,
@@ -147,6 +154,7 @@ fn main() -> Result<()> {
                 scenario_tags,
                 case_mode_override: case_mode,
                 default_shunt_control_mode_override: default_shunt_control_mode,
+                contingency_path: con,
                 ..Default::default()
             };
 

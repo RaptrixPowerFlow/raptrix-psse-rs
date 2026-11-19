@@ -95,6 +95,40 @@ pub fn winding_pu_of_baskv(
     }
 }
 
+/// Both winding taps in pu of the connected-bus BASKV, and the single from-side
+/// ratio the solver stamps (`t1 / t2`).
+#[derive(Debug, Clone, Copy)]
+pub struct WindingTaps {
+    pub t1: f64,
+    pub t2: f64,
+    pub from_tap: f64,
+}
+
+/// PSS/E puts the series branch between a `t1:1` ideal and a `1:t2` ideal.
+/// `Y22 = y / t2^2`. The solver's from-only tap has `Y22 = y_eff`, so the
+/// stored series impedance is `z_sys * t2^2`. `t2 == 1` leaves `z` unchanged.
+pub fn winding_taps_from_cw(
+    id: TransformerId,
+    cw: u8,
+    windv1: f64,
+    windv2: f64,
+    nomv1: f64,
+    nomv2: f64,
+    baskv1: f64,
+    baskv2: f64,
+) -> Result<WindingTaps> {
+    let t1 = winding_pu_of_baskv(id, cw, windv1, nomv1, baskv1)?;
+    let t2 = winding_pu_of_baskv(id, cw, windv2, nomv2, baskv2)?;
+    if t2.abs() <= 1.0e-12 {
+        bail!("RAW TRANSFORMER {id} winding-2 pu tap is zero");
+    }
+    Ok(WindingTaps {
+        t1,
+        t2,
+        from_tap: t1 / t2,
+    })
+}
+
 /// From-side off-nominal tap = (winding-1 pu of BASKV) / (winding-2 pu of BASKV).
 pub fn tap_ratio_from_cw(
     id: TransformerId,
@@ -106,12 +140,13 @@ pub fn tap_ratio_from_cw(
     baskv1: f64,
     baskv2: f64,
 ) -> Result<f64> {
-    let t1 = winding_pu_of_baskv(id, cw, windv1, nomv1, baskv1)?;
-    let t2 = winding_pu_of_baskv(id, cw, windv2, nomv2, baskv2)?;
-    if t2.abs() <= 1.0e-12 {
-        bail!("RAW TRANSFORMER {id} winding-2 pu tap is zero");
-    }
-    Ok(t1 / t2)
+    Ok(winding_taps_from_cw(id, cw, windv1, windv2, nomv1, nomv2, baskv1, baskv2)?.from_tap)
+}
+
+/// Series R, X of the single-from-tap equivalent, pu on system SBASE.
+pub fn series_z_on_from_tap(r_sys: f64, x_sys: f64, t2: f64) -> (f64, f64) {
+    let scale = t2 * t2;
+    (r_sys * scale, x_sys * scale)
 }
 
 /// Series R, X in pu on system SBASE.
@@ -240,5 +275,66 @@ mod tests {
     fn cm2_is_rejected() {
         let err = validate_transformer_codes(ID, 1, 1, 2).unwrap_err();
         assert!(err.to_string().contains("CM=2"));
+    }
+
+    fn admit(r: f64, x: f64) -> (f64, f64) {
+        let denom = r * r + x * x;
+        (r / denom, -x / denom)
+    }
+
+    /// PSS/E two-tap pi versus the solver's from-only tap after `z * t2^2`.
+    fn ports_match(r: f64, x: f64, t1: f64, t2: f64) {
+        let (g, b) = admit(r, x);
+        let y11_psse = (g / (t1 * t1), b / (t1 * t1));
+        let y12_psse = (-g / (t1 * t2), -b / (t1 * t2));
+        let y22_psse = (g / (t2 * t2), b / (t2 * t2));
+
+        let (re, xe) = series_z_on_from_tap(r, x, t2);
+        let (ge, be) = admit(re, xe);
+        let tau = t1 / t2;
+        let y11 = (ge / (tau * tau), be / (tau * tau));
+        let y12 = (-ge / tau, -be / tau);
+        let y22 = (ge, be);
+
+        for (got, want) in [(y11, y11_psse), (y12, y12_psse), (y22, y22_psse)] {
+            assert!((got.0 - want.0).abs() < 1e-12, "{} vs {}", got.0, want.0);
+            assert!((got.1 - want.1).abs() < 1e-12, "{} vs {}", got.1, want.1);
+        }
+    }
+
+    #[test]
+    fn winding2_off_nominal_scales_series_z() {
+        let (r, x) = series_z_on_from_tap(0.01, 0.10, 1.15);
+        assert!((r - 0.01 * 1.15 * 1.15).abs() < 1e-12);
+        assert!((x - 0.10 * 1.15 * 1.15).abs() < 1e-12);
+        let (r1, x1) = series_z_on_from_tap(0.01, 0.10, 1.0);
+        assert!((r1 - 0.01).abs() < 1e-15);
+        assert!((x1 - 0.10).abs() < 1e-15);
+    }
+
+    #[test]
+    fn cw1_winding2_115_matches_psse_two_port() {
+        let taps = winding_taps_from_cw(ID, 1, 1.05, 1.15, 230.0, 115.0, 230.0, 115.0).unwrap();
+        assert!((taps.t2 - 1.15).abs() < 1e-12);
+        assert!((taps.from_tap - 1.05 / 1.15).abs() < 1e-12);
+        ports_match(0.01, 0.10, taps.t1, taps.t2);
+    }
+
+    #[test]
+    fn cw2_winding2_off_nominal_matches_psse_two_port() {
+        let taps = winding_taps_from_cw(ID, 2, 241.5, 132.25, 230.0, 115.0, 230.0, 115.0).unwrap();
+        assert!((taps.t1 - 241.5 / 230.0).abs() < 1e-12);
+        assert!((taps.t2 - 132.25 / 115.0).abs() < 1e-12);
+        ports_match(0.02, 0.20, taps.t1, taps.t2);
+    }
+
+    #[test]
+    fn cw3_winding2_off_nominal_matches_psse_two_port() {
+        let taps = winding_taps_from_cw(ID, 3, 1.05, 1.02, 241.5, 120.0, 230.0, 115.0).unwrap();
+        let t1 = 1.05 * 241.5 / 230.0;
+        let t2 = 1.02 * 120.0 / 115.0;
+        assert!((taps.t1 - t1).abs() < 1e-12);
+        assert!((taps.t2 - t2).abs() < 1e-12);
+        ports_match(0.005, 0.08, taps.t1, taps.t2);
     }
 }

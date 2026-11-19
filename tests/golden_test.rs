@@ -106,13 +106,26 @@ fn assert_memphis_n5_modsw2_continuous(path: &str) {
     );
 }
 
-fn assert_slash_names_keep_scheduled_vm(path: &str) {
-    let tables = raptrix_cim_arrow::read_rpf_tables(path).expect("read golden rpf");
+fn assert_slash_names_keep_scheduled_vm(raw_path: &str, rpf_path: &str) {
+    // The RAW is the oracle. Published source must not pin bus numbers or
+    // measurements from a local case.
+    let network = raptrix_psse_rs::parser::parse_raw(Path::new(raw_path))
+        .unwrap_or_else(|err| panic!("{raw_path}: parse RAW for slash-name check: {err}"));
+    let slash_buses: Vec<_> = network
+        .buses
+        .iter()
+        .filter(|bus| bus.name.contains('/'))
+        .collect();
+    if slash_buses.is_empty() {
+        return;
+    }
+
+    let tables = raptrix_cim_arrow::read_rpf_tables(rpf_path).expect("read golden rpf");
     let batch = tables
         .iter()
         .find(|(n, _)| n == TABLE_BUSES)
         .map(|(_, b)| b)
-        .unwrap_or_else(|| panic!("{path} missing buses"));
+        .unwrap_or_else(|| panic!("{rpf_path} missing buses"));
     let bus_id = batch
         .column_by_name("bus_id")
         .expect("bus_id")
@@ -139,42 +152,36 @@ fn assert_slash_names_keep_scheduled_vm(path: &str) {
         .expect("Float64");
     let names = batch.column_by_name("name").expect("name");
 
-    // Buses whose published names contain `/`. A quote-blind comment split
-    // used to drop VM and sanitize it to 1.0. Other files reuse these ids
-    // without a slash in the name; leave those alone.
-    let Some(i351) = (0..bus_id.len()).find(|&i| bus_id.value(i) == 351) else {
-        return;
-    };
-    if !dict_utf8_at(names, i351).unwrap_or("").contains('/') {
-        return;
-    }
-    for id in [351, 1275, 1276] {
+    for bus in slash_buses {
+        let id = i32::try_from(bus.i).unwrap_or_else(|_| panic!("{rpf_path}: bus id out of range"));
         let i = (0..bus_id.len())
             .find(|&i| bus_id.value(i) == id)
-            .unwrap_or_else(|| panic!("{path}: missing bus {id}"));
+            .unwrap_or_else(|| panic!("{rpf_path}: missing bus {id}"));
+        assert!(
+            dict_utf8_at(names, i).unwrap_or("").contains('/'),
+            "{rpf_path} bus {id}: name must keep '/'"
+        );
+        let expected_vm = if bus.vm.is_finite() && bus.vm > 0.0 {
+            bus.vm
+        } else {
+            1.0
+        };
         let vm = v_mag.value(i);
         assert!(
-            (vm - 1.0).abs() > 1.0e-4,
-            "{path} bus {id}: v_mag_set must keep the published VM (got {vm})"
+            (vm - expected_vm).abs() < 1.0e-4,
+            "{rpf_path} bus {id}: v_mag_set {vm} != RAW {expected_vm}"
         );
-        assert!(
-            (1.005..=1.03).contains(&vm),
-            "{path} bus {id}: v_mag_set {vm} is outside the published band"
-        );
-        let name = dict_utf8_at(names, i).unwrap_or("");
-        assert!(
-            name.contains('/'),
-            "{path} bus {id}: name must keep '/', got {name:?}"
-        );
+        let expected_va = if bus.va.is_finite() { bus.va } else { 0.0 };
         let va = v_ang.value(i);
         assert!(
-            va.abs() > 40.0,
-            "{path} bus {id}: v_ang_set must keep RAW VA, got {va}"
+            (va - expected_va).abs() < 1.0e-3,
+            "{rpf_path} bus {id}: v_ang_set {va} != RAW {expected_va}"
         );
         assert!(
-            (nominal_kv.value(i) - 115.0).abs() < 1.0e-6,
-            "{path} bus {id}: nominal_kv must stay 115, got {}",
-            nominal_kv.value(i)
+            (nominal_kv.value(i) - bus.baskv).abs() < 1.0e-4,
+            "{rpf_path} bus {id}: nominal_kv {} != RAW {}",
+            nominal_kv.value(i),
+            bus.baskv
         );
     }
 }
@@ -719,7 +726,7 @@ fn golden_build_all_external_raw_cases() {
         if t.case_name.to_ascii_lowercase().contains("ieee14") {
             assert_ieee14_v_ang_set_degrees(&t.output_file);
         }
-        assert_slash_names_keep_scheduled_vm(&t.output_file);
+        assert_slash_names_keep_scheduled_vm(&t.raw_file, &t.output_file);
     }
 
     // Legacy short-stem aliases still referenced by older core/scripts paths.

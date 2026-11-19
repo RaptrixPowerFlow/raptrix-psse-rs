@@ -1,12 +1,12 @@
 // raptrix-psse-rs
-// Copyright (c) 2026 Raptrix PowerFlow
+// Copyright (c) 2026 Raptrix Power
 //
 // This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
 // If a copy of the MPL was not distributed with this file, You can obtain one at
 // https://mozilla.org/MPL/2.0/.
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, StringArray};
-use raptrix_psse_rs::models::{DcConverter, Network};
+use raptrix_psse_rs::models::{BusType, DcConverter, Network};
 use raptrix_psse_rs::parser::parse_raw;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -562,4 +562,134 @@ fn worked_lcc_line_round_trips_as_v0144() {
             "DC SETVL must not be copied into bus p_sched"
         );
     }
+}
+
+/// REV 29/30 keep inline bus shunts and a short switched-shunt record.
+/// A negative branch J is the metered end, on every revision.
+#[test]
+fn pre31_columns_and_metered_end_j() {
+    let rev29 = "\
+0, 100.0, 29, 0, 0, 60.0 / synthetic
+S
+S
+101, 'ONE', 115.0, 1, 0.0, -2.5, 2, 3, 1.02, -15.5, 7
+102, 'TWO', 230.0, 2, 1.5, 0.0, 2, 3, 1.01, 4.0, 8
+301, 69.0, 1, 0.0, 0.0, 1, 1, 1.0, 0.0, 1
+401, '12 34567', 69.0, 1, 0.0, 0.0, 1, 1, 1.04, -3.0, 2
+0 / END OF BUS DATA, BEGIN BRANCH DATA
+101, -102, '1', 0.01, 0.05, 0.02, 100, 110, 120, 0, 0, 0, 0, 1, 0, 0, 1
+-101, 102, '9', 0.01, 0.05, 0.0, 10, 10, 10, 0, 0, 0, 0, 1
+101, 102, '2', 0.02, 0.06, 0.0, 50, 50, 50, 0, 0, 0, 0, 0, 1.0, 0, 1
+0 / END OF BRANCH DATA, BEGIN SWITCHED SHUNT DATA
+101, 1, 1.05, 0.95, 0, 12.5, 1, -6.0
+102, 0, 1.04, 0.98, 101, 'RMT', 3.0, 2, 5.0
+103, 1, 1.05, 0.95, 0,, 12.5, 1.0, -6.0
+0 / END OF SWITCHED SHUNT DATA
+Q
+";
+    let n29 = parse_snippet(rev29).expect("rev 29");
+    assert_eq!(n29.case_id.rev, 29);
+    let b101 = n29.buses.iter().find(|b| b.i == 101).unwrap();
+    assert_eq!(b101.ide, BusType::LoadBus);
+    assert!((b101.bl + 2.5).abs() < 1e-9);
+    assert_eq!(b101.area, 2);
+    assert_eq!(b101.zone, 3);
+    assert!((b101.vm - 1.02).abs() < 1e-9);
+    assert!((b101.va + 15.5).abs() < 1e-9);
+    assert_eq!(b101.owner, 7);
+    let b102 = n29.buses.iter().find(|b| b.i == 102).unwrap();
+    assert_eq!(b102.ide, BusType::GeneratorPV);
+    assert!((b102.gl - 1.5).abs() < 1e-9);
+    assert!((b102.vm - 1.01).abs() < 1e-9);
+    let b301 = n29.buses.iter().find(|b| b.i == 301).unwrap();
+    assert!((b301.baskv - 69.0).abs() < 1e-9);
+    assert!((b301.vm - 1.0).abs() < 1e-9);
+    assert_eq!(b301.owner, 1);
+    let b401 = n29.buses.iter().find(|b| b.i == 401).unwrap();
+    assert!(b401.name.trim().starts_with("12 34567"));
+    assert!((b401.baskv - 69.0).abs() < 1e-9);
+    assert!((b401.vm - 1.04).abs() < 1e-9);
+    assert!((b401.va + 3.0).abs() < 1e-9);
+
+    assert_eq!(n29.branches.len(), 2);
+    let metered = n29.branches.iter().find(|b| b.ckt.as_ref() == "1").unwrap();
+    assert_eq!(
+        (metered.i, metered.j, metered.met, metered.st),
+        (101, 102, 2, 1)
+    );
+    let open = n29.branches.iter().find(|b| b.ckt.as_ref() == "2").unwrap();
+    assert_eq!((open.i, open.j, open.st), (101, 102, 0));
+
+    assert_eq!(n29.switched_shunts.len(), 3);
+    let s101 = n29.switched_shunts.iter().find(|s| s.i == 101).unwrap();
+    assert_eq!(s101.modsw, 1);
+    assert!((s101.vswhi - 1.05).abs() < 1e-9);
+    assert!((s101.binit - 12.5).abs() < 1e-9);
+    assert_eq!(s101.steps, vec![-6.0]);
+    assert!((s101.rmpct - 100.0).abs() < 1e-9);
+    let s102 = n29.switched_shunts.iter().find(|s| s.i == 102).unwrap();
+    assert_eq!(s102.rmidnt.as_ref(), "RMT");
+    assert!((s102.binit - 3.0).abs() < 1e-9);
+    assert_eq!(s102.steps, vec![5.0, 5.0]);
+    assert_eq!(s102.swrem, 101);
+    let s103 = n29.switched_shunts.iter().find(|s| s.i == 103).unwrap();
+    assert!(s103.rmidnt.is_empty());
+    assert!((s103.binit - 12.5).abs() < 1e-9);
+    assert_eq!(s103.steps, vec![-6.0]);
+
+    let rev30 = "\
+0, 100.0, 30, 0, 0, 60.0 / synthetic
+S
+S
+101, 'ONE', 115.0, 1, 0.0, 0.0, 1, 1, 0.99, 2.5, 4
+0 / END OF BUS DATA, BEGIN SWITCHED SHUNT DATA
+101, 1, 1.06, 0.97, 102, 75.0, 'S1', -4.0, 1, 8.0
+0 / END OF SWITCHED SHUNT DATA
+Q
+";
+    let n30 = parse_snippet(rev30).expect("rev 30");
+    assert_eq!(n30.case_id.rev, 30);
+    let bus = &n30.buses[0];
+    assert!((bus.vm - 0.99).abs() < 1e-9);
+    assert!((bus.va - 2.5).abs() < 1e-9);
+    assert_eq!(bus.owner, 4);
+    let shunt = &n30.switched_shunts[0];
+    assert_eq!(shunt.swrem, 102);
+    assert!((shunt.rmpct - 75.0).abs() < 1e-9);
+    assert_eq!(shunt.rmidnt.as_ref(), "S1");
+    assert!((shunt.binit + 4.0).abs() < 1e-9);
+    assert_eq!(shunt.steps, vec![8.0]);
+    assert_eq!(shunt.stat, 1);
+
+    let rev33 = "\
+0, 100.0, 33, 0, 0, 60.0 / synthetic
+S
+S
+201, 'MODERN', 138.0, 2, 4, 5, 6, 1.03, -8.0
+0 / END OF BUS DATA, BEGIN BRANCH DATA
+201, -202, '1', 0.01, 0.04, 0.0, 80, 80, 80, 0, 0, 0, 0, 1, 0
+0 / END OF BRANCH DATA, BEGIN SWITCHED SHUNT DATA
+201, 1, 0, 1, 1.05, 0.95, 0, 100.0, 'ID', 8.0, 2, 4.0
+0 / END OF SWITCHED SHUNT DATA
+Q
+";
+    let n33 = parse_snippet(rev33).expect("rev 33");
+    assert_eq!(n33.case_id.rev, 33);
+    let modern = &n33.buses[0];
+    assert_eq!(modern.ide, BusType::GeneratorPV);
+    assert_eq!((modern.area, modern.zone, modern.owner), (4, 5, 6));
+    assert!((modern.vm - 1.03).abs() < 1e-9);
+    assert!((modern.va + 8.0).abs() < 1e-9);
+    assert!(modern.gl.abs() < 1e-12 && modern.bl.abs() < 1e-12);
+    assert_eq!(
+        (n33.branches[0].i, n33.branches[0].j, n33.branches[0].met),
+        (201, 202, 2)
+    );
+    let modern_shunt = &n33.switched_shunts[0];
+    assert!((modern_shunt.vswhi - 1.05).abs() < 1e-9);
+    assert!((modern_shunt.vswlo - 0.95).abs() < 1e-9);
+    assert!((modern_shunt.binit - 8.0).abs() < 1e-9);
+    assert_eq!(modern_shunt.rmidnt.as_ref(), "ID");
+    assert_eq!(modern_shunt.steps, vec![4.0, 4.0]);
+    assert_eq!(modern_shunt.stat, 1);
 }

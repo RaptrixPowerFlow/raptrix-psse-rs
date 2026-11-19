@@ -36,6 +36,7 @@
 //! raptrix-psse-rs
 //! Copyright (c) 2026 Raptrix PowerFlow
 
+pub mod contingency;
 pub mod models;
 pub mod parser;
 pub mod transformer_convert;
@@ -74,15 +75,16 @@ use raptrix_cim_arrow::{
     TABLE_INTERFACES, TABLE_LOADS, TABLE_METADATA, TABLE_MULTI_SECTION_LINES, TABLE_OWNERS,
     TABLE_SCENARIO_CONTEXT, TABLE_SWITCHED_SHUNT_BANKS, TABLE_SWITCHED_SHUNTS,
     TABLE_SWITCHED_SHUNTS_SOLVED, TABLE_TRANSFORMERS_2W, TABLE_TRANSFORMERS_3W, TABLE_ZONES,
-    UNKNOWN_MODSW_WARNING, build_computational_load_profiles_batch, build_dc_converters_batch,
-    classical_params_struct_fields, empty_dc_converters_batch, normalize_tap_control,
-    regulated_bus_id_from_swreg, shunt_control_mode_from_modsw, table_schema,
-    tap_limit_unit_from_cod, write_root_rpf_with_metadata,
+    UNKNOWN_MODSW_WARNING, build_computational_load_profiles_batch, build_contingencies_batch_full,
+    build_dc_converters_batch, classical_params_struct_fields, empty_dc_converters_batch,
+    normalize_tap_control, regulated_bus_id_from_swreg, shunt_control_mode_from_modsw,
+    table_schema, tap_limit_unit_from_cod, write_root_rpf_with_metadata,
 };
 
 use crate::models::Network;
 use crate::transformer_convert::{
-    TransformerId, convert_mag_to_system, convert_z_to_system, tap_ratio_from_cw,
+    TransformerId, convert_mag_to_system, convert_z_to_system, series_z_on_from_tap,
+    winding_taps_from_cw,
 };
 
 const METADATA_KEY_TRANSFORMER_REPRESENTATION_MODE: &str = "rpf.transformer_representation_mode";
@@ -166,6 +168,8 @@ pub struct ExportOptions {
     /// and omits `computational_load_profiles`. When a caller supplies rows, unset
     /// v0.14.6 fields stay null.
     pub computational_load_profiles: Vec<raptrix_cim_arrow::ComputationalLoadProfileRow>,
+    /// Optional PSS/E contingency file. When omitted, `contingencies` stays a zero-row stub.
+    pub contingency_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -348,7 +352,14 @@ pub fn write_psse_to_rpf_with_options(
     table_batches.insert(TABLE_AREAS, build_areas_batch(&network.areas)?);
     table_batches.insert(TABLE_ZONES, build_zones_batch(&network.zones)?);
     table_batches.insert(TABLE_OWNERS, build_owners_batch(&network.owners)?);
-    table_batches.insert(TABLE_CONTINGENCIES, empty_table(TABLE_CONTINGENCIES)?);
+    let contingency_rows = load_contingency_rows(&network, options)?;
+    let contingencies_are_stub = contingency_rows.is_empty();
+    let contingencies_batch = if contingencies_are_stub {
+        empty_table(TABLE_CONTINGENCIES)?
+    } else {
+        build_contingencies_batch_full(&contingency_rows)?
+    };
+    table_batches.insert(TABLE_CONTINGENCIES, contingencies_batch);
     table_batches.insert(TABLE_INTERFACES, empty_table(TABLE_INTERFACES)?);
     let dynamics_batch = if network.dyr_models.is_empty() {
         empty_table(TABLE_DYNAMICS_MODELS)?
@@ -384,7 +395,7 @@ pub fn write_psse_to_rpf_with_options(
     validate_export_invariants(&table_batches, options.transformer_representation_mode)?;
 
     let root_options = RootWriteOptions {
-        contingencies_are_stub: true,
+        contingencies_are_stub,
         dynamics_are_stub: network.dyr_models.is_empty(),
         include_solved_state: emit_warm_start_seed,
         include_contingency_sequences: false,
@@ -1939,6 +1950,29 @@ fn build_metadata_batch(
     RecordBatch::try_new(schema, columns).context("building metadata batch")
 }
 
+fn load_contingency_rows(
+    network: &Network,
+    options: &ExportOptions,
+) -> Result<Vec<raptrix_cim_arrow::ContingencyRow>> {
+    let Some(path) = options.contingency_path.as_deref() else {
+        return Ok(Vec::new());
+    };
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read contingency file: {}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    let (rows, stats) = contingency::import_contingencies(&text, network);
+    eprintln!(
+        "[raptrix-psse-rs] contingencies read={} emitted={} empty={} duplicate={} unresolved={} {}",
+        stats.read,
+        stats.emitted,
+        stats.empty,
+        stats.duplicate,
+        stats.unresolved,
+        stats.reason_summary()
+    );
+    Ok(rows)
+}
+
 fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
     let base_mva = if network.case_id.sbase.abs() > 1.0e-9 {
         network.case_id.sbase
@@ -2031,14 +2065,12 @@ fn build_bus_aggregates(network: &Network) -> HashMap<u32, BusAggregate> {
             };
             let qmin = raw_qmin / base_mva;
             let qmax = raw_qmax / base_mva;
-            if agg.has_generator {
-                agg.q_min = agg.q_min.min(qmin);
-                agg.q_max = agg.q_max.max(qmax);
-            } else {
-                agg.q_min = qmin;
-                agg.q_max = qmax;
-                agg.has_generator = true;
-            }
+            // Bus Q capability is the sum of the online machines, not the
+            // widest single machine. Two units of [-0.5, 1.0] pu can deliver
+            // [-1.0, 2.0], not [-0.5, 1.0].
+            agg.q_min += qmin;
+            agg.q_max += qmax;
+            agg.has_generator = true;
 
             agg.p_min_agg += generator.pb / base_mva;
             agg.p_max_agg += generator.pt / base_mva;
@@ -3360,19 +3392,22 @@ fn build_transformers_2w_batch(
         } else {
             1.0
         };
-        let tap = tap_ratio_from_cw(
+        let taps = winding_taps_from_cw(
             tx_id, t.cw, t.windv1, windv2, t.nomv1, t.nomv2, baskv1, baskv2,
         )?;
+        // WINDV2 != 1: Y22 of the two-tap PSS/E model is y/t2^2. The from-only
+        // tap stores that as a larger series impedance. t2 == 1 is a no-op.
+        let (r_eff, x_eff) = series_z_on_from_tap(r_sys, x_sys, taps.t2);
         let (g_sys, b_sys) = convert_mag_to_system(tx_id, t.cm, t.mag1, t.mag2)?;
-        r.append_value(r_sys);
-        x.append_value(x_sys);
+        r.append_value(r_eff);
+        x.append_value(x_eff);
         winding1_r.append_value(0.0); // Placeholder: see psse-mapping for 3W export notes
         winding1_x.append_value(0.0);
         winding2_r.append_value(0.0);
         winding2_x.append_value(0.0);
         g.append_value(g_sys);
         b.append_value(b_sys);
-        tap_ratio.append_value(tap);
+        tap_ratio.append_value(taps.from_tap);
         nominal_tap_ratio.append_value(derive_nominal_tap_ratio(t));
         // RPF schema contract: transformers_2w.phase_shift is degrees (see cim-rs
         // rpf-field-guide). raptrix-core converts to radians on materialize.

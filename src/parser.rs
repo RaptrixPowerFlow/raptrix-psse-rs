@@ -686,16 +686,96 @@ fn token_to_f64(token: &str) -> Option<f64> {
 // Per-record parsers (single-line sections)
 // ---------------------------------------------------------------------------
 
+/// Quoted name, or a token that contains a letter. A bare number is BASKV.
+/// Name versus a nameless record's BASKV.
+///
+/// The tokeniser has already removed the surrounding quotes. A bare number is
+/// BASKV. Anything else is a name, including a numeric name that contains a
+/// space. `parse_fortran_double` returns 0 for both a real zero and garbage,
+/// so the name test is "not a single numeric token".
+fn pre31_bus_name_token(token: &str) -> bool {
+    let t = token.trim();
+    if t.is_empty() || t == "''" || t == "\"\"" {
+        return false;
+    }
+    !is_bare_numeric_token(t)
+}
+
+fn is_bare_numeric_token(token: &str) -> bool {
+    if token.contains(' ') {
+        return false;
+    }
+    let normalized = if token.contains('D') || token.contains('d') {
+        token.replace(['D', 'd'], "e")
+    } else {
+        token.to_owned()
+    };
+    normalized.parse::<f64>().is_ok()
+}
+
+fn pad_bus_name(name: String) -> Box<str> {
+    let mut s = name;
+    if s.len() < 12 {
+        s.push_str(&" ".repeat(12 - s.len()));
+    } else {
+        s.truncate(12);
+    }
+    s.into_boxed_str()
+}
+
+/// REV 24–30 bus record: `I, 'NAME', BASKV, IDE, GL, BL, AREA, ZONE, VM, VA, OWNER`.
+///
+/// Fixed shunts live on this record. REV 31+ moved them to their own section
+/// and placed `AREA` immediately after `IDE`.
+fn parse_bus_record_pre31(f: &[String]) -> Option<Bus> {
+    if f.is_empty() {
+        return None;
+    }
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    let has_name = f.get(1).is_some_and(|s| pre31_bus_name_token(s));
+    let base = if has_name { 2 } else { 1 };
+    // base+0 BASKV, +1 IDE, +2 GL, +3 BL, +4 AREA, +5 ZONE, +6 VM, +7 VA, +8 OWNER
+    let owner_idx = base + 8;
+    Some(Bus {
+        i,
+        name: if has_name {
+            pad_bus_name(field_str(f, 1))
+        } else {
+            "????????????".into()
+        },
+        baskv: field_f64(f, base),
+        ide: psse_bus_ide_raw_to_type(field_u8(f, base + 1)),
+        gl: field_f64(f, base + 2),
+        bl: field_f64(f, base + 3),
+        area: field_u32_default(f, base + 4, 1),
+        zone: field_u32_default(f, base + 5, 1),
+        vm: field_f64(f, base + 6),
+        va: field_f64(f, base + 7),
+        owner: field_u32_default(f, owner_idx, 1),
+        nvhi: field_f64(f, owner_idx + 1),
+        nvlo: field_f64(f, owner_idx + 2),
+        evhi: field_f64(f, owner_idx + 3),
+        evlo: field_f64(f, owner_idx + 4),
+    })
+}
+
 /// Parse one BUS record.
 ///
 /// Handles the optional bus NAME field: very old PSS/E formats (pre-v29) omit
 /// it.  The heuristic: if `parts[1]` is empty or `''`, treat name as absent
 /// and shift all subsequent indices down by one.
 ///
+/// REV ≤ 30 uses [`parse_bus_record_pre31`] (inline `GL`/`BL`, then voltage).
 /// PSS/E v35+ may insert an optional field between `BASKV` and `IDE` (handled
 /// via [`resolve_bus_ide_index`]); all fields after `IDE` are indexed from
 /// the resolved `IDE` position so `AREA`…`VA` stay aligned.
 fn parse_bus_record(f: &[String], psse_version: u32) -> Option<Bus> {
+    if psse_version <= 30 {
+        return parse_bus_record_pre31(f);
+    }
     if f.is_empty() {
         return None;
     }
@@ -800,17 +880,7 @@ fn parse_bus_record(f: &[String], psse_version: u32) -> Option<Bus> {
     Some(Bus {
         i,
         name: if has_name {
-            {
-                let n = field_str(f, 1);
-                // PSS/E bus name is exactly 12 chars; pad or truncate
-                let mut s = n;
-                if s.len() < 12 {
-                    s.push_str(&" ".repeat(12 - s.len()));
-                } else {
-                    s.truncate(12);
-                }
-                s.into_boxed_str()
-            }
+            pad_bus_name(field_str(f, 1))
         } else {
             "????????????".into()
         },
@@ -940,11 +1010,16 @@ fn parse_branch_record(f: &[String], off: &VersionOffsets) -> Option<Branch> {
     if f.len() < 7 {
         return None; // minimum: I, J, CKT, R, X, B, RATEA
     }
-    let i = field_u32(f, 0);
-    let j = field_u32(f, 1);
-    if i == 0 || j == 0 {
+    // PSS/E: a negative J marks bus J as the metered end. The bus number is |J|.
+    // A negative I is not that convention and is rejected.
+    let i_raw = field_i32(f, 0);
+    let j_raw = field_i32(f, 1);
+    if i_raw <= 0 || j_raw == 0 {
         return None;
     }
+    let j_metered = j_raw < 0;
+    let i = i_raw as u32;
+    let j = j_raw.unsigned_abs();
 
     // Status defaults to 1 when field is missing or malformed.
     let st = if f.len() > off.branch_status_idx {
@@ -972,7 +1047,17 @@ fn parse_branch_record(f: &[String], off: &VersionOffsets) -> Option<Branch> {
         gj: field_f64(f, off.branch_gi_idx + 2),
         bj: field_f64(f, off.branch_gi_idx + 3),
         st,
-        met: field_u8(f, off.branch_status_idx + 1),
+        // MET ≤ 1 is the from end, ≥ 2 is the to end. A signed J with no MET
+        // token (0, or a float zero that does not parse as an integer) means
+        // the to-bus is metered.
+        met: {
+            let met_field = field_u8(f, off.branch_status_idx + 1);
+            if j_metered && met_field == 0 {
+                2
+            } else {
+                met_field
+            }
+        },
         len: field_f64(f, off.branch_status_idx + 2),
         o1: field_u32(f, off.branch_status_idx + 3),
     })
@@ -1075,22 +1160,29 @@ fn parse_facts_record(f: &[String]) -> Option<FactsDeviceRaw> {
     })
 }
 
-/// Parse one SWITCHED SHUNT record (version-aware).
-///
-/// Expands `N₁/B₁ … N₈/B₈` pairs into `steps`: a flat list where each step
-/// value (B in MVAr) is repeated `N` times.  Both capacitive (B > 0) and
-/// inductive (B < 0) steps are stored; the consumer decides how to use them.
-fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<SwitchedShunt> {
-    let i = field_u32(f, 0);
-    if i == 0 {
-        return None;
+/// Expand `N₁, B₁ …` pairs into repeated step values and compact banks.
+/// Step count `N`. Accepts `1` and `1.0`. A non-integer ends the pair list.
+fn field_whole_count(fields: &[String], idx: usize) -> u32 {
+    let Some(tok) = fields.get(idx).map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return 0;
+    };
+    if let Ok(v) = tok.parse::<u32>() {
+        return v;
     }
+    let v = parse_fortran_double(tok);
+    if v.is_finite() && v > 0.0 && (v - v.round()).abs() < 1e-6 {
+        v.round() as u32
+    } else {
+        0
+    }
+}
+
+fn read_shunt_step_pairs(f: &[String], pairs_start: usize) -> (Vec<f64>, Vec<(u32, f64)>) {
     let mut steps = Vec::new();
     let mut bank_pairs: Vec<(u32, f64)> = Vec::new();
-    let ps = off.sw_pairs_start;
-    let mut idx = ps;
+    let mut idx = pairs_start;
     while idx + 1 < f.len() {
-        let n = field_u32(f, idx) as usize;
+        let n = field_whole_count(f, idx) as usize;
         let b = field_f64(f, idx + 1);
         if n == 0 {
             break;
@@ -1101,6 +1193,75 @@ fn parse_switched_shunt_record(f: &[String], off: &VersionOffsets) -> Option<Swi
         bank_pairs.push((n as u32, b));
         idx += 2;
     }
+    (steps, bank_pairs)
+}
+
+/// REV ≤ 31 switched shunt. REV 32+ added `ADJM` and `STAT`.
+///
+/// REV ≤ 29: `I, MODSW, VSWHI, VSWLO, SWREM, [RMIDNT,] BINIT, N1, B1, …`
+/// REV 30–31: `I, MODSW, VSWHI, VSWLO, SWREM, RMPCT, RMIDNT, BINIT, N1, B1`
+///
+/// `ADJM` is 0 and `STAT` defaults to in service. A missing `RMPCT` is 100.
+fn parse_switched_shunt_pre32(f: &[String], psse_version: u32) -> Option<SwitchedShunt> {
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    let (rmpct, rmidnt, binit_idx, pairs_start) = if psse_version <= 29 {
+        // The tokeniser has already removed quotes. A letter in this column
+        // is RMIDNT. A number is BINIT. A numeric-only id is indistinguishable
+        // from BINIT after the quotes are gone; these decks omit RMIDNT.
+        // A blank or alphabetic column is RMIDNT (often written as `,,`).
+        // A numeric column is BINIT and the id was omitted.
+        let field5 = f.get(5).map(|t| t.trim()).unwrap_or("");
+        if field5.is_empty() || token_looks_alpha(field5) {
+            (100.0, field_str(f, 5).into_boxed_str(), 6, 7)
+        } else {
+            (100.0, String::new().into_boxed_str(), 5, 6)
+        }
+    } else {
+        (
+            if f.len() > 5 { field_f64(f, 5) } else { 100.0 },
+            field_str(f, 6).into_boxed_str(),
+            7,
+            8,
+        )
+    };
+    let (steps, bank_pairs) = read_shunt_step_pairs(f, pairs_start);
+    Some(SwitchedShunt {
+        i,
+        modsw: field_u8(f, 1),
+        adjm: 0,
+        stat: 1,
+        vswhi: field_f64(f, 2),
+        vswlo: field_f64(f, 3),
+        swrem: field_u32(f, 4),
+        rmpct,
+        rmidnt,
+        binit: field_f64(f, binit_idx),
+        steps,
+        bank_pairs,
+    })
+}
+
+/// Parse one SWITCHED SHUNT record (version-aware).
+///
+/// Expands `N₁/B₁ … N₈/B₈` pairs into `steps`: a flat list where each step
+/// value (B in MVAr) is repeated `N` times.  Both capacitive (B > 0) and
+/// inductive (B < 0) steps are stored; the consumer decides how to use them.
+fn parse_switched_shunt_record(
+    f: &[String],
+    off: &VersionOffsets,
+    psse_version: u32,
+) -> Option<SwitchedShunt> {
+    if psse_version <= 31 {
+        return parse_switched_shunt_pre32(f, psse_version);
+    }
+    let i = field_u32(f, 0);
+    if i == 0 {
+        return None;
+    }
+    let (steps, bank_pairs) = read_shunt_step_pairs(f, off.sw_pairs_start);
     Some(SwitchedShunt {
         i,
         modsw: field_u8(f, off.sw_modsw_idx),
@@ -1443,7 +1604,9 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
         }
     }
 
-    // Last resort: infer v33 from base MVA
+    // Last resort: infer v33 from base MVA, or when no REV token exists.
+    // A REV in 20..=40 is kept. REV 29 and 30 must not be promoted to 33:
+    // those decks still use the pre-31 bus and switched-shunt columns.
     if psse_version < 0
         && let Some(mva) = f.get(1).and_then(|s| s.parse::<f64>().ok())
         && mva > 1.0
@@ -1451,7 +1614,10 @@ fn parse_header_line(line: &str) -> (CaseId, u32) {
     {
         psse_version = 33;
     }
-    let psse_version = psse_version.max(33) as u32;
+    if psse_version < 0 {
+        psse_version = 33;
+    }
+    let psse_version = psse_version as u32;
 
     let basfrq = f.get(5).and_then(|s| s.parse::<f64>().ok()).unwrap_or(60.0);
     let basfrq = if basfrq <= 0.0 { 60.0 } else { basfrq };
@@ -2068,7 +2234,7 @@ fn parse_raw_impl(path: &Path, mut branch_diag: Option<&mut BranchDeckStats>) ->
             // ================================================================
             ParseState::SwitchedShunt => {
                 let f = tokenize(data);
-                if let Some(ss) = parse_switched_shunt_record(&f, &off) {
+                if let Some(ss) = parse_switched_shunt_record(&f, &off, psse_version) {
                     result.switched_shunts.push(ss);
                 }
             }
@@ -2155,7 +2321,7 @@ mod tests {
 
     #[test]
     fn split_comment_keeps_slash_inside_quoted_name() {
-        let line = "  351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183";
+        let line = "  10,'N/1 ', 138.0000,1,   2,   2,   1,1.02000000, -15.500000";
         let (data, hint) = split_comment(line);
         assert_eq!(data, line);
         assert!(hint.is_empty());
@@ -2174,9 +2340,9 @@ mod tests {
 
     #[test]
     fn split_comment_strips_trailing_comment_after_quoted_slash_name() {
-        let line = "351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040 / leftover";
+        let line = "10,'N/1 ', 138.0000,1,   2,   2,   1,1.02000000 / leftover";
         let (data, hint) = split_comment(line);
-        assert!(data.contains("1.00890040"));
+        assert!(data.contains("1.02000000"));
         assert!(data.contains("N/1"));
         assert_eq!(hint.trim(), "leftover");
     }
@@ -2189,9 +2355,9 @@ mod tests {
             r#"0, 100.0, 33, 0, 0, 60.0 / SLASH_BUS
 T1
 T2
-351,'N/1 ', 115.0000,1,  67,  67,   1,1.00890040,  97.978183, 1.10000, 0.90000, 1.10000, 0.90000
-1275,'S/~2', 115.0000,1,  65,  65,   1,1.02146566,  94.848269, 1.10000, 0.90000, 1.10000, 0.90000
-101,'Q'Bus/1',  69.0000,1,   1,   1,   1,1.02000000,  12.500000, 1.10000, 0.90000, 1.10000, 0.90000
+10,'N/1 ', 138.0000,1,   2,   2,   1,1.02000000, -15.500000, 1.10000, 0.90000, 1.10000, 0.90000
+11,'S/~2', 138.0000,1,   3,   3,   1,1.03000000, -12.000000, 1.10000, 0.90000, 1.10000, 0.90000
+12,'Q'Bus/1',  69.0000,1,   1,   1,   1,1.01500000,   5.500000, 1.10000, 0.90000, 1.10000, 0.90000
 0 / END OF BUS DATA, BEGIN LOAD DATA
 0 / END OF LOAD DATA, BEGIN FIXED SHUNT DATA
 0 / END OF FIXED SHUNT DATA, BEGIN GENERATOR DATA
@@ -2206,7 +2372,7 @@ T2
         let slash_name = net
             .buses
             .iter()
-            .find(|b| b.i == 351)
+            .find(|b| b.i == 10)
             .expect("slash-name bus retained");
         assert!(
             slash_name.name.contains("N/1"),
@@ -2214,37 +2380,37 @@ T2
             slash_name.name
         );
         assert!(
-            (slash_name.vm - 1.00890040).abs() < 1e-8,
+            (slash_name.vm - 1.02).abs() < 1e-8,
             "got vm {}",
             slash_name.vm
         );
         assert!(
-            (slash_name.va - 97.978183).abs() < 1e-6,
+            (slash_name.va - (-15.5)).abs() < 1e-6,
             "got va {}",
             slash_name.va
         );
-        assert!((slash_name.baskv - 115.0).abs() < 1e-9);
-        assert_eq!(slash_name.area, 67);
+        assert!((slash_name.baskv - 138.0).abs() < 1e-9);
+        assert_eq!(slash_name.area, 2);
 
         let tilde = net
             .buses
             .iter()
-            .find(|b| b.i == 1275)
+            .find(|b| b.i == 11)
             .expect("tilde-name bus retained");
         assert!(tilde.name.contains("S/~2"));
-        assert!((tilde.vm - 1.02146566).abs() < 1e-8);
+        assert!((tilde.vm - 1.03).abs() < 1e-8);
 
         let apostrophe = net
             .buses
             .iter()
-            .find(|b| b.i == 101)
+            .find(|b| b.i == 12)
             .expect("apostrophe-and-slash bus retained");
         assert!(
             apostrophe.name.contains("Q'Bus/1"),
             "apostrophe+slash name, got {:?}",
             apostrophe.name
         );
-        assert!((apostrophe.vm - 1.02).abs() < 1e-8);
+        assert!((apostrophe.vm - 1.015).abs() < 1e-8);
     }
 
     #[test]

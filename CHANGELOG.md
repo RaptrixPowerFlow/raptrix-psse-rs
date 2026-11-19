@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.10] - 2026-11-16
+
+- Optional `convert --con` writes resolved PSS/E contingency actions into `contingencies`. Without `--con` the table stays a zero-row stub. A row is kept only when every action resolves. `DISCONNECT BRANCH` and `OPEN BRANCH` are open `branch_outage` elements. `CLOSE BRANCH` sets `status_change` false. `REMOVE MACHINE` and `REMOVE UNIT` are `gen_trip`. `REMOVE LOAD` sheds that load's constant-power MW. `SET BUS … LOAD TO 0 MW` sheds the bus. Branch actions carry `equipment_kind=psse_branch` and an endpoint id. A transformer uses a negative `branch_id` sentinel. The RPF stamp stays v0.14.6.
+
 ## [0.7.9] - 2026-11-11
 
 - Emit RPF `v0.14.6` via `raptrix-cim-arrow` 0.7.7. Readers still accept `v0.14.5`.
@@ -66,15 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Quote-aware RAW comment split**: `/` inside a single-quoted field is no
-  longer treated as a trailing comment. NYISO names `EUCLID/OCWA` and
-  `SALAMANCA/~1` / `SALAMANCA/~2` previously lost VM/VA/kV/area after the
-  slash; missing VM was sanitized to `v_mag_set=1.0` (#31). Section
-  terminators (`0 / END OF …`) and header `/ title` are unchanged.
+  longer treated as a trailing comment. A name that contains `/` previously
+  lost VM/VA/kV/area after the slash; missing VM was sanitized to
+  `v_mag_set=1.0` (#31). Section terminators (`0 / END OF …`) and header
+  `/ title` are unchanged.
 
 ### Golden corpus
 
-- Regenerated `tests/golden/` with the 0.7.4 writer so NYISO 351 / 1275 /
-  1276 keep RAW scheduled VM (and name / kV / angle).
+- Regenerated `tests/golden/` with the 0.7.4 writer so a quoted name that
+  contains `/` keeps RAW scheduled VM (and name / kV / angle).
 
 ## [0.7.3] - 2026-09-09
 
@@ -281,14 +285,14 @@ disconnected/isolated `IDE=4` buses into the slack-candidate pool.
 
 #### Iterate-loop verification
 
-Local iterate-loop sweep across 13 cases (8 small/medium + 4 Texas7k + Midwest24k + ACTIVSg25k) confirms the fix produces RAW↔RPF parity:
+Local iterate-loop sweep across 13 cases (8 small/medium + 4 Texas7k + one large local case + ACTIVSg25k) confirms the fix produces RAW↔RPF parity:
 
 - **24 RAW runs / 24 RPF runs, 22 converged on each side, 0 convergence asymmetries** (`scripts/local_iterate/out/delta_report.after-ide-fix.md`).
 - Every paired case shows `Δ iters = Δ qswitches = Δ qviolations = 0` between RAW and RPF; tolerances match within one order of magnitude (most are bit-equal).
 - 0 `[converter] auto-assigned bus * as slack` warnings in `convert_stderr.log` (down from 9 in the pre-fix sweep) — every case now finds the RAW's authored `IDE=3` swing bus directly.
 - 0 `RPF import: auto-demoted N zero-Q-span PV buses to PQ` warnings — replaced by 1080 instances of the new `RPF import: detected N zero-Q-span PV buses … kept as type-2` diagnostic from the companion `raptrix-core` change.
 - ACTIVSg25k remains non-converged in both RAW and RPF (`tol = 2.68`); a separate solver-limited case unrelated to writer fidelity.
-- Spot check on `Base_Eastern_Interconnect_515GW.RAW`: previously the converter auto-picked bus 27840 as slack while the RAW authored bus 50320; with the fix bus 50320 is preserved as canonical slack=3, the 6 IDE=4 buses are correctly emitted as PQ, and PV-mode now converges on the RPF (was failing pre-fix).
+- Spot check on a large local planning case: previously the converter auto-picked a different slack than the RAW-authored `IDE=3` swing; with the fix that authored swing is preserved as canonical slack=3, disconnected `IDE=4` buses are emitted as PQ, and PV-mode now converges on the RPF (was failing pre-fix).
 
 ### RPF generation quality hardening (raptrix-core parity)
 
@@ -300,7 +304,7 @@ issues.
 
 - **Slack-island awareness in `enforce_deterministic_slack`**: connected-degree check now demotes any RAW-authored **swing** bus (`IDE=3`) that sits on a disconnected island (degree==0) and promotes the largest-generation connected bus instead. Eliminates the importer's "auto-assigned slack" warning class for files where the RAW had a slack but on a dead island. If no connected bus exists at all (degenerate / topology-only fixtures) the existing swing token is preserved so the file still carries an explicit slack.
 - **Voltage-set sanitization on bus export**: `v_mag_set` and `v_ang_set` are now clamped at writer time (`v_mag_set <= 0 || !finite -> 1.0`, `v_ang_set !finite -> 0.0`). A per-file diagnostic counter is logged. Eliminates the importer's "sanitized invalid v_mag" warning class — measured: 8 import-time sanitization warnings (31 invalid VM total across 4 cases) drop to 0 in the local iterate-loop sweep.
-- **Generator Q-limit ledger consistency**: `q_min`/`q_max` are swapped per generator on export when `q_min > q_max`, and non-finite Q-limits are clamped to 0.0. The same swap is propagated into bus-level Q aggregation. Fix improved Midwest24k_20220923 PQ tolerance by 7 orders of magnitude (2.9e-4 → 2.0e-11) in the local iterate-loop sweep.
+- **Generator Q-limit ledger consistency**: `q_min`/`q_max` are swapped per generator on export when `q_min > q_max`, and non-finite Q-limits are clamped to 0.0. The same swap is propagated into bus-level Q aggregation. Fix improved PQ tolerance on a large local case by 7 orders of magnitude (2.9e-4 → 2.0e-11) in the local iterate-loop sweep.
 
 #### Changed
 
@@ -308,7 +312,7 @@ issues.
 
 #### Decided not to ship (kept as infrastructure only)
 
-- **Warm-start `buses_solved` seed emission on the PSS/E RAW path**: the cim-rs `seed_only` vocabulary and the writer-side `build_buses_solved_seed_batch` helper landed, but emission is disabled in `write_psse_to_rpf_with_options`. Rationale: the buses table already carries `v_ang_set = bus.va.to_radians()` and `v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack)`, which is exactly the warm-start initial condition. The importer's seed loop unconditionally overwrites `bus.v_mag_set` with the seed `v_mag_pu`, and on PV/Slack buses that replaces the scheduled `gen.vs` target with the operating `bus.vm`. In the local iterate-loop sweep, switching the emission on regressed convergence on 4 RPFs by 1e+1 to 1e+4 in tolerance (Texas7k_20210804 / Texas7k_20220923 / Texas7k_2030_20220923 / NYISO_onpeak2019_v23). Helper retained for callers that genuinely have a separately-computed warm-start payload distinct from the planning setpoints.
+- **Warm-start `buses_solved` seed emission on the PSS/E RAW path**: the cim-rs `seed_only` vocabulary and the writer-side `build_buses_solved_seed_batch` helper landed, but emission is disabled in `write_psse_to_rpf_with_options`. Rationale: the buses table already carries `v_ang_set = bus.va.to_radians()` and `v_mag_set = (sanitized bus.vm, with gen.vs override on PV/Slack)`, which is exactly the warm-start initial condition. The importer's seed loop unconditionally overwrites `bus.v_mag_set` with the seed `v_mag_pu`, and on PV/Slack buses that replaces the scheduled `gen.vs` target with the operating `bus.vm`. In the local iterate-loop sweep, switching the emission on regressed convergence on 4 RPFs by 1e+1 to 1e+4 in tolerance (Texas7k_20210804 / Texas7k_20220923 / Texas7k_2030_20220923, plus one other local case). Helper retained for callers that genuinely have a separately-computed warm-start payload distinct from the planning setpoints.
 
 #### Tests
 
@@ -486,7 +490,7 @@ Patch release: **RAW/DYR parsing and export fidelity** (RPF v0.9.0 wire shape un
 ### Fixed
 
 - **Markdownlint**: MD032 (blank lines around lists) in `.githooks/README.md`, `CHANGELOG.md`, and `MIGRATION.md`; MD004 (dash list style) in `MIGRATION.md` “Performance tips”.
-- **CI `golden_test`**: IEEE 14/118 and ACTIVSg25k/70k cases now **skip** when the corresponding `tests/data/external` RAW is missing (same pattern as ERCOT/NYISO/EI), so default GitHub runners pass without licensed fixtures.
+- **CI `golden_test`**: IEEE 14/118 and ACTIVSg25k/70k cases now **skip** when the corresponding `tests/data/external` RAW is missing (same pattern as other licensed local fixtures), so default GitHub runners pass without licensed fixtures.
 - **Documentation scope**: README / CHANGELOG / MIGRATION / `docs/psse-mapping.md` and public rustdoc use neutral, release-focused wording for optional v0.9.0 metadata and `scenario_context`; MIGRATION appendix trimmed to schema deltas plus pointers to mapping + golden docs (interchange column names and behavior unchanged).
 
 ### Schema (unchanged from 0.3.1 line)

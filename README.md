@@ -93,7 +93,7 @@ The converter emits the **18** required root tables from the locked **v0.14.5** 
 - areas
 - zones
 - owners
-- contingencies
+- contingencies (`convert --con` fills this table; otherwise it is a zero-row stub)
 - interfaces
 - dynamics_models
 
